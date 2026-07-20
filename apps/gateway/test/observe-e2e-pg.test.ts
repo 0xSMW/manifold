@@ -314,3 +314,54 @@ test("idempotent re-ingest: same trace twice ⇒ cost_ledger written ONCE and co
   const committedDelta = BigInt(after[0]!.committed_microusd) - committedBefore;
   assert.equal(committedDelta, EXPECTED_COST, "the reservation commits exactly once, not twice");
 });
+
+// review gateway-F5 / #2: a STREAMED success captures no usage, so pre-fix its terminal carried NO
+// reservation id and the hold was orphaned until an (unwired) sweep — a budget-hold DoS + headroom
+// leak. Now the terminal ALWAYS carries the reservation id, so ingest reconciles it (commits at $0,
+// releasing the hold) even with no measured usage.
+test("gateway-F5/#2: a STREAMED success (no usage) RELEASES the hold, not orphaned at 'reserved'", async () => {
+  const snap = await buildSnapshot(db, INSTALLATION);
+  // No content-length + event-stream ⇒ isBufferableJson=false ⇒ no usage captured (a real SSE shape).
+  const streamFetcher: Fetcher = {
+    async fetch() {
+      return new Response("data: {}\n\ndata: [DONE]\n\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  };
+  const { ctx, ingest } = makeCtx(snap, streamFetcher);
+
+  const res = await handleRequest(ctx, req({ model: "oe2e-model", max_tokens: 500 }));
+  assert.equal(res.status, 200, "the streamed response is relayed");
+  const traceId = res.headers.get("x-trace-id");
+  assert.ok(traceId, "trace id returned");
+
+  const terminal = ingest.events.find((e) => e.kind === "terminal");
+  assert.ok(terminal, "a terminal was emitted for the streamed success");
+  assert.equal(terminal.usage, undefined, "a streamed response captures NO usage (the pre-fix leak trigger)");
+  assert.ok(terminal.reservationId, "the streamed-success terminal MUST still carry the reservation id");
+
+  // Reservation for THIS trace exists and is 'reserved' before ingest.
+  const before = await pg.sql<{ status: string }[]>`
+    SELECT status FROM budget_reservation WHERE request_id = ${traceId}
+  `;
+  assert.equal(before.length, 1, "a reservation was held for the streamed request");
+  assert.equal(before[0]!.status, "reserved", "held until reconciled");
+
+  await ingestTrace({
+    sql: pg.sql as unknown as Sql,
+    events: ingest.events,
+    workspaceId: WORKSPACE,
+    producerId: INSTALLATION,
+  });
+
+  const resv = await pg.sql<{ status: string }[]>`
+    SELECT status FROM budget_reservation WHERE request_id = ${traceId}
+  `;
+  assert.equal(
+    resv[0]!.status,
+    "committed",
+    "the streamed-success hold was RELEASED (committed at $0), not stranded at 'reserved'",
+  );
+});

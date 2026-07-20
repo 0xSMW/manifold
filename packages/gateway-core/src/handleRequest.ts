@@ -178,6 +178,9 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
       keyId?: string | null;
       routeId?: string | null;
       offeringId?: string | null;
+      /** Live hard-budget hold to release on the reconcile path (review gateway-F5/#2). */
+      reservationId?: string | null;
+      budgetAccountId?: string | null;
     } = {},
   ): void => {
     emit({
@@ -188,6 +191,10 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
       offeringId: ids.offeringId ?? null,
       status: shapeForCode(code).status,
       reasonCodes: [code as ReasonCode],
+      // A post-reserve failure MUST still carry the reservation id so ingest commits/releases the hold
+      // (at $0 actual — the request never dispatched) instead of stranding it until the expiry sweep.
+      ...(ids.reservationId ? { reservationId: ids.reservationId } : {}),
+      ...(ids.budgetAccountId ? { budgetAccountId: ids.budgetAccountId } : {}),
     });
   };
 
@@ -242,11 +249,19 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     return errorResponse(enforcement.code, enforcement.message, traceId);
   }
 
+  // A hard-budget reservation may now be HELD (enforcement.reservationId). Thread it onto EVERY
+  // subsequent terminal — the success path AND the post-reserve failure paths (SSRF / credential /
+  // dispatch error) — so the reconcile ALWAYS releases the hold (review gateway-F5/#2). Without this
+  // the hold is orphaned until the (unwired) expiry sweep: a valid key that forces deterministic
+  // post-reserve failures could accumulate holds to the cap and deny a tenant's real traffic.
+  const reservationId = enforcement.reservationId ?? null;
+  const budgetAccountId = auth.key.budgetAccountId;
+
   // 5. Build the upstream URL and enforce SSRF (§14.4).
   const upstreamUrl = new URL(url.pathname + url.search, target.baseUrl).toString();
   const ssrf = ssrfCheck(upstreamUrl, target.allowedHosts, ctx.ssrfPolicy ?? STRICT_SSRF);
   if (!ssrf.ok) {
-    emitTerminal("SSRF_BLOCKED", { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId });
+    emitTerminal("SSRF_BLOCKED", { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, reservationId, budgetAccountId });
     return errorResponse("SSRF_BLOCKED", `egress blocked: ${ssrf.reason}`, traceId);
   }
 
@@ -258,7 +273,7 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   try {
     secret = await ctx.resolveSecret(target);
   } catch {
-    emitTerminal("CREDENTIAL_UNAVAILABLE", { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId });
+    emitTerminal("CREDENTIAL_UNAVAILABLE", { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, reservationId, budgetAccountId });
     return errorResponse("CREDENTIAL_UNAVAILABLE", "provider credential could not be resolved", traceId);
   }
   injectProviderAuth(upstreamHeaders, target.authInject, secret);
@@ -309,7 +324,7 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
       : isTimeout
         ? "upstream timed out"
         : "upstream request failed";
-    emitTerminal(code, { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId });
+    emitTerminal(code, { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, reservationId, budgetAccountId });
     return errorResponse(code, message, traceId);
   }
 
@@ -331,16 +346,13 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   const offering = snapshot.offerings?.[target.offeringId];
   const price = offering?.price;
   const priceRevisionId = offering?.priceRevisionId ?? null;
-  const budgetAccountId = auth.key.budgetAccountId;
-  const reservationId = enforcement.reservationId ?? null;
 
   // USAGE CAPTURE (§8.3): buffer ONLY a small, self-described-JSON completion to read its `usage`
   // block. A streamed / large / non-JSON body is relayed straight through with flat memory and the
-  // terminal carries no usage — its reservation is released by the expiry sweep (§8.4) and SSE
-  // final-usage capture is the documented follow-up. This preserves the 1GB flat-memory guarantee.
+  // terminal carries no usage; SSE final-usage capture is the documented follow-up. This preserves
+  // the 1GB flat-memory guarantee.
   let responseBody: BodyInit | null = upstream.body;
   let usage: ObservationUsage | undefined;
-  let reconcileId: string | null = null;
   if (isBufferableJson(upstream)) {
     const bodyText = await upstream.text(); // bounded by content-length ≤ USAGE_CAPTURE_MAX_BYTES
     responseBody = bodyText; // re-emit the buffered bytes; the client sees the identical body
@@ -349,8 +361,6 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     } catch {
       usage = undefined; // unparseable JSON ⇒ no usage, still a clean passthrough
     }
-    // Only reconcile the reservation once we actually have measured usage → an ACTUAL cost.
-    if (usage) reconcileId = reservationId;
   }
 
   // Terminal event for the success path. Observability's reduce() treats a trace with no terminal
@@ -370,7 +380,11 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     ...(usage && price ? { price } : {}),
     ...(usage ? { priceRevisionId } : {}),
     budgetAccountId,
-    ...(reconcileId ? { reservationId: reconcileId } : {}),
+    // ALWAYS carry the reservation id (review gateway-F5/#2): when usage was captured the reconcile
+    // commits the ACTUAL cost; on a STREAMED success (no usage) it still commits (at $0) so the hold
+    // is released now, not stranded until the sweep. Streamed-spend accuracy (SSE usage capture) is
+    // the documented follow-up — this closes the headroom LEAK, not the under-count.
+    ...(reservationId ? { reservationId } : {}),
   });
 
   const responseHeaders = sanitizeResponseHeaders(upstream.headers);
