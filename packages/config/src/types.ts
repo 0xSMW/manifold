@@ -8,6 +8,7 @@
 // keys, so we emit a superset: a `ConfigSnapshot` that *is* a `ports.Snapshot` plus the two
 // extra sections. This keeps the built blob loadable + signature-verifiable by gateway-core
 // while still carrying everything §7 asks for.
+import type { ReasonCode } from "@manifold/contracts";
 import type { Snapshot } from "@manifold/ports";
 
 /** SPEC §7.1 `offerings`: offering id → provider/codec/price metadata for budget eligibility. */
@@ -122,5 +123,6 @@ export interface ConfigOperation {
   tripwireItems: TripwireItem[];
   /** The new active revision id when the operation produced one. */
   revisionId: string | null;
-  reasonCode: string | null;
+  /** SPEC §0.2 reason code (contracts `ReasonCode`), e.g. CONFIG_PRECONDITION_FAILED. */
+  reasonCode: ReasonCode | null;
 }

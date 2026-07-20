@@ -4,7 +4,7 @@
 // (`${profileId}:${path}`→targets with ciphertext + wrappedDek + authInject), offerings,
 // policies. Canonicalizes and stamps `contentHash`. The result is a `ports.Snapshot` superset
 // (§7.1 offerings/policies added), so gateway-core loads and routes it unchanged.
-import type { AuthInject, Snapshot, SnapshotKey, SnapshotRoute, SnapshotTarget } from "@manifold/ports";
+import type { AuthInject, Snapshot, SnapshotKey, SnapshotMeta, SnapshotRoute, SnapshotTarget } from "@manifold/ports";
 import type { Database } from "@manifold/database";
 import { randomBytes } from "node:crypto";
 import { computeContentHash } from "./canonical.js";
@@ -15,6 +15,25 @@ import type { ConfigOffering, ConfigPolicy, ConfigSnapshot } from "./types.js";
 /** Prefixed-ULID-ish id (§6.1 convention: prefixed text). Monotonic-ish for readability. */
 export function genId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}${randomBytes(9).toString("hex")}`;
+}
+
+/**
+ * Stamp a snapshot `meta` for a fresh (re)build: mint a new revision id + build time and clear
+ * the derived `contentHash` + `signature` (recomputed / signed afterward). The stable identity
+ * fields (schema, installationId, signingKeyId) are carried in via `carry`. Shared by the full
+ * build (`assembleSnapshot`) and the key-only rebuild (`keyOnlyPublish`) so both mint identical
+ * meta. Meta is EXCLUDED from `canonicalBody`, so this never affects the content hash or signature.
+ */
+export function stampMeta(
+  carry: Pick<SnapshotMeta, "schema" | "installationId" | "signingKeyId">,
+): SnapshotMeta {
+  return {
+    ...carry,
+    revision: genId("cfgrev"),
+    contentHash: "",
+    builtAt: new Date().toISOString(),
+    signature: "",
+  };
 }
 
 /** endpoint_kind → request pathname gateway-core resolves against (resolveRoute: `${profile}:${path}`). */
@@ -243,15 +262,7 @@ export async function assembleSnapshot(
   }
 
   const snapshot: ConfigSnapshot = {
-    meta: {
-      schema: "manifold.snapshot.v1",
-      installationId,
-      revision: genId("cfgrev"),
-      contentHash: "",
-      builtAt: new Date().toISOString(),
-      signature: "",
-      signingKeyId: "",
-    },
+    meta: stampMeta({ schema: "manifold.snapshot.v1", installationId, signingKeyId: "" }),
     profiles,
     keys,
     routes,

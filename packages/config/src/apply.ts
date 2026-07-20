@@ -6,9 +6,10 @@
 //  rollback(db, revisionId, store) — republish a prior revision's stored snapshot bytes.
 //  keyOnlyPublish(db, ..., store)  — SPEC §8.2 H7: rebuild only the keys section against the
 //                                  active route/policy revision and publish (expedited path).
+import { ReasonCode } from "@manifold/contracts";
 import type { Database } from "@manifold/database";
 import type { Snapshot } from "@manifold/ports";
-import { assembleSnapshot, buildKeysSection, genId } from "./build.js";
+import { assembleSnapshot, buildKeysSection, genId, stampMeta } from "./build.js";
 import { computeContentHash, stableStringify } from "./canonical.js";
 import * as q from "./db.js";
 import type { PgSql } from "./db.js";
@@ -56,6 +57,34 @@ async function insertOperation(
   return { id, ...op };
 }
 
+/** The plan-identity fields every config_operation copies verbatim (§6.11): who + which hashes. */
+type OpIdentity = Pick<
+  ConfigOperation,
+  "installationId" | "workspaceId" | "baseConfigHash" | "targetConfigHash" | "planHash" | "tripwireItems"
+>;
+/** The per-outcome fields that vary across reject / no-op / accept / rollback branches. */
+type OpOutcome = Pick<
+  ConfigOperation,
+  "outcome" | "edgeConfigVersion" | "revisionId" | "reasonCode"
+>;
+
+/**
+ * Assemble the ConfigOperation body (sans id) from a plan's identity fields plus the branch's
+ * outcome patch. Collapses the reject / no-op / accept branches of apply() and the rollback
+ * record, which previously copied the same six identity fields into each field bag (DRY §9).
+ */
+function opFromPlan(id: OpIdentity, patch: OpOutcome): Omit<ConfigOperation, "id"> {
+  return {
+    installationId: id.installationId,
+    workspaceId: id.workspaceId,
+    baseConfigHash: id.baseConfigHash,
+    targetConfigHash: id.targetConfigHash,
+    planHash: id.planHash,
+    tripwireItems: id.tripwireItems,
+    ...patch,
+  };
+}
+
 /**
  * SPEC §8.2 apply(). One transaction. Returns the recorded ConfigOperation; on a moved base
  * the operation is recorded with outcome 'rejected' and reasonCode CONFIG_PRECONDITION_FAILED
@@ -75,34 +104,22 @@ export async function apply(
 
     // Optimistic-concurrency precondition (§16.2): base must equal the live active hash.
     if (activeHash !== plan.baseConfigHash) {
-      return insertOperation(tx, {
-        installationId: plan.installationId,
-        workspaceId: plan.workspaceId,
-        baseConfigHash: plan.baseConfigHash,
-        targetConfigHash: plan.targetConfigHash,
-        planHash: plan.planHash,
+      return insertOperation(tx, opFromPlan(plan, {
         outcome: "rejected",
         edgeConfigVersion: null,
-        tripwireItems: plan.tripwireItems,
         revisionId: null,
-        reasonCode: "CONFIG_PRECONDITION_FAILED",
-      }, plan.diffJson);
+        reasonCode: ReasonCode.enum.CONFIG_PRECONDITION_FAILED,
+      }), plan.diffJson);
     }
 
     // Idempotency (§8.2): identical content is a no-op.
     if (plan.targetConfigHash === activeHash) {
-      return insertOperation(tx, {
-        installationId: plan.installationId,
-        workspaceId: plan.workspaceId,
-        baseConfigHash: plan.baseConfigHash,
-        targetConfigHash: plan.targetConfigHash,
-        planHash: plan.planHash,
+      return insertOperation(tx, opFromPlan(plan, {
         outcome: "accepted",
         edgeConfigVersion: null,
-        tripwireItems: plan.tripwireItems,
         revisionId: active?.id ?? null,
         reasonCode: null,
-      }, plan.diffJson);
+      }), plan.diffJson);
     }
 
     const snap = plan.snapshot;
@@ -129,18 +146,12 @@ export async function apply(
       UPDATE gateway_installation SET applied_config_revision = ${revisionId}
       WHERE id = ${plan.installationId}`;
 
-    return insertOperation(tx, {
-      installationId: plan.installationId,
-      workspaceId: plan.workspaceId,
-      baseConfigHash: plan.baseConfigHash,
-      targetConfigHash: plan.targetConfigHash,
-      planHash: plan.planHash,
+    return insertOperation(tx, opFromPlan(plan, {
       outcome: "accepted",
       edgeConfigVersion: published.version,
-      tripwireItems: plan.tripwireItems,
       revisionId,
       reasonCode: null,
-    }, plan.diffJson);
+    }), plan.diffJson);
   }) as Promise<ConfigOperation>;
 }
 
@@ -179,18 +190,22 @@ export async function rollback(
       UPDATE gateway_installation SET applied_config_revision = ${target.id}
       WHERE id = ${target.installation_id}`;
 
-    return insertOperation(tx, {
-      installationId: target.installation_id,
-      workspaceId: target.workspace_id,
-      baseConfigHash: active?.content_hash ?? null,
-      targetConfigHash: target.content_hash,
-      planHash: null,
-      outcome: "accepted",
-      edgeConfigVersion: published.version,
-      tripwireItems: [],
-      revisionId: target.id,
-      reasonCode: null,
-    }, { rollback: true, restoredRevision: target.id, from: active?.id ?? null });
+    return insertOperation(tx, opFromPlan(
+      {
+        installationId: target.installation_id,
+        workspaceId: target.workspace_id,
+        baseConfigHash: active?.content_hash ?? null,
+        targetConfigHash: target.content_hash,
+        planHash: null,
+        tripwireItems: [],
+      },
+      {
+        outcome: "accepted",
+        edgeConfigVersion: published.version,
+        revisionId: target.id,
+        reasonCode: null,
+      },
+    ), { rollback: true, restoredRevision: target.id, from: active?.id ?? null });
   }) as Promise<ConfigOperation>;
 }
 
@@ -227,13 +242,7 @@ export async function keyOnlyPublish(
   let next: ConfigSnapshot = {
     ...base,
     keys,
-    meta: {
-      ...base.meta,
-      revision: genId("cfgrev"),
-      builtAt: new Date().toISOString(),
-      contentHash: "",
-      signature: "",
-    },
+    meta: stampMeta(base.meta),
   };
   next.meta.contentHash = computeContentHash(next);
 
