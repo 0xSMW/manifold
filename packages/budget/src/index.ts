@@ -64,15 +64,15 @@ export type ReserveResult =
   | { ok: true; reservationId: string; reservedMicroUsd: MicroUsd; idempotentReplay: boolean }
   | { ok: false; reason: typeof BUDGET_RESERVE_DENIED };
 
-interface WindowRow {
-  committed_microusd: string;
-  reserved_microusd: string;
-  committed_tokens: string;
-  reserved_tokens: string;
-}
-
-interface AccountRow {
+/** One budget_account in a leaf→root chain (§16.3 M13 hierarchical budgets). */
+interface ChainAccount {
+  id: string;
+  parent_id: string | null;
   limit_amount: string;
+  /** Window policy (`daily`/`weekly`/`monthly`/`rolling_30d`/`total`), drives bucketStart. */
+  window: string;
+  /** `cost_microusd` or `tokens` — selects which counter columns the guard/bump use. */
+  unit: string;
   workspace_id: string;
 }
 
@@ -81,10 +81,13 @@ interface ReservationRow {
   workspace_id: string;
   budget_account_id: string;
   reserved_microusd: string;
+  /** Held token estimate for token-unit budgets; null on legacy rows (treated as 0). */
+  reserved_tokens: string | null;
   status: BudgetReservationState;
   created_at: Date;
   /** The EXACT counter-row coordinates reserve() bumped (§16.3), persisted on the row so
-   *  commit/rollback/sweep decrement THAT row instead of re-deriving (bucketStart, shard=0). */
+   *  commit/rollback/sweep decrement THAT row instead of re-deriving (bucketStart, shard=0).
+   *  These are the LEAF coordinates; ancestor rows are re-derived from each ancestor's window. */
   window_start: Date;
   shard: number;
 }
@@ -145,53 +148,82 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
     requestId,
     estMicroUsd,
     workspaceId,
-    windowStart,
     shard = DEFAULT_SHARD,
   } = input;
 
   const createdAt = ulidCreatedAt(requestId);
   const expiresAt = input.expiresAt ?? new Date(createdAt.getTime() + DEFAULT_TTL_MS);
   const est = BigInt(estMicroUsd);
+  // Token-unit budgets reserve on TOKEN counts (est_input + max_output), not µ$.
+  const estTokens = (input.estimatedInputTokens ?? 0n) + (input.maxOutputTokens ?? 0n);
 
   return db.begin(async (sql: TransactionSql): Promise<ReserveResult> => {
     // Tenant scope for RLS (§6.16); harmless (and correct) whether or not the caller
-    // connects as an RLS-exempt role.
+    // connects as an RLS-exempt role. Set BEFORE any budget_account/budget_window_state read.
     await sql`SELECT set_config('manifold.workspace_id', ${workspaceId}, true)`;
 
-    // 1. Upsert the counter row FIRST so a just-opened window can't race two
-    //    first-requests into an oversell (M14). ON CONFLICT DO NOTHING — never clobbers.
-    await sql`
-      INSERT INTO budget_window_state (workspace_id, budget_account_id, window_start, shard)
-      VALUES (${workspaceId}, ${budgetAccountId}, ${windowStart}, ${shard})
-      ON CONFLICT DO NOTHING
-    `;
+    // 1. Load the budget chain leaf→root (§16.3 M13). Non-hierarchical budgets → length 1.
+    //    A reserve must fit EVERY ancestor's cap, not just the leaf's.
+    const chain = await loadChain(sql, budgetAccountId);
+    if (chain.length === 0) return { ok: false, reason: BUDGET_RESERVE_DENIED };
+    const leaf = chain[0]!;
 
-    // 2. Lock THIS shard row. Every reserve for (budget, window, shard) serializes here.
-    const windowRows = await sql<WindowRow[]>`
-      SELECT committed_microusd, reserved_microusd, committed_tokens, reserved_tokens
-      FROM budget_window_state
-      WHERE budget_account_id = ${budgetAccountId}
-        AND window_start = ${windowStart}
-        AND shard = ${shard}
-      FOR UPDATE
-    `;
-    const win = windowRows[0];
-    if (!win) {
-      // Cannot happen after the upsert unless RLS hid the row (misconfigured tenant).
-      return { ok: false, reason: BUDGET_RESERVE_DENIED };
+    // 2. Counter coordinates per account. window_start is DERIVED from each account's own window
+    //    policy + the request's created_at — NEVER the caller-supplied windowStart, which a caller
+    //    could vary per request to open a virgin counter and bypass the real bucket. Only the leaf
+    //    carries the request's shard; ancestors accumulate on shard 0.
+    const coords = chain.map((acct) => ({
+      acct,
+      windowStart: bucketStart(acct.window, createdAt),
+      shard: acct.id === leaf.id ? shard : DEFAULT_SHARD,
+    }));
+
+    // 3. Upsert every counter row FIRST so a just-opened window can't race two first-requests
+    //    into an oversell (M14). ON CONFLICT DO NOTHING — never clobbers.
+    for (const c of coords) {
+      await sql`
+        INSERT INTO budget_window_state (workspace_id, budget_account_id, window_start, shard)
+        VALUES (${workspaceId}, ${c.acct.id}, ${c.windowStart}, ${c.shard})
+        ON CONFLICT DO NOTHING
+      `;
     }
 
-    // 3. Idempotent replay: a reservation for (budget, request, created_at) already
-    //    exists → return it unchanged, WITHOUT re-bumping `reserved` (§8.4, §16.1).
+    // 4. Lock the whole working set under ONE global order: accounts by id ASC (M13,
+    //    deadlock-free — ULIDs are time-ordered not depth-ordered, so id order, not traversal
+    //    order), and within an account ALL shard rows by shard ASC. Locking every SIBLING shard
+    //    (not just the request's) is what makes the cross-shard headroom guard oversell-proof:
+    //    concurrent reserves on different shards serialize here instead of each admitting the
+    //    full limit against its own row.
+    const lockOrder = [...coords].sort((a, b) =>
+      a.acct.id < b.acct.id ? -1 : a.acct.id > b.acct.id ? 1 : 0,
+    );
+    for (const c of lockOrder) {
+      await sql`
+        SELECT shard FROM budget_window_state
+        WHERE budget_account_id = ${c.acct.id} AND window_start = ${c.windowStart}
+        ORDER BY shard
+        FOR UPDATE
+      `;
+    }
+
+    // 5. Idempotent replay: serialized behind the leaf row lock. A reservation for
+    //    (budget, request, created_at) that ALREADY exists returns unchanged ONLY while it is
+    //    still `reserved`. A TERMINAL replay (committed/rolled_back/expired) must NOT grant a
+    //    fresh hold — otherwise a retried requestId after commit returns ok and the caller
+    //    dispatches again for free. Deny it instead (§8.4).
     const existingRows = await sql<ReservationRow[]>`
-      SELECT id, workspace_id, budget_account_id, reserved_microusd, status, created_at
+      SELECT id, workspace_id, budget_account_id, reserved_microusd, reserved_tokens,
+             status, created_at, window_start, shard
       FROM budget_reservation
-      WHERE budget_account_id = ${budgetAccountId}
+      WHERE budget_account_id = ${leaf.id}
         AND request_id = ${requestId}
         AND created_at = ${createdAt}
     `;
     const existing = existingRows[0];
     if (existing) {
+      if (existing.status !== "reserved") {
+        return { ok: false, reason: BUDGET_RESERVE_DENIED };
+      }
       return {
         ok: true,
         reservationId: existing.id,
@@ -200,40 +232,30 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
       };
     }
 
-    // 4. Read the hard limit and headroom (N=1 → single shard; the sharded sum is a
-    //    trivial extension). Guard committed + reserved + est ≤ limit.
-    const accountRows = await sql<AccountRow[]>`
-      SELECT limit_amount, workspace_id
-      FROM budget_account
-      WHERE id = ${budgetAccountId}
-    `;
-    const account = accountRows[0];
-    if (!account) return { ok: false, reason: BUDGET_RESERVE_DENIED };
-
-    const limit = BigInt(account.limit_amount);
-    const committed = BigInt(win.committed_microusd);
-    const reserved = BigInt(win.reserved_microusd);
-
-    if (committed + reserved + est > limit) {
-      // No headroom. `begin` rolls back the (idempotent) upsert; nothing is bumped.
-      return { ok: false, reason: BUDGET_RESERVE_DENIED };
+    // 6. Guard EVERY account in the chain. Headroom is Σ over ALL shards (and, for rolling_30d,
+    //    over the trailing 30 daily rows) of committed+reserved vs that account's own limit —
+    //    cost-unit on µ$, token-unit on tokens (§6.7 window semantics).
+    for (const c of coords) {
+      const add = c.acct.unit === "tokens" ? estTokens : est;
+      const used = await usedForAccount(sql, c.acct, c.windowStart);
+      if (used + add > BigInt(c.acct.limit_amount)) {
+        return { ok: false, reason: BUDGET_RESERVE_DENIED };
+      }
     }
 
-    // 5. Create the reservation. ON CONFLICT DO NOTHING keeps it idempotent even against
-    //    a racing insert; under our FOR UPDATE lock the existing-row check above already
-    //    guarantees this is genuinely new, so the insert always writes here.
+    // 7. Create the reservation, stamped with the LEAF coordinates (release re-derives ancestors).
     const reservationId = ulid(createdAt.getTime());
     const inserted = await sql<{ id: string }[]>`
       INSERT INTO budget_reservation (
         id, workspace_id, budget_account_id, request_id,
         estimated_input_tokens, max_output_tokens,
-        reserved_microusd, status, expires_at, created_at,
+        reserved_microusd, reserved_tokens, status, expires_at, created_at,
         window_start, shard
       ) VALUES (
-        ${reservationId}, ${workspaceId}, ${budgetAccountId}, ${requestId},
+        ${reservationId}, ${workspaceId}, ${leaf.id}, ${requestId},
         ${p(input.estimatedInputTokens ?? 0n)}, ${p(input.maxOutputTokens ?? 0n)},
-        ${p(est)}, 'reserved', ${expiresAt}, ${createdAt},
-        ${windowStart}, ${shard}
+        ${p(est)}, ${p(estTokens)}, 'reserved', ${expiresAt}, ${createdAt},
+        ${coords[0]!.windowStart}, ${coords[0]!.shard}
       )
       ON CONFLICT (budget_account_id, request_id, created_at) DO NOTHING
       RETURNING id
@@ -242,12 +264,13 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
       // Lost an insert race for the same request under a concurrent tenant-exempt path:
       // re-read and return the winner without bumping (still no double-count).
       const raced = await sql<ReservationRow[]>`
-        SELECT id, reserved_microusd FROM budget_reservation
-        WHERE budget_account_id = ${budgetAccountId}
+        SELECT id, reserved_microusd, status FROM budget_reservation
+        WHERE budget_account_id = ${leaf.id}
           AND request_id = ${requestId}
           AND created_at = ${createdAt}
       `;
       const w = raced[0]!;
+      if (w.status !== "reserved") return { ok: false, reason: BUDGET_RESERVE_DENIED };
       return {
         ok: true,
         reservationId: w.id,
@@ -256,14 +279,27 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
       };
     }
 
-    // 6. Bump the outstanding reservation — ONLY for a genuinely new reservation.
-    await sql`
-      UPDATE budget_window_state
-      SET reserved_microusd = reserved_microusd + ${p(est)}, updated_at = now()
-      WHERE budget_account_id = ${budgetAccountId}
-        AND window_start = ${windowStart}
-        AND shard = ${shard}
-    `;
+    // 8. Bump reserved on EVERY account's counter row (leaf + ancestors), unit-appropriately —
+    //    ONLY for a genuinely new reservation.
+    for (const c of coords) {
+      if (c.acct.unit === "tokens") {
+        await sql`
+          UPDATE budget_window_state
+          SET reserved_tokens = reserved_tokens + ${p(estTokens)}, updated_at = now()
+          WHERE budget_account_id = ${c.acct.id}
+            AND window_start = ${c.windowStart}
+            AND shard = ${c.shard}
+        `;
+      } else {
+        await sql`
+          UPDATE budget_window_state
+          SET reserved_microusd = reserved_microusd + ${p(est)}, updated_at = now()
+          WHERE budget_account_id = ${c.acct.id}
+            AND window_start = ${c.windowStart}
+            AND shard = ${c.shard}
+        `;
+      }
+    }
 
     return { ok: true, reservationId, reservedMicroUsd: est, idempotentReplay: false };
   });
@@ -290,10 +326,20 @@ export async function commit(
   reservationId: string,
   actualMicroUsd: MicroUsd,
   workspaceId?: string,
+  actualTokens?: bigint,
 ): Promise<CommitResult> {
-  const actual = BigInt(actualMicroUsd);
+  // Non-negativity (§8.4): a negative actual would DECREMENT committed and free phantom
+  // headroom (a caller could reconcile at −$X to un-charge real spend). Clamp to 0.
+  const rawActual = BigInt(actualMicroUsd);
+  const actual = rawActual < 0n ? 0n : rawActual;
+  const rawTokens = actualTokens ?? 0n;
+  const actualToks = rawTokens < 0n ? 0n : rawTokens;
   return db.begin(async (sql: TransactionSql): Promise<CommitResult> => {
-    const out = await releaseReservation(sql, reservationId, "RECONCILE", { actual, workspaceId });
+    const out = await releaseReservation(sql, reservationId, "RECONCILE", {
+      actual,
+      actualTokens: actualToks,
+      workspaceId,
+    });
     switch (out.kind) {
       case "released":
         return { ok: true, status: out.status, committedMicroUsd: actual };
@@ -328,10 +374,10 @@ export async function rollback(
 
 /**
  * Sweep reservations past `expires_at` (§8.4 `reserved → expired`), releasing their
- * held `reserved`. This is the "no terminal Observation ever produced" release path —
- * the reconcile-to-actual-if-terminal-exists (H1) variant belongs to the reconcile job
- * (§17.2), which has the Observation table this money-core does not. Returns the count
- * of reservations expired.
+ * held `reserved`. This is the "no terminal Observation ever produced" release path. If a
+ * terminal cost arrives LATER for a swept reservation, `commit()` reconciles it expired →
+ * committed so the real spend is still counted, never zeroed (H1). Returns the count of
+ * reservations expired.
  */
 export async function sweepExpired(db: Sql, now: Date = new Date()): Promise<number> {
   // Find expired holds first (short read), then release each under its window lock. Carry
@@ -372,19 +418,22 @@ type ReleaseOutcome =
 
 /**
  * The shared release skeleton behind commit / rollback / sweepExpired (§8.4). Under the
- * reservation's row lock it: scopes the tenant GUC, requires the reservation still be
- * `reserved`, runs the domain state transition for `event`, subtracts the held estimate
- * from `reserved_microusd` in the window counter, and flips the reservation to its terminal
- * state. `RECONCILE` (commit) additionally passes `actual`, which is added to
- * `committed_microusd` and stamped onto `reconciled_microusd`; the other paths pass nothing
- * and leave `committed_microusd` / `reconciled_microusd` untouched. MUST run inside a
- * `db.begin` transaction — the caller owns BEGIN/COMMIT.
+ * reservation's row lock it: scopes the tenant GUC, walks the budget chain leaf→root, and for
+ * EVERY account in the chain subtracts the held estimate from `reserved` and (commit only) adds
+ * the actual to `committed` — cost-unit on µ$, token-unit on tokens. The leaf uses the persisted
+ * (window_start, shard); ancestors re-derive their coordinates from each ancestor's window.
+ *
+ * `RECONCILE` (commit) also handles the LATE-TERMINAL case (H1): if the reservation was already
+ * swept to `expired` (its hold released), a terminal actual arriving afterward is still counted
+ * into `committed` (expired → committed), so real spend that outlived the reservation window is
+ * never zeroed. Any other terminal state is an idempotent no-op. MUST run inside a `db.begin`
+ * transaction — the caller owns BEGIN/COMMIT.
  */
 async function releaseReservation(
   sql: TransactionSql,
   reservationId: string,
   event: "RECONCILE" | "ROLLBACK" | "EXPIRE",
-  opts: { actual?: bigint; workspaceId?: string } = {},
+  opts: { actual?: bigint; actualTokens?: bigint; workspaceId?: string } = {},
 ): Promise<ReleaseOutcome> {
   // Scope the tenant GUC FIRST — BEFORE the lock — so the reservation row is visible to the
   // FOR UPDATE lock under RLS (bug #5). Without this, an RLS-subject role locks 0 rows and
@@ -397,7 +446,45 @@ async function releaseReservation(
   const res = await lockReservation(sql, reservationId);
   if (!res) return { kind: "missing", status: "expired" };
   await sql`SELECT set_config('manifold.workspace_id', ${res.workspace_id}, true)`;
-  if (res.status !== "reserved") return { kind: "noop", status: res.status };
+
+  const actual = opts.actual ?? 0n;
+  const actualTokens = opts.actualTokens ?? 0n;
+  const chain = await loadChain(sql, res.budget_account_id);
+
+  if (res.status !== "reserved") {
+    // Late-terminal reconcile (H1 / §8.4): the sweep already expired this hold (reserved → 0),
+    // but a terminal cost arrived afterward. Count that real spend into committed and move
+    // expired → committed WITHOUT touching reserved again. Any other terminal state is a no-op.
+    if (event === "RECONCILE" && res.status === "expired") {
+      for (const acct of chain) {
+        const coord = releaseCoord(acct, res);
+        if (acct.unit === "tokens") {
+          await sql`
+            UPDATE budget_window_state
+            SET committed_tokens = committed_tokens + ${p(actualTokens)}, updated_at = now()
+            WHERE budget_account_id = ${acct.id}
+              AND window_start = ${coord.windowStart} AND shard = ${coord.shard}
+          `;
+        } else {
+          await sql`
+            UPDATE budget_window_state
+            SET committed_microusd = committed_microusd + ${p(actual)}, updated_at = now()
+            WHERE budget_account_id = ${acct.id}
+              AND window_start = ${coord.windowStart} AND shard = ${coord.shard}
+          `;
+        }
+      }
+      await sql`
+        UPDATE budget_reservation
+        SET status = 'committed',
+            reconciled_microusd = ${p(actual)},
+            reconciled_at = now()
+        WHERE id = ${reservationId} AND created_at = ${res.created_at}
+      `;
+      return { kind: "released", status: "committed" };
+    }
+    return { kind: "noop", status: res.status };
+  }
 
   // Domain state machine is the source of truth for the legal transition. (`event` is a
   // union of literal tags; re-narrow it to the discriminated event the machine expects.)
@@ -407,22 +494,35 @@ async function releaseReservation(
   );
   if (!next.ok) return { kind: "blocked", status: res.status };
 
-  const held = BigInt(res.reserved_microusd);
-  const actual = opts.actual ?? 0n; // rollback/sweep add nothing to committed
-  // Move held → committed adjusted to actual, in the counter row (§16.3). For the
-  // release-only paths `actual` is 0, so `committed_microusd` is written back unchanged.
-  await sql`
-    UPDATE budget_window_state
-    SET reserved_microusd = reserved_microusd - ${p(held)},
-        committed_microusd = committed_microusd + ${p(actual)},
-        updated_at = now()
-    WHERE budget_account_id = ${res.budget_account_id}
-      AND window_start = ${res.window_start}
-      AND shard = ${res.shard}
-  `;
+  // Release the held estimate from EVERY account in the chain (leaf + ancestors), and — for
+  // commit — add the actual to committed. Release-only paths leave committed unchanged (add 0).
+  const heldMicroUsd = BigInt(res.reserved_microusd);
+  const heldTokens = BigInt(res.reserved_tokens ?? "0");
+  for (const acct of chain) {
+    const coord = releaseCoord(acct, res);
+    if (acct.unit === "tokens") {
+      await sql`
+        UPDATE budget_window_state
+        SET reserved_tokens = reserved_tokens - ${p(heldTokens)},
+            committed_tokens = committed_tokens + ${p(actualTokens)},
+            updated_at = now()
+        WHERE budget_account_id = ${acct.id}
+          AND window_start = ${coord.windowStart} AND shard = ${coord.shard}
+      `;
+    } else {
+      await sql`
+        UPDATE budget_window_state
+        SET reserved_microusd = reserved_microusd - ${p(heldMicroUsd)},
+            committed_microusd = committed_microusd + ${p(actual)},
+            updated_at = now()
+        WHERE budget_account_id = ${acct.id}
+          AND window_start = ${coord.windowStart} AND shard = ${coord.shard}
+      `;
+    }
+  }
   // Only commit stamps reconciled_microusd; rollback/sweep leave it as-is (COALESCE keeps
   // the existing value when `actual` was not supplied).
-  const reconciled = opts.actual !== undefined ? p(opts.actual) : null;
+  const reconciled = opts.actual !== undefined ? p(actual) : null;
   await sql`
     UPDATE budget_reservation
     SET status = ${next.state},
@@ -434,13 +534,80 @@ async function releaseReservation(
 }
 
 /**
+ * The counter-row coordinates to release for one account in a reservation's chain. The LEAF
+ * (the reservation's own budget_account) uses the persisted (window_start, shard) reserve()
+ * stamped; ancestors re-derive window_start from their own window policy at the request's
+ * created_at and accumulate on shard 0 (§16.3).
+ */
+function releaseCoord(
+  acct: ChainAccount,
+  res: ReservationRow,
+): { windowStart: Date; shard: number } {
+  if (acct.id === res.budget_account_id) {
+    return { windowStart: res.window_start, shard: res.shard };
+  }
+  return { windowStart: bucketStart(acct.window, res.created_at), shard: DEFAULT_SHARD };
+}
+
+/**
+ * Load a budget_account and its ancestor chain leaf→root via `parent_id` (§16.3 M13). Returns
+ * the leaf first. Depth-bounded so a mis-seeded cycle can't loop forever. Reads budget_account
+ * under RLS, so the tenant GUC must already be set by the caller.
+ */
+async function loadChain(sql: TransactionSql, leafId: string): Promise<ChainAccount[]> {
+  return sql<ChainAccount[]>`
+    WITH RECURSIVE chain AS (
+      SELECT id, parent_id, limit_amount, "window", unit, workspace_id, 0 AS depth
+      FROM budget_account WHERE id = ${leafId}
+      UNION ALL
+      SELECT p.id, p.parent_id, p.limit_amount, p."window", p.unit, p.workspace_id, c.depth + 1
+      FROM budget_account p JOIN chain c ON p.id = c.parent_id
+      WHERE c.depth < 32
+    )
+    SELECT id, parent_id, limit_amount, "window", unit, workspace_id FROM chain ORDER BY depth
+  `;
+}
+
+/**
+ * Headroom-used for one account's window (§6.7 window semantics): Σ over ALL shards of
+ * committed+reserved at `windowStart`, or — for `rolling_30d` — Σ over the trailing 30 daily
+ * rows `[windowStart − 29d, windowStart]`. Returns tokens for a token-unit budget, else µ$.
+ */
+async function usedForAccount(
+  sql: TransactionSql,
+  acct: ChainAccount,
+  windowStart: Date,
+): Promise<bigint> {
+  let rows: { m: string; t: string }[];
+  if (acct.window === "rolling_30d") {
+    const lower = new Date(windowStart.getTime() - 29 * 24 * 60 * 60 * 1000);
+    rows = await sql<{ m: string; t: string }[]>`
+      SELECT COALESCE(SUM(committed_microusd + reserved_microusd), 0)::text AS m,
+             COALESCE(SUM(committed_tokens + reserved_tokens), 0)::text AS t
+      FROM budget_window_state
+      WHERE budget_account_id = ${acct.id}
+        AND window_start >= ${lower} AND window_start <= ${windowStart}
+    `;
+  } else {
+    rows = await sql<{ m: string; t: string }[]>`
+      SELECT COALESCE(SUM(committed_microusd + reserved_microusd), 0)::text AS m,
+             COALESCE(SUM(committed_tokens + reserved_tokens), 0)::text AS t
+      FROM budget_window_state
+      WHERE budget_account_id = ${acct.id} AND window_start = ${windowStart}
+    `;
+  }
+  const r = rows[0]!;
+  return acct.unit === "tokens" ? BigInt(r.t) : BigInt(r.m);
+}
+
+/**
  * Lock a reservation row FOR UPDATE by id (ULID → practically unique across partitions).
  * Reads the persisted (window_start, shard) so commit/rollback/sweep decrement the EXACT
- * counter row reserve() bumped (§16.3) — no re-derivation, no budget_account join needed.
+ * leaf counter row reserve() bumped (§16.3); ancestors are re-derived from the chain.
  */
 async function lockReservation(sql: TransactionSql, reservationId: string): Promise<ReservationRow | undefined> {
   const rows = await sql<ReservationRow[]>`
-    SELECT id, workspace_id, budget_account_id, reserved_microusd,
+    SELECT id, workspace_id, budget_account_id, reserved_microusd, reserved_tokens,
            status, created_at, window_start, shard
     FROM budget_reservation
     WHERE id = ${reservationId}
