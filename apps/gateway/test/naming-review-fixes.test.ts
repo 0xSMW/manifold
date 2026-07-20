@@ -84,7 +84,6 @@ function makeSnapshot(cfg: SnapCfg = {}): Snapshot {
     allowedAppIds: cfg.allowedAppIds ?? [],
     budgetAccountId: cfg.budgetAccountId ?? null,
     expiresAt: null,
-    revoked: false,
   };
   return {
     meta: {

@@ -42,7 +42,6 @@ export interface VirtualKeyRow {
   allowed_app_ids: unknown;
   budget_account_id: string | null;
   expires_at: Date | null;
-  revoked_at: Date | null;
   /** §6.6 policy-subject facets. Match `model_entitlement.subject_ref` for subject_kind team/cost_center. */
   team_id: string | null;
   cost_center_id: string | null;
@@ -175,10 +174,17 @@ export async function readVirtualKeys(
   // team_id / cost_center_id drive the §6.6 team / cost_center policy subjects (SnapshotKey.team /
   // .costCenter). Without them a `subject_kind='team'` deny in a policy revision never matches any
   // key, so team/cost-center governance is silently dead — SELECT + emit them (review).
+  //
+  // revoked_at IS NULL filters revoked keys OUT of the build (F10): a revoked key is never carried
+  // into the signed hot blob, so it cannot authenticate — it simply is not in snapshot.keys and
+  // resolves to AUTH_KEY_UNKNOWN at the gateway. This mirrors readCredential's live-only filter and
+  // means a revoked key stops working at the next publish rather than living forever in the signed
+  // snapshot as a `revoked:true` tombstone. revoked_at is used only as a WHERE predicate here — it is
+  // no longer selected or carried on the row.
   return sql<VirtualKeyRow[]>`
     SELECT id, profile_id, keyed_hash, scopes, allowed_app_ids,
-           budget_account_id, expires_at, revoked_at, team_id, cost_center_id
-    FROM virtual_key WHERE profile_id IN ${sql(profileIds)}`;
+           budget_account_id, expires_at, team_id, cost_center_id
+    FROM virtual_key WHERE profile_id IN ${sql(profileIds)} AND revoked_at IS NULL`;
 }
 
 export async function readRoutes(sql: PgSql, installationId: string): Promise<RouteRow[]> {

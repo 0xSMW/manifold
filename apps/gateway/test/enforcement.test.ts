@@ -93,7 +93,6 @@ function makeSnapshot(cfg: SnapCfg = {}): Snapshot {
         allowedAppIds: [],
         budgetAccountId: cfg.budgetAccountId ?? null,
         expiresAt: null,
-        revoked: false,
       },
     },
     routes: {

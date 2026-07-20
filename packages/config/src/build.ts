@@ -146,7 +146,9 @@ export async function buildKeysSection(
       allowedAppIds: Array.isArray(k.allowed_app_ids) ? (k.allowed_app_ids as string[]) : [],
       budgetAccountId: k.budget_account_id,
       expiresAt: toIso(k.expires_at),
-      revoked: k.revoked_at != null,
+      // Revoked keys are filtered OUT at read time (readVirtualKeys: `revoked_at IS NULL`, F10), so
+      // every key that reaches here is live — there is no `revoked` flag to carry. A revoked key is
+      // simply absent from this map and authenticates as AUTH_KEY_UNKNOWN.
       // §6.6 policy-subject facets: enforce.ts stamps these onto the PolicySubject so a
       // `subject_kind='team'` / `'cost_center'` entitlement can match this key. Emitted verbatim
       // (null when unset — an absent facet never matches a scoped entitlement, deny-first).
@@ -361,10 +363,11 @@ export async function assembleSnapshot(
 
   // 5. budgets: budget_account id → SnapshotBudgetAccount (§16.3). Only the accounts referenced by
   //    a key ship — that is exactly what `SnapshotKey.budgetAccountId` indexes in enforce.ts, so a
-  //    DB `hard` cap reaches the gateway's reserve gate (operator DB → emission → deny). DB
-  //    enforcement 'hard' maps to snapshot 'hard' (reserves pre-dispatch); anything else ('advisory')
-  //    maps to 'soft' (observe-only, never reserved). unit/window/limit ride along so the reservation
-  //    adapter can derive the fixed-window bucket without a second read.
+  //    DB `hard` cap reaches the gateway's reserve gate (operator DB → emission → deny). The DB
+  //    `budget_enforcement_chk` CHECK is ('advisory','hard'), the same vocabulary the snapshot uses,
+  //    so `enforcement` passes through verbatim: 'hard' reserves pre-dispatch, 'advisory' is
+  //    observe-only (never reserved). unit/window/limit ride along so the reservation adapter can
+  //    derive the fixed-window bucket without a second read.
   const budgetAccountIds = [
     ...new Set(
       Object.values(keys)
@@ -376,7 +379,7 @@ export async function assembleSnapshot(
   for (const b of await q.readBudgetAccounts(sql, budgetAccountIds)) {
     budgets[b.id] = {
       id: b.id,
-      enforcement: b.enforcement === "hard" ? "hard" : "soft",
+      enforcement: b.enforcement === "hard" ? "hard" : "advisory",
       unit: b.unit === "tokens" ? "tokens" : "cost_microusd",
       window: b.window as SnapshotBudgetAccount["window"],
       limit: b.limit_amount,

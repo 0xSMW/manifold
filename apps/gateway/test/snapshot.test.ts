@@ -33,7 +33,7 @@ function baseSnapshot(): Snapshot {
       localhost: { id: "public_app", mode: "public_app", policyRevision: null, defaultRouteSet: null },
     },
     keys: {
-      abcdef: { id: "vk", profileId: "public_app", scopes: [], allowedAppIds: [], budgetAccountId: null, expiresAt: null, revoked: false },
+      abcdef: { id: "vk", profileId: "public_app", scopes: [], allowedAppIds: [], budgetAccountId: null, expiresAt: null },
     },
     routes: {
       "public_app:/v1/messages": {

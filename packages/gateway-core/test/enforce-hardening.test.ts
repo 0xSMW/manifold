@@ -35,7 +35,6 @@ const key = (budgetAccountId: string | null): SnapshotKey => ({
   allowedAppIds: [],
   budgetAccountId,
   expiresAt: null,
-  revoked: false,
 });
 
 const okReserve: BudgetReserver["reserve"] = async () => ({ ok: true, reservationId: "r" });

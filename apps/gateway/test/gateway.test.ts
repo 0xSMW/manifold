@@ -61,7 +61,6 @@ function makeSnapshot(target: SnapshotTarget): Snapshot {
         allowedAppIds: [],
         budgetAccountId: null,
         expiresAt: null,
-        revoked: false,
       },
     },
     routes: {

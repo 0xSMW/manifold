@@ -44,7 +44,9 @@ export interface SnapshotKey {
   budgetAccountId: string | null;
   /** ISO timestamp; null = never expires. */
   expiresAt: string | null;
-  revoked: boolean;
+  // NOTE: there is no `revoked` flag. Revoked keys are filtered out at build (config/db.ts
+  // `readVirtualKeys` selects only `revoked_at IS NULL`, F10), so a revoked key never ships in the
+  // signed snapshot — it is absent from `snapshot.keys` and authenticates as AUTH_KEY_UNKNOWN.
   /** Optional policy-subject facets (SPEC §6.6 `subject_kind`). Absent facets never match a
    *  scoped entitlement (deny-first). `keyScope`/`app` are derived from scopes/allowedAppIds. */
   team?: string | null;
@@ -85,11 +87,18 @@ export interface SnapshotPolicyRevision {
   requestConstraints: SnapshotRequestConstraint[];
 }
 
+/**
+ * A budget account's enforcement class (SPEC §16.3). Mirrors the DB `budget_enforcement_chk`
+ * CHECK (`'advisory' | 'hard'`) verbatim — no synonym translation across the seam. Only `hard`
+ * reserves pre-dispatch.
+ */
+export type BudgetEnforcement = "advisory" | "hard";
+
 /** A budget account's enforcement class (SPEC §16.3). Only `hard` reserves pre-dispatch. */
 export interface SnapshotBudgetAccount {
   id: string;
-  /** `hard` ⇒ strong-consistency reserve before dispatch (§16.3); `soft` ⇒ observe-only. */
-  enforcement: "hard" | "soft";
+  /** `hard` ⇒ strong-consistency reserve before dispatch (§16.3); `advisory` ⇒ observe-only. */
+  enforcement: BudgetEnforcement;
   /**
    * §7 self-describing budget metadata, emitted by config so the gateway's reservation adapter can
    * derive the fixed-window bucket without a second lookup (enforce.ts itself reads only
@@ -191,7 +200,7 @@ export interface Snapshot {
   policies?: Record<string, SnapshotPolicyRevision>;
   /**
    * Budget accounts by id (§16.3). `SnapshotKey.budgetAccountId` indexes this. A key whose
-   * account is absent or `soft` is not reserved pre-dispatch; a `hard` account is (deny-first).
+   * account is absent or `advisory` is not reserved pre-dispatch; a `hard` account is (deny-first).
    */
   budgets?: Record<string, SnapshotBudgetAccount>;
   /**
@@ -217,7 +226,7 @@ export type ObservationEventKind = "accepted" | "provider_attempt" | "terminal";
 export interface ObservationUsage {
   inputTokens?: number;
   outputTokens?: number;
-  cachedTokens?: number;
+  cacheReadTokens?: number;
   reasoningTokens?: number;
   cacheWriteTokens?: number;
   audioInputTokens?: number;

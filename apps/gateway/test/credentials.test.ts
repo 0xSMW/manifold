@@ -52,7 +52,7 @@ function snapshotFor(t: SnapshotTarget): Snapshot {
   return {
     meta: { schema: "manifold.snapshot.v1", installationId: "test", revision: "r1", contentHash: "sha256:x", builtAt: "2026-07-20T00:00:00.000Z", signature: "", signingKeyId: "d" },
     profiles: { localhost: { id: "public_app", mode: "public_app", policyRevision: null, defaultRouteSet: null } },
-    keys: { [keyHash]: { id: "vk", profileId: "public_app", scopes: [], allowedAppIds: [], defaultAppId: null, defaultActionId: null, teamId: null, costCenterId: null, budgetAccountId: null, perUserBudget: false, rateLimit: null, expiresAt: null, revoked: false } },
+    keys: { [keyHash]: { id: "vk", profileId: "public_app", scopes: [], allowedAppIds: [], defaultAppId: null, defaultActionId: null, teamId: null, costCenterId: null, budgetAccountId: null, perUserBudget: false, rateLimit: null, expiresAt: null } },
     routes: { "public_app:/v1/messages": { routeId: "rt", revision: "r1", mode: "ordered", targets: [t], retry: { maxAttempts: 1 }, timeoutMs: 5000, capturePolicyId: "c", attributionAppId: null, defaultActionId: null } },
   } as unknown as Snapshot;
 }

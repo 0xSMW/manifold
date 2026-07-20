@@ -129,6 +129,11 @@ before(async () => {
     INSERT INTO virtual_key
       (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, budget_account_id) VALUES
       ('vk_budget','ws1','prof_budget','sk-bud','\\xb0d9','[]','[]','ba_budget');
+    -- A REVOKED key on the same profile (F10): keyed_hash hex "dead". It must be filtered OUT of the
+    -- built snapshot (revoked_at IS NULL) so it can never authenticate — absent ⇒ AUTH_KEY_UNKNOWN.
+    INSERT INTO virtual_key
+      (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, revoked_at) VALUES
+      ('vk_revoked','ws1','prof_budget','sk-rev','\\xdead','[]','[]',now());
 
     -- ── Fix 2 (offering-scoped entitlement → correct model, not a wildcard): a policy revision with
     --    an offering_id-scoped allow (canonical_model_id NULL). off1's canonical model is cm1.
@@ -244,6 +249,21 @@ test("build: a revoked provider credential is not embedded; its target is droppe
   const rev = snap.routes["prof_rev:/v1/chat/completions"];
   assert.ok(rev, "route_revoked should still be present as a route");
   assert.equal(rev.targets.length, 0, "the target referencing the revoked credential must be dropped");
+});
+
+// ── F10: a revoked virtual key is filtered out of the snapshot (never ships in the signed blob) ──
+test("build: a revoked virtual key is not carried into snapshot.keys (⇒ AUTH_KEY_UNKNOWN)", async () => {
+  const snap = await buildSnapshot(db, "inst_budget");
+  // The live key (keyed_hash "b0d9") is present; the revoked key (keyed_hash "dead") is absent — a
+  // revoked key never reaches the gateway, so authenticate() cannot find it and returns
+  // AUTH_KEY_UNKNOWN. This preserves "a revoked key cannot authenticate" without a per-key tombstone.
+  assert.ok(snap.keys["b0d9"], "the live key must ship in the snapshot");
+  assert.equal(snap.keys["dead"], undefined, "a revoked key must never ship in the snapshot");
+  assert.equal(
+    Object.values(snap.keys).some((k) => k.id === "vk_revoked"),
+    false,
+    "no revoked key may appear in snapshot.keys under any hash",
+  );
 });
 
 // ── Bug 4: apply() must publish only AFTER the DB txn commits ────────────────

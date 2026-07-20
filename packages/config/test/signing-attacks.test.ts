@@ -52,7 +52,6 @@ function freshSnapshot(): ConfigSnapshot {
         allowedAppIds: ["app_1"],
         budgetAccountId: "budget_1",
         expiresAt: null,
-        revoked: false,
       },
     },
     routes: {
@@ -392,19 +391,19 @@ test("attack: tamper + resign under attacker key → still content_hash_mismatch
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FIX 1 (CRITICAL) — `budgets` MUST be inside the signed content hash. A snapshot carries a
-// `budgets` section whose `enforcement` (hard vs soft) the gateway's reserve gate trusts; if it
-// were excluded from the hash (as it was), a tamperer could flip hard→soft under a still-valid
+// `budgets` section whose `enforcement` (advisory vs hard) the gateway's reserve gate trusts; if it
+// were excluded from the hash (as it was), a tamperer could flip hard→advisory under a still-valid
 // signature to bypass a hard cap. These pin that budgets are hashed AND signature-protected.
 // ─────────────────────────────────────────────────────────────────────────────
 test("fix1: flipping a budget account's enforcement changes the content hash (budgets are hashed)", () => {
   const hard = freshSnapshot();
   hard.budgets = { ba_1: { id: "ba_1", enforcement: "hard", unit: "cost_microusd", window: "monthly", limit: "1000000" } };
-  const soft = freshSnapshot();
-  soft.budgets = { ba_1: { id: "ba_1", enforcement: "soft", unit: "cost_microusd", window: "monthly", limit: "1000000" } };
+  const advisory = freshSnapshot();
+  advisory.budgets = { ba_1: { id: "ba_1", enforcement: "advisory", unit: "cost_microusd", window: "monthly", limit: "1000000" } };
 
-  assert.notEqual(computeContentHash(hard), computeContentHash(soft), "hard→soft must change the content hash");
+  assert.notEqual(computeContentHash(hard), computeContentHash(advisory), "hard→advisory must change the content hash");
   // And the difference is in the canonical body (not a formatting fluke) — budgets ARE in the body.
-  assert.notEqual(canonicalBody(hard), canonicalBody(soft));
+  assert.notEqual(canonicalBody(hard), canonicalBody(advisory));
 });
 
 test("fix1: a budgets-tampered but otherwise-signed snapshot is REJECTED (content_hash_mismatch)", () => {
@@ -413,8 +412,8 @@ test("fix1: a budgets-tampered but otherwise-signed snapshot is REJECTED (conten
   const signed = signSnapshot(snap, PINNED.privateKey);
   assert.deepEqual(verifySnapshot(signed, PINNED.publicKey), { ok: true }, "sanity: the signed budgeted snapshot verifies");
 
-  // Attacker flips the hard cap to soft under the (unchanged) ed25519 signature — must be caught.
-  signed.budgets!["ba_1"].enforcement = "soft";
+  // Attacker flips the hard cap to advisory under the (unchanged) ed25519 signature — must be caught.
+  signed.budgets!["ba_1"].enforcement = "advisory";
   assert.deepEqual(verifySnapshot(signed, PINNED.publicKey), { ok: false, reason: "content_hash_mismatch" });
 });
 

@@ -110,7 +110,7 @@ function parseUsageBlock(body: unknown): ObservationUsage | undefined {
   set("inputTokens", usageNum(r.input_tokens) ?? usageNum(r.prompt_tokens));
   set("outputTokens", usageNum(r.output_tokens) ?? usageNum(r.completion_tokens));
   set(
-    "cachedTokens",
+    "cacheReadTokens",
     usageNum(r.cache_read_input_tokens) ?? usageNum(promptDetails?.cached_tokens),
   );
   set("cacheWriteTokens", usageNum(r.cache_creation_input_tokens));
@@ -214,7 +214,8 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   }
   const { profileId, profile } = resolved;
 
-  // 2. authenticate — HMAC(key) → snapshot.keys, then revoked/expiry/profile guards.
+  // 2. authenticate — HMAC(key) → snapshot.keys, then expiry/profile guards (revoked keys are
+  //    filtered out of the snapshot at build, F10, so they resolve to AUTH_KEY_UNKNOWN here).
   const auth = await authenticate(request, profileId, snapshot, ctx.crypto, ctx.pepper, now);
   if (!auth.ok) {
     emitTerminal(auth.reason, { profileId });

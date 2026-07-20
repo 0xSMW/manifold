@@ -1,6 +1,8 @@
 // authenticate(request, profileId, snapshot) — SPEC §8.1 profiled→authenticated guard.
 // Computes HMAC(pepper, presentedKey), indexes snapshot.keys (O(1), zero DB, ADR-0005),
-// then checks revoked / expiry / profile match, returning AUTH_* reason codes (§0.2).
+// then checks expiry / profile match, returning AUTH_* reason codes (§0.2). Revoked keys are not
+// checked here: config filters them out of the snapshot at build (F10), so a revoked key is absent
+// from snapshot.keys and falls through to AUTH_KEY_UNKNOWN below.
 import type { ReasonCode } from "@manifold/contracts";
 import type { Crypto, Snapshot, SnapshotKey } from "@manifold/ports";
 
@@ -41,9 +43,6 @@ export async function authenticate(
   const record = snapshot.keys[keyHash];
   if (!record) {
     return { ok: false, reason: "AUTH_KEY_UNKNOWN", message: "api key not recognized" };
-  }
-  if (record.revoked) {
-    return { ok: false, reason: "AUTH_KEY_REVOKED", message: "api key has been revoked" };
   }
   if (record.expiresAt !== null) {
     // Fail CLOSED on an unparseable expiry: Date.parse of a corrupt/typo string is NaN, and
