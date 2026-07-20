@@ -4,7 +4,7 @@
 // allowlist entry "proxy.example:8443" that never matches → SSRF_BLOCKED for a valid target.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { hostFromUrl } from "../src/build.ts";
+import { hostFromUrl } from "@manifold/config";
 
 test("bug #10: hostFromUrl strips the port (matches ssrfCheck's URL.hostname)", () => {
   assert.equal(hostFromUrl("https://proxy.example:8443"), "proxy.example");

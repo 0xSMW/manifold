@@ -7,7 +7,7 @@
 //   apply(db, plan, store)                   → §8.2 apply (one txn; records config_operation)
 //   rollback(db, revisionId, store)          → §8.2 rollback (republish prior bytes)
 //   keyOnlyPublish(db, installationId, store)→ §8.2 H7 scoped key publish
-export { buildSnapshot, assembleSnapshot, buildKeysSection, pathForKind, authInjectFor, genId } from "./build.js";
+export { buildSnapshot, assembleSnapshot, buildKeysSection, pathForKind, authInjectFor, genId, hostFromUrl } from "./build.js";
 export { planApply } from "./plan.js";
 export { apply, rollback, keyOnlyPublish, type KeyOnlyPublishOptions } from "./apply.js";
 export {
