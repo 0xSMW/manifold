@@ -10,18 +10,13 @@
 // handle; /config/active reads the signed bytes from the DB, not the store.
 import {
   InMemorySnapshotStore,
-  apply,
-  buildKeysSection,
   buildSnapshot,
-  computeContentHash,
-  genId,
+  keyOnlyPublish,
   plan,
   signSnapshot as signSnapshotImpl,
-  stableStringify,
   type ConfigOperation,
   type ConfigSnapshot,
 } from "@manifold/config";
-import type { Database } from "@manifold/database";
 import { db, withWorkspace } from "@/lib/db";
 import { ManifoldError } from "@/lib/http";
 
@@ -68,10 +63,9 @@ export function signSnapshot(snapshot: ConfigSnapshot): ConfigSnapshot {
  */
 export function buildSignedPlan(workspaceId: string, installationId: string) {
   return withWorkspace(workspaceId, async (sql) => {
-    // buildSnapshot/plan only touch `db.$client`; give them the GUC-scoped tx as that client.
-    const scoped = { $client: sql } as unknown as Database;
-    const built = await buildSnapshot(scoped, installationId);
-    return plan(scoped, installationId, signSnapshot(built));
+    // buildSnapshot/plan take the tagged SQL client directly; hand them the GUC-scoped tx.
+    const built = await buildSnapshot(sql, installationId);
+    return plan(sql, installationId, signSnapshot(built));
   });
 }
 
@@ -83,11 +77,9 @@ export function buildSignedPlan(workspaceId: string, installationId: string) {
  * full config apply. Route/offering/policy sections are carried over verbatim, so unrelated
  * route/policy DRAFTS are NOT published (that is the whole point of the H7 scoped path).
  *
- * Structured like /config/apply: the keys-only target plan is built INSIDE `withWorkspace` (the
- * workspace GUC) because RLS hides every workspace-scoped row (revision, profiles, keys) with no
- * `manifold.workspace_id` set as non-superuser `manifold_app` (§6.16); the plan is then applied
- * with the real top-level client (`apply` opens its OWN txn and sets the GUC itself — the scoped
- * transaction handed to the builder has no `.begin`).
+ * Thin wrapper over `@manifold/config`.keyOnlyPublish — the single rebuild → sign → plan → apply
+ * core (config owns it; RLS/GUC handling, the empty-active no-op, and idempotency all live there).
+ * The control plane only supplies the top-level client, the store, and the ed25519 signing key.
  *
  * Returns `null` (a no-op, NOT an error) when the installation has no active revision yet (nothing
  * to rebuild keys against → the key enters on the first full apply) or when the keys section is
@@ -97,40 +89,8 @@ export async function publishKeysOnly(
   workspaceId: string,
   installationId: string,
 ): Promise<ConfigOperation | null> {
-  const keyPlan = await withWorkspace(workspaceId, async (sql) => {
-    const scoped = { $client: sql } as unknown as Database;
-    const rows = await sql<{ content_hash: string; snapshot: unknown }[]>`
-      SELECT content_hash, snapshot FROM gateway_config_revision
-      WHERE installation_id = ${installationId} AND workspace_id = ${workspaceId}
-        AND status = 'active' LIMIT 1`;
-    const active = rows[0];
-    if (!active) return null; // no active revision yet → nothing to rebuild keys against
-
-    const base = active.snapshot as ConfigSnapshot;
-    const profileIds = Object.values(base.profiles).map((p) => p.id);
-    const keys = await buildKeysSection(sql, profileIds);
-    // No key change → identical content → no-op (§8.2 idempotency); avoid an empty revision churn.
-    if (stableStringify(base.keys) === stableStringify(keys)) return null;
-
-    // Rebuild ONLY keys; carry route/offering/policy over unchanged. Fresh revision id + build
-    // time; contentHash/signature recomputed (meta is excluded from the content hash).
-    const next: ConfigSnapshot = {
-      ...base,
-      keys,
-      meta: {
-        ...base.meta,
-        revision: genId("cfgrev"),
-        contentHash: "",
-        builtAt: new Date().toISOString(),
-        signature: "",
-      },
-    };
-    next.meta.contentHash = computeContentHash(next);
-    return plan(scoped, installationId, signSnapshot(next));
+  return keyOnlyPublish(db().$client, workspaceId, installationId, snapshotStore(), {
+    signingKey: signingKey(),
+    signingKeyId: process.env.MANIFOLD_SNAPSHOT_SIGNING_KEY_ID,
   });
-
-  if (!keyPlan) return null;
-  // Apply with the real client (its own txn sets the workspace GUC; §8.2 apply()). A key-only
-  // rebuild has no route/entitlement removals → no tripwires → no approvals needed.
-  return apply(db(), keyPlan, snapshotStore());
 }

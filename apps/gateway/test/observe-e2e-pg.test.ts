@@ -20,7 +20,7 @@
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import type { Sql, Database } from "@manifold/database";
+import type { Sql } from "@manifold/database";
 import { buildSnapshot } from "@manifold/config";
 import { computeCost, type TokenCounts } from "@manifold/domain";
 import type { GatewayContext } from "@manifold/gateway-core";
@@ -55,12 +55,10 @@ const OUTPUT_TOKENS = 500n;
 const LIMIT_MICROUSD = 1_000_000;
 
 let pg: PgHarness;
-let db: Database;
 let realReserve: GatewayContext["reserveBudget"];
 
 before(async () => {
   pg = await startPg({ namePrefix: "mf-observe-e2e" });
-  db = { $client: pg.sql } as unknown as Database;
 
   // Seed one tenant with: an offering PRICED by a provider_price_revision (offering.active_price →
   // price), a credential/DEK, an ingress profile (NO policy — isolate the billing path), a chat
@@ -191,7 +189,7 @@ const EXPECTED_COST = computeCost(EXPECTED_TOKENS, {
 }); // = 3000 + 7500 = 10500 µ$
 
 test("snapshot carries the offering's dispatch price (offerings[off].price)", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
   const off = snap.offerings?.[OFFERING];
   assert.ok(off, "the offering must be present in snapshot.offerings");
   assert.equal(off.priceRevisionId, PRICE_REV);
@@ -200,7 +198,7 @@ test("snapshot carries the offering's dispatch price (offerings[off].price)", as
 });
 
 test("real request → correct cost_ledger row AND reservation reserved→committed at ACTUAL cost", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
   const fetcher = new UsageFetcher();
   const { ctx, ingest } = makeCtx(snap, fetcher);
 
@@ -279,7 +277,7 @@ test("real request → correct cost_ledger row AND reservation reserved→commit
 // double-write the money-truth ledger nor double-commit the reservation. The deterministic created_at
 // + ON CONFLICT DO NOTHING (and idempotent commit) make the whole ingest at-most-once.
 test("idempotent re-ingest: same trace twice ⇒ cost_ledger written ONCE and committed ONCE (#12)", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
   const fetcher = new UsageFetcher();
   const { ctx, ingest } = makeCtx(snap, fetcher);
 
@@ -320,7 +318,7 @@ test("idempotent re-ingest: same trace twice ⇒ cost_ledger written ONCE and co
 // leak. Now the terminal ALWAYS carries the reservation id, so ingest reconciles it (commits at $0,
 // releasing the hold) even with no measured usage.
 test("gateway-F5/#2: a STREAMED success (no usage) RELEASES the hold, not orphaned at 'reserved'", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
   // No content-length + event-stream ⇒ isBufferableJson=false ⇒ no usage captured (a real SSE shape).
   const streamFetcher: Fetcher = {
     async fetch() {

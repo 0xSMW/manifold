@@ -34,7 +34,6 @@ function makeTarget(overrides: Partial<SnapshotTarget> = {}): SnapshotTarget {
     region: null,
     allowedHosts: ["api.anthropic.com"],
     authInject: { headers: { "x-api-key": "${secret}", "anthropic-version": "2023-06-01" } },
-    secretEnv: null,
     ...overrides,
   };
 }
@@ -124,7 +123,6 @@ test("(a) valid key streams mock SSE chunks through", async () => {
   const target = makeTarget({
     baseUrl: `http://127.0.0.1:${port}`,
     allowedHosts: ["127.0.0.1"],
-    secretEnv: null,
   });
   const { ctx, ingest } = makeCtx({
     snapshot: makeSnapshot(target),

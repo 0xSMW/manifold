@@ -25,7 +25,7 @@ function target(overrides: Partial<SnapshotTarget> = {}): SnapshotTarget {
     weight: 1, priority: 0, baseUrl: "https://api.anthropic.com", region: null,
     allowedHosts: ["api.anthropic.com"],
     authInject: { headers: { "x-api-key": "${secret}" } },
-    secretEnv: null, ...overrides,
+    ...overrides,
   };
 }
 
@@ -106,15 +106,13 @@ test("end-to-end FAIL CLOSED: tampered ciphertext ⇒ 502, upstream NEVER called
   assert.equal(calls(), 0, "upstream must NOT be called when the credential can't be decrypted");
 });
 
-// BUG A (fail-OPEN credential): a target with NO ciphertext/wrappedDek AND an unset secretEnv
-// must NOT dispatch an empty-string secret upstream. The resolver has to THROW so handleRequest
-// fails CLOSED (502 CREDENTIAL_UNAVAILABLE) — never `Authorization: Bearer <empty>` / x-api-key:''.
+// BUG A (fail-OPEN credential): a target with NO ciphertext/wrappedDek must NOT dispatch an
+// empty-string secret upstream. The resolver has to THROW so handleRequest fails CLOSED (502
+// CREDENTIAL_UNAVAILABLE) — never `Authorization: Bearer <empty>` / x-api-key:''.
 test("end-to-end FAIL CLOSED: no credential material at all ⇒ 502, upstream NEVER called (no empty secret dispatched)", async () => {
-  delete process.env.MANIFOLD_NONEXISTENT_SECRET; // ensure the env fallback is genuinely absent
   const noCred = target({
     credentialCiphertext: "",
     wrappedDek: "",
-    secretEnv: "MANIFOLD_NONEXISTENT_SECRET",
   });
   const { fetcher, calls } = countingFetcher();
   const res = await handleRequest(ctxFor(noCred, fetcher), req());
@@ -147,17 +145,13 @@ test("end-to-end FAIL CLOSED: credential decrypts to EMPTY ⇒ 502, upstream NEV
   assert.equal(calls(), 0, "upstream must NEVER be called with an empty provider secret");
 });
 
-test("makeSecretResolver THROWS when it cannot produce a real non-empty secret", async () => {
-  delete process.env.MANIFOLD_NONEXISTENT_SECRET;
+test("makeSecretResolver THROWS when there is no envelope to decrypt (decrypt is the ONLY path)", async () => {
   const resolve = makeSecretResolver(KEK);
-  await assert.rejects(resolve(target({ credentialCiphertext: "", wrappedDek: "", secretEnv: null })));
-  await assert.rejects(
-    resolve(target({ credentialCiphertext: "", wrappedDek: "", secretEnv: "MANIFOLD_NONEXISTENT_SECRET" })),
-  );
-  // An empty-string env value is NOT a real secret either.
-  process.env.MANIFOLD_EMPTY_SECRET = "";
-  await assert.rejects(
-    resolve(target({ credentialCiphertext: "", wrappedDek: "", secretEnv: "MANIFOLD_EMPTY_SECRET" })),
-  );
-  delete process.env.MANIFOLD_EMPTY_SECRET;
+  // No credential material at all → fail closed (no env fallback exists).
+  await assert.rejects(resolve(target({ credentialCiphertext: "", wrappedDek: "" })));
+  // A ciphertext with no wrappedDek (or vice-versa) is not decryptable → fail closed.
+  await assert.rejects(resolve(target({ credentialCiphertext: ciphertext, wrappedDek: "" })));
+  await assert.rejects(resolve(target({ credentialCiphertext: "", wrappedDek })));
+  // The happy path (real sealed ciphertext + wrappedDek) still resolves the exact secret.
+  assert.equal(await resolve(target()), SECRET);
 });

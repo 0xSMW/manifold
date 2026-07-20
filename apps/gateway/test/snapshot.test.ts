@@ -42,7 +42,7 @@ function baseSnapshot(): Snapshot {
           offeringId: "anthropic.messages", credentialId: "cred", dekId: "dek",
           credentialCiphertext: "", wrappedDek: "", weight: 1, priority: 0,
           baseUrl: "https://api.anthropic.com", region: null, allowedHosts: ["api.anthropic.com"],
-          authInject: { headers: { "x-api-key": "${secret}" } }, secretEnv: "ANTHROPIC_API_KEY",
+          authInject: { headers: { "x-api-key": "${secret}" } },
         }],
       },
     },

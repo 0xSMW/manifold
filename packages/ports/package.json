@@ -13,6 +13,10 @@
     "./testing": {
       "types": "./dist/testing.d.ts",
       "default": "./dist/testing.js"
+    },
+    "./price": {
+      "types": "./dist/price.d.ts",
+      "default": "./dist/price.js"
     }
   },
   "scripts": {

@@ -27,7 +27,6 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import type { Sql } from "@manifold/database";
-import type { Database } from "@manifold/database";
 import { buildSnapshot } from "@manifold/config";
 import type { GatewayContext } from "@manifold/gateway-core";
 import { handleRequest } from "@manifold/gateway-core";
@@ -58,13 +57,11 @@ const BUDGET_ACCOUNT = "ba_be2e";
 const LIMIT_MICROUSD = 100;
 
 let pg: PgHarness;
-let db: Database;
 /** The REAL reserver: @manifold/budget.reserve bound to the SAME container. NO fake. */
 let realReserve: GatewayContext["reserveBudget"];
 
 before(async () => {
   pg = await startPg({ namePrefix: "mf-budget-e2e" });
-  db = { $client: pg.sql } as unknown as Database;
 
   // One workspace + installation + ingress profile (NO policy bound — this isolates the budget
   // gate), an offering/credential/DEK + a chat route so an under-cap request can actually dispatch,
@@ -191,7 +188,7 @@ async function reservationCount(): Promise<number> {
 
 // ── (0) REAL EMISSION — the built snapshot carries the operator's HARD budget + the key's link ──
 test("buildSnapshot emits the HARD budget_account into snapshot.budgets and the key carries budgetAccountId", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
 
   // The key is keyed by hex(keyed_hash); it must carry the operator's budget_account_id.
   const key = snap.keys[keyHashHex];
@@ -209,7 +206,7 @@ test("buildSnapshot emits the HARD budget_account into snapshot.budgets and the 
 
 // ── (1) UNDER the cap ⇒ dispatched (upstream count 1) AND a real budget_reservation row exists ──
 test("under-cap request ⇒ dispatched (upstream call 1) and a REAL budget_reservation row is created", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
   const fetcher = new CountingFetcher();
   const ctx = makeCtx(snap, fetcher);
 
@@ -227,7 +224,7 @@ test("under-cap request ⇒ dispatched (upstream call 1) and a REAL budget_reser
 
 // ── (2) EXCEEDS the cap ⇒ 402 BUDGET_RESERVE_DENIED, upstream call count 0 (the DB denied it) ───
 test("over-cap request ⇒ 402 BUDGET_RESERVE_DENIED and upstream call count 0 (denied by the DB reserve)", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
   const fetcher = new CountingFetcher();
   const ctx = makeCtx(snap, fetcher);
 
@@ -246,7 +243,7 @@ test("over-cap request ⇒ 402 BUDGET_RESERVE_DENIED and upstream call count 0 (
 // gateway passed no token estimate, so estTokens=0, the token guard never tripped, and a token cap was
 // unenforced. Now enforce threads estimatedInputTokens+maxOutputTokens through the reserver.
 test("(#3) TOKEN-unit hard budget: over-token-cap request ⇒ 402, upstream count 0 (denied pre-dispatch)", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
   const fetcher = new CountingFetcher();
   const ctx = makeCtx(snap, fetcher);
 
@@ -259,7 +256,7 @@ test("(#3) TOKEN-unit hard budget: over-token-cap request ⇒ 402, upstream coun
 });
 
 test("(#3) TOKEN-unit hard budget: under-token-cap request ⇒ dispatched (upstream count 1)", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
   const fetcher = new CountingFetcher();
   const ctx = makeCtx(snap, fetcher);
 

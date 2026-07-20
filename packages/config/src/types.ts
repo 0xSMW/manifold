@@ -9,7 +9,7 @@
 // extra sections. This keeps the built blob loadable + signature-verifiable by gateway-core
 // while still carrying everything §7 asks for.
 import type { ReasonCode } from "@manifold/contracts";
-import type { Snapshot, SnapshotPolicyRevision, SnapshotPrice } from "@manifold/ports";
+import type { Snapshot, SnapshotOffering, SnapshotPolicyRevision } from "@manifold/ports";
 
 /**
  * SPEC §7.1 `offerings`: offering id → provider/codec/price metadata for budget eligibility.
@@ -18,16 +18,13 @@ import type { Snapshot, SnapshotPolicyRevision, SnapshotPrice } from "@manifold/
  * `Record<string, ConfigOffering>` IS a valid `Snapshot["offerings"]` and the gateway reads the
  * dispatch-time price straight off a config-built snapshot for cost (§6.10).
  */
-export interface ConfigOffering {
+export interface ConfigOffering extends SnapshotOffering {
   provider: string;
   providerModelId: string;
   adapterRevision: string;
   region: string | null;
-  priceRevisionId: string | null;
   /** provider_verified | operator_override | aggregator | unknown (§6.4, ADR-0009). */
   priceFidelity: string | null;
-  /** Per-mtok µ$ prices (decimal strings) resolved from `priceRevisionId`; absent when unpriced. */
-  price?: SnapshotPrice;
   capabilities: unknown;
   baseUrl: string | null;
 }

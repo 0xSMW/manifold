@@ -138,12 +138,6 @@ export interface SnapshotTarget {
   allowedHosts: string[];
   /** How to inject provider auth freshly on the upstream request (§2.8). */
   authInject: AuthInject;
-  /**
-   * SKELETON ONLY: env var name the runtime reads the provider secret from.
-   * TODO(§14.3): the real path decrypts `credentialCiphertext` in-proc with the
-   * KEK-unwrapped DEK (ADR-0022); this env shortcut disappears then.
-   */
-  secretEnv: string | null;
 }
 
 export interface SnapshotRoute {

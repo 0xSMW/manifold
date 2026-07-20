@@ -23,7 +23,6 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import postgres from "postgres";
-import type { Database } from "@manifold/database";
 import { buildSnapshot } from "@manifold/config";
 import type { GatewayContext } from "@manifold/gateway-core";
 import { handleRequest } from "@manifold/gateway-core";
@@ -59,12 +58,10 @@ const TEAM_OK = "team-ok-model"; // not team-denied ⇒ allowed by the all/allow
 
 let pg: PgHarness;
 let sql: Sql;
-let db: Database;
 
 before(async () => {
   pg = await startPg({ namePrefix: "mf-policy-e2e" });
   sql = pg.sql;
-  db = { $client: sql } as unknown as Database;
 
   // One workspace, one canonical model (the DENY target), one offering + credential + DEK, an
   // installation + ingress profile BOUND to a policy revision, a route (so an allowed model can
@@ -229,7 +226,7 @@ function reqTo(host: string, key: string, body: unknown): Request {
 
 // ── (0) REAL EMISSION — the built snapshot carries the operator's DENY in the evaluator shape ──
 test("buildSnapshot emits the operator DB entitlements in the evaluator (SnapshotPolicyRevision) shape", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(sql, INSTALLATION);
 
   // The profile is keyed by its trusted host and references the policy revision the gateway reads.
   const profile = snap.profiles[HOST];
@@ -258,7 +255,7 @@ test("buildSnapshot emits the operator DB entitlements in the evaluator (Snapsho
 
 // ── (1) THE DENY DENIES — DB-denied model ⇒ 403 POLICY_MODEL_DENIED, upstream NEVER called ─────
 test("config-built policy DENIES model M end-to-end ⇒ 403 POLICY_MODEL_DENIED, 0 upstream calls", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(sql, INSTALLATION);
   const fetcher = new CountingFetcher();
   const ctx = makeCtx(snap, fetcher);
 
@@ -272,7 +269,7 @@ test("config-built policy DENIES model M end-to-end ⇒ 403 POLICY_MODEL_DENIED,
 
 // ── (2) THE POLICY IS REAL — an allowed model on the SAME policy dispatches (count 1) ──────────
 test("config-built policy ALLOWS a non-denied model end-to-end ⇒ dispatched, 1 upstream call", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(sql, INSTALLATION);
   const fetcher = new CountingFetcher();
   const ctx = makeCtx(snap, fetcher);
 
@@ -284,7 +281,7 @@ test("config-built policy ALLOWS a non-denied model end-to-end ⇒ dispatched, 1
 
 // ── (3) NUMERIC BOUND ENFORCED — allowed model but max_tokens over the reject ceiling ⇒ 403 ────
 test("config-built numeric reject constraint ⇒ over-ceiling max_tokens is 403 POLICY_PARAM_REJECTED, 0 upstream calls", async () => {
-  const snap = await buildSnapshot(db, INSTALLATION);
+  const snap = await buildSnapshot(sql, INSTALLATION);
   const fetcher = new CountingFetcher();
   const ctx = makeCtx(snap, fetcher);
 
@@ -298,7 +295,7 @@ test("config-built numeric reject constraint ⇒ over-ceiling max_tokens is 403 
 
 // ── (4) TEAM GOVERNANCE — a subject_kind='team' deny actually blocks a key on that team ─────────
 test("config-built team-scoped deny BLOCKS a key on that team ⇒ 403 POLICY_MODEL_DENIED, 0 upstream calls", async () => {
-  const snap = await buildSnapshot(db, INST_TEAM);
+  const snap = await buildSnapshot(sql, INST_TEAM);
 
   // The key must carry its team facet, or the team-scoped deny can never match (the whole fix). On
   // pre-fix code `SnapshotKey.team` is undefined here and the request below would (wrongly) dispatch.
@@ -318,7 +315,7 @@ test("config-built team-scoped deny BLOCKS a key on that team ⇒ 403 POLICY_MOD
 
 // ── (5) THE TEAM POLICY IS REAL — a non-denied model on the SAME team key dispatches (not deny-all) ──
 test("config-built team policy ALLOWS a non-team-denied model for the same team key ⇒ dispatched, 1 upstream call", async () => {
-  const snap = await buildSnapshot(db, INST_TEAM);
+  const snap = await buildSnapshot(sql, INST_TEAM);
   const fetcher = new CountingFetcher();
   const ctx = ctxFor(INST_TEAM, snap, fetcher);
   const res = await handleRequest(ctx, reqTo(HOST_TEAM, TEAM_KEY, { model: TEAM_OK, max_tokens: 10 }));

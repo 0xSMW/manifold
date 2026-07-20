@@ -1,13 +1,14 @@
 // Config publishing lifecycle writes (SPEC §8.2, §6.11).
 //
-//  apply(db, plan, store)        — one txn: precondition base==active, insert new active
+//  apply(sql, plan, store)       — one txn: precondition base==active, insert new active
 //                                  gateway_config_revision + flip prior to superseded, publish
 //                                  to the store, record config_operation.
-//  rollback(db, revisionId, store) — republish a prior revision's stored snapshot bytes.
-//  keyOnlyPublish(db, ..., store)  — SPEC §8.2 H7: rebuild only the keys section against the
-//                                  active route/policy revision and publish (expedited path).
+//  rollback(sql, revisionId, store) — republish a prior revision's stored snapshot bytes.
+//  keyOnlyPublish(sql, workspaceId, installationId, store, opts) — SPEC §8.2 H7: rebuild only the
+//                                  keys section against the active route/policy revision and publish
+//                                  (expedited path; the single core the control-plane wraps).
 import { ReasonCode } from "@manifold/contracts";
-import { setWorkspaceGuc, type Database } from "@manifold/database";
+import { setWorkspaceGuc } from "@manifold/database";
 import { assembleSnapshot, buildKeysSection, genId, stampMeta } from "./build.js";
 import { computeContentHash, stableStringify } from "./canonical.js";
 import * as q from "./db.js";
@@ -99,13 +100,11 @@ function opFromPlan(id: OpIdentity, patch: OpOutcome): Omit<ConfigOperation, "id
  * set is trivially covered.
  */
 export async function apply(
-  db: Database,
+  sql: PgSql,
   plan: Plan,
   store: SnapshotPublishStore,
   approvals: Approval[] = [],
 ): Promise<ConfigOperation> {
-  const sql = q.client(db);
-
   // Phase 1 — the DB transaction is the SOURCE OF TRUTH (§8.2). Nothing that advances the external
   // store happens inside it: store.publish used to run mid-txn (before the installation update +
   // config_operation insert), so if any later statement threw, the txn rolled back but the store had
@@ -233,12 +232,10 @@ export async function apply(
  * leaves the DB ahead of the store (the safe direction).
  */
 export async function rollback(
-  db: Database,
+  sql: PgSql,
   revisionId: string,
   store: SnapshotPublishStore,
 ): Promise<ConfigOperation> {
-  const sql = q.client(db);
-
   // Phase 1 — DB txn (source of truth). Nothing that advances the external store runs inside it.
   const committed = (await sql.begin(async (txRaw) => {
     const tx = txRaw as unknown as PgSql;
@@ -304,57 +301,57 @@ export interface KeyOnlyPublishOptions {
 
 /**
  * SPEC §8.2 H7 (scoped key publish): rebuild ONLY the snapshot `keys` section against the
- * currently-active route/policy revision and publish it, so a minted/rotated/revoked key goes
- * live without publishing unrelated route/policy drafts. Route/offering/policy sections are
- * carried over verbatim from the active revision.
+ * installation's currently-active route/policy revision and publish it, so a minted/rotated/revoked
+ * key goes live without publishing unrelated route/policy DRAFTS. Route/offering/policy/budget
+ * sections are carried over verbatim from the active revision.
+ *
+ * This is the single rebuild → sign → plan → apply core behind the control-plane's mint/revoke
+ * expedited publish; the CP is a thin wrapper that supplies its client, store and signing key.
+ *
+ * Returns `null` (a NO-OP, not an error) when the installation has no active revision yet (nothing
+ * to rebuild keys against — the key enters on the first full apply) or when the keys section is
+ * unchanged (§8.2 idempotency). This is the one empty-active semantics both callers share.
+ *
+ * Two-phase, like /config/apply, because RLS (§6.16) hides every workspace-scoped row (revision,
+ * profiles, keys) unless `manifold.workspace_id` is set: the keys-only target plan is built inside a
+ * workspace-scoped txn (phase 1), then applied with the same top-level `sql` (phase 2) — `apply`
+ * opens its OWN txn and sets the GUC itself, so it must NOT be handed the scoped phase-1 tx.
  */
 export async function keyOnlyPublish(
-  db: Database,
+  sql: PgSql,
+  workspaceId: string,
   installationId: string,
   store: SnapshotPublishStore,
   opts: KeyOnlyPublishOptions = {},
-): Promise<ConfigOperation> {
-  const sql = q.client(db);
-  const active = await q.readActiveRevision(sql, installationId);
-  if (!active) {
-    throw new Error(
-      `keyOnlyPublish requires an active config revision to rebuild keys against (${installationId})`,
-    );
-  }
-  const base = active.snapshot as ConfigSnapshot;
-  const profileIds = Object.values(base.profiles).map((p) => p.id);
-  const keys = await buildKeysSection(sql, profileIds);
+): Promise<ConfigOperation | null> {
+  // Phase 1 — rebuild the keys section against the active revision inside the workspace GUC.
+  const keyPlan = await sql.begin(async (txRaw) => {
+    const tx = txRaw as unknown as PgSql;
+    await setWorkspaceGuc(tx, workspaceId);
+    const active = await q.readActiveRevision(tx, installationId);
+    if (!active) return null; // no active revision yet → nothing to rebuild keys against
 
-  // Rebuild only keys; carry route/offering/policy sections over unchanged.
-  let next: ConfigSnapshot = {
-    ...base,
-    keys,
-    meta: stampMeta(base.meta),
-  };
-  next.meta.contentHash = computeContentHash(next);
+    const base = active.snapshot as ConfigSnapshot;
+    const profileIds = Object.values(base.profiles).map((p) => p.id);
+    const keys = await buildKeysSection(tx, profileIds);
+    // No key change → identical content → no-op (§8.2 idempotency); avoid empty revision churn.
+    if (stableStringify(base.keys) === stableStringify(keys)) return null;
 
-  // No key change → identical content → no-op (§8.2 idempotency).
-  if (stableStringify(base.keys) === stableStringify(keys)) {
-    return {
-      id: genId("cfgop"),
-      installationId,
-      workspaceId: active.workspace_id,
-      baseConfigHash: active.content_hash,
-      targetConfigHash: active.content_hash,
-      planHash: null,
-      outcome: "accepted",
-      edgeConfigVersion: null,
-      tripwireItems: [],
-      revisionId: active.id,
-      reasonCode: null,
-    };
-  }
+    // Rebuild only keys; carry route/offering/policy/budget over unchanged. Fresh revision id +
+    // build time via stampMeta; contentHash recomputed (meta is excluded from the content hash),
+    // then signed if a key was supplied (§7.3 — signSnapshot recomputes + stamps the hash too).
+    let next: ConfigSnapshot = { ...base, keys, meta: stampMeta(base.meta) };
+    next.meta.contentHash = computeContentHash(next);
+    if (opts.signingKey) next = signSnapshot(next, opts.signingKey, opts.signingKeyId);
 
-  if (opts.signingKey) next = signSnapshot(next, opts.signingKey, opts.signingKeyId);
+    // A key-only rebuild changes no routes/entitlements → no tripwires → no approvals required.
+    return plan(tx, installationId, next);
+  });
 
-  // A key-only rebuild changes no routes/entitlements → no tripwires → no approvals required.
-  const keyPlan = await plan(db, installationId, next);
-  return apply(db, keyPlan, store);
+  if (!keyPlan) return null;
+  // Phase 2 — apply with the top-level client (its own txn re-checks the base precondition and
+  // sets the workspace GUC; §8.2 apply()).
+  return apply(sql, keyPlan, store);
 }
 
 // buildSnapshot is re-exported for callers wanting a full rebuild before keyOnlyPublish paths.

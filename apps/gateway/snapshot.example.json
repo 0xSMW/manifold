@@ -1,5 +1,5 @@
 {
-  "_comment": "DEV SNAPSHOT. Plaintext test virtual key = 'sk-manifold-localtest-key'. Its keys[] entry is hex(HMAC-SHA256(pepper='dev-pepper-not-for-production', key)). Change the pepper (MANIFOLD_KEY_PEPPER) and this hash must be recomputed. Provider secret is read from env ANTHROPIC_API_KEY (skeleton); the real path decrypts credentialCiphertext in-proc per SPEC §14.3/ADR-0022.",
+  "_comment": "DEV SNAPSHOT. Plaintext test virtual key = 'sk-manifold-localtest-key'. Its keys[] entry is hex(HMAC-SHA256(pepper='dev-pepper-not-for-production', key)). Change the pepper (MANIFOLD_KEY_PEPPER) and this hash must be recomputed. The provider secret is resolved ONLY by decrypting credentialCiphertext in-proc per SPEC §14.3/ADR-0022; this example ships an empty envelope, so the target fails closed (502 CREDENTIAL_UNAVAILABLE) until a real sealed credential is populated.",
   "meta": {
     "schema": "manifold.snapshot.v1",
     "installationId": "local-dev",
@@ -58,8 +58,7 @@
               "x-api-key": "${secret}",
               "anthropic-version": "2023-06-01"
             }
-          },
-          "secretEnv": "ANTHROPIC_API_KEY"
+          }
         }
       ]
     }

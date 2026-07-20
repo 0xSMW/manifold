@@ -19,7 +19,6 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import postgres from "postgres";
-import type { Database } from "@manifold/database";
 import {
   buildSnapshot,
   plan,
@@ -35,13 +34,10 @@ type Sql = ReturnType<typeof postgres>;
 
 let pg: PgHarness;
 let sql: Sql;
-/** The config package takes a drizzle `Database`; it only ever touches `db.$client`. */
-let db: Database;
 
 before(async () => {
   pg = await startPg({ namePrefix: "mf-config-test" });
   sql = pg.sql;
-  db = { $client: sql } as unknown as Database;
 
   // One workspace, one canonical model + offering + DEK, four provider credentials (valid /
   // valid-anthropic / valid-but-points-at-evil-host / revoked), and separate installations so a
@@ -68,7 +64,7 @@ before(async () => {
       ('cred_openai','ws1','openai','openai key','\\xc0ffee','dek1',NULL,'["api.openai.com"]','valid',NULL),
       ('cred_anthropic','ws1','anthropic','anthropic key','\\xc0ffee','dek1',NULL,'["api.anthropic.com"]','valid',NULL),
       ('cred_evilhost','ws1','openai','evil-target key','\\xc0ffee','dek1',NULL,'["api.openai.com"]','valid',NULL),
-      ('cred_revoked','ws1','openai','revoked key','\\xc0ffee','dek1',NULL,'["api.openai.com"]','revoked',now());
+      ('cred_revoked','ws1','openai','revoked key','\\xc0ffee','dek1',NULL,'["api.openai.com"]','valid',now());
 
     INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
       ('inst_clobber','ws1','inst-clobber','{"kind":"test"}'),
@@ -205,7 +201,7 @@ function allTargets(snap: ConfigSnapshot) {
 // so config-built snapshots actually route in the gateway; the multi-same-kind clobber remains a
 // known open item. Un-skip when the gateway resolveRoute reconciliation lands.
 test.skip("build: two same-kind (chat) routes with different public_names both survive (no clobber)", async () => {
-  const snap = await buildSnapshot(db, "inst_clobber");
+  const snap = await buildSnapshot(sql, "inst_clobber");
   const keys = Object.keys(snap.routes);
 
   // SPEC §7.2 key shape `${profile}:${kind}:${public_name}` keeps the two chat routes distinct.
@@ -222,7 +218,7 @@ test.skip("build: two same-kind (chat) routes with different public_names both s
 
 // ── Bug 1: allowedHosts auto-expand → credential exfil ──────────────────────
 test("build: a target baseUrl host absent from the credential allowlist is NOT allowlisted (fail closed)", async () => {
-  const snap = await buildSnapshot(db, "inst_sec");
+  const snap = await buildSnapshot(sql, "inst_sec");
 
   // The attacker host must appear in NO target's allowedHosts anywhere in the snapshot.
   for (const t of allTargets(snap)) {
@@ -241,7 +237,7 @@ test("build: a target baseUrl host absent from the credential allowlist is NOT a
 
 // ── Bug 3: readCredential must not embed a revoked credential ────────────────
 test("build: a revoked provider credential is not embedded; its target is dropped", async () => {
-  const snap = await buildSnapshot(db, "inst_rev");
+  const snap = await buildSnapshot(sql, "inst_rev");
 
   for (const t of allTargets(snap)) {
     assert.notEqual(t.credentialId, "cred_revoked", "a revoked credential must never ship in the snapshot");
@@ -253,7 +249,7 @@ test("build: a revoked provider credential is not embedded; its target is droppe
 
 // ── F10: a revoked virtual key is filtered out of the snapshot (never ships in the signed blob) ──
 test("build: a revoked virtual key is not carried into snapshot.keys (⇒ AUTH_KEY_UNKNOWN)", async () => {
-  const snap = await buildSnapshot(db, "inst_budget");
+  const snap = await buildSnapshot(sql, "inst_budget");
   // The live key (keyed_hash "b0d9") is present; the revoked key (keyed_hash "dead") is absent — a
   // revoked key never reaches the gateway, so authenticate() cannot find it and returns
   // AUTH_KEY_UNKNOWN. This preserves "a revoked key cannot authenticate" without a per-key tombstone.
@@ -281,10 +277,10 @@ test("apply: store.publish runs only after the DB txn commits (publish failure �
     },
   };
 
-  const target = await buildSnapshot(db, "inst_apply_fail");
-  const p = await plan(db, "inst_apply_fail", target);
+  const target = await buildSnapshot(sql, "inst_apply_fail");
+  const p = await plan(sql, "inst_apply_fail", target);
 
-  await assert.rejects(apply(db, p, throwingStore), /publish boom/);
+  await assert.rejects(apply(sql, p, throwingStore), /publish boom/);
 
   // The DB txn committed BEFORE publish was attempted: the new revision is present and active.
   const rows = await sql`
@@ -308,9 +304,9 @@ test("apply: happy path publishes after commit and records exactly one active re
     },
   };
 
-  const target = await buildSnapshot(db, "inst_apply_ok");
-  const p = await plan(db, "inst_apply_ok", target);
-  const op = await apply(db, p, store);
+  const target = await buildSnapshot(sql, "inst_apply_ok");
+  const p = await plan(sql, "inst_apply_ok", target);
+  const op = await apply(sql, p, store);
 
   assert.equal(op.outcome, "accepted");
   assert.equal(op.edgeConfigVersion, "v1", "the published version is reflected on the returned op");
@@ -335,20 +331,20 @@ const okStore = (): SnapshotPublishStore => ({
 
 // ── Fix 1: `budgets` is inside the signed content hash ⇒ a budget-only edit is NOT a no-op ────
 test("plan: a budget-only change is NOT a no-op (budgets are inside the signed content hash)", async () => {
-  const s1 = await buildSnapshot(db, "inst_budget");
+  const s1 = await buildSnapshot(sql, "inst_budget");
   assert.ok(s1.budgets && s1.budgets["ba_budget"], "the advisory budget must ship in the snapshot");
 
   // Establish an active revision carrying the budget.
-  await apply(db, await plan(db, "inst_budget", s1), okStore());
+  await apply(sql, await plan(sql, "inst_budget", s1), okStore());
 
   // Change ONLY the budget account's cap — nothing else about the installation changes.
   await sql`UPDATE budget_account SET limit_amount = 2000000 WHERE id = 'ba_budget'`;
-  const s2 = await buildSnapshot(db, "inst_budget");
+  const s2 = await buildSnapshot(sql, "inst_budget");
 
   // Pre-fix (budgets excluded from the hash) s1 and s2 hash identically → plan() is a no-op and the
   // change never publishes. Post-fix the hash differs and the diff surfaces the budget change.
   assert.notEqual(s1.meta.contentHash, s2.meta.contentHash, "a budget-only edit must change the content hash");
-  const p2 = await plan(db, "inst_budget", s2);
+  const p2 = await plan(sql, "inst_budget", s2);
   assert.equal(p2.noop, false, "a budget-only change must NOT be a no-op");
   assert.ok(
     p2.diffJson.budgets.changed.includes("ba_budget"),
@@ -358,7 +354,7 @@ test("plan: a budget-only change is NOT a no-op (budgets are inside the signed c
 
 // ── Fix 2: offering-scoped entitlement resolves to that offering's model (not a wildcard) ──────
 test("build: an offering-scoped entitlement scopes to that offering's canonical model, not a wildcard", async () => {
-  const snap = await buildSnapshot(db, "inst_ent");
+  const snap = await buildSnapshot(sql, "inst_ent");
   const pol = snap.policies["polrev_ent"];
   assert.ok(pol, "the bound policy revision must be present");
   const ent = pol.modelEntitlements.find((e) => e.effect === "allow");
@@ -372,19 +368,19 @@ test("build: an offering-scoped entitlement scopes to that offering's canonical 
 // ── Fix 4: apply() enforces tripwire approval (unapproved route_delete rejected) ───────────────
 test("apply: an unapproved route_delete is rejected; a matching {kind,ref,planHash} approval lets it through", async () => {
   // Active revision with BOTH routes (chat + embeddings, distinct keys).
-  const s1 = await buildSnapshot(db, "inst_tw");
+  const s1 = await buildSnapshot(sql, "inst_tw");
   assert.equal(Object.keys(s1.routes).length, 2, "two distinct-kind routes must be present");
-  await apply(db, await plan(db, "inst_tw", s1), okStore());
+  await apply(sql, await plan(sql, "inst_tw", s1), okStore());
 
   // Delete the embeddings route → re-plan produces a route_delete tripwire.
   await sql`UPDATE gateway_route SET active_revision_id = NULL WHERE id = 'route_tw_emb'`;
-  const s2 = await buildSnapshot(db, "inst_tw");
-  const p2 = await plan(db, "inst_tw", s2);
+  const s2 = await buildSnapshot(sql, "inst_tw");
+  const p2 = await plan(sql, "inst_tw", s2);
   const tw = p2.tripwireItems.find((t) => t.kind === "route_delete");
   assert.ok(tw, `a route_delete tripwire must be produced; got ${JSON.stringify(p2.tripwireItems)}`);
 
   // (a) No approval → apply REJECTS and inserts NO new revision (the base stays active).
-  const rejected = await apply(db, p2, okStore());
+  const rejected = await apply(sql, p2, okStore());
   assert.equal(rejected.outcome, "rejected");
   assert.equal(rejected.reasonCode, "CONFIG_TRIPWIRE_HELD");
   assert.equal(rejected.revisionId, null, "a held tripwire must not produce a new revision");
@@ -396,12 +392,12 @@ test("apply: an unapproved route_delete is rejected; a matching {kind,ref,planHa
 
   // (b) An approval for a DIFFERENT planHash must NOT clear the hold (approval is plan-bound).
   const staleApproval: Approval[] = [{ kind: tw.kind, ref: tw.ref, planHash: "sha256:stale" }];
-  const stale = await apply(db, p2, okStore(), staleApproval);
+  const stale = await apply(sql, p2, okStore(), staleApproval);
   assert.equal(stale.outcome, "rejected", "an approval bound to a different plan must not clear the hold");
 
   // (c) A matching {kind, ref, planHash} approval lets it through.
   const approvals: Approval[] = [{ kind: tw.kind, ref: tw.ref, planHash: p2.planHash }];
-  const accepted = await apply(db, p2, okStore(), approvals);
+  const accepted = await apply(sql, p2, okStore(), approvals);
   assert.equal(accepted.outcome, "accepted");
   assert.equal(accepted.revisionId, s2.meta.revision, "the approved change produces the new revision");
 });
@@ -409,12 +405,12 @@ test("apply: an unapproved route_delete is rejected; a matching {kind,ref,planHa
 // ── Fix 5: rollback publishes only AFTER the DB txn commits ────────────────────────────────────
 test("rollback: republish runs only after commit (publish failure ⇒ the DB rollback still stands)", async () => {
   // rev1 (active) then a content-different rev2 (active; rev1 → superseded).
-  const op1 = await apply(db, await plan(db, "inst_rb", await buildSnapshot(db, "inst_rb")), okStore());
+  const op1 = await apply(sql, await plan(sql, "inst_rb", await buildSnapshot(sql, "inst_rb")), okStore());
   const rev1 = op1.revisionId as string;
 
   await sql`UPDATE gateway_target SET weight = 55 WHERE id = 'tg_rb'`; // change snapshot content
-  const s2 = await buildSnapshot(db, "inst_rb");
-  const op2 = await apply(db, await plan(db, "inst_rb", s2), okStore());
+  const s2 = await buildSnapshot(sql, "inst_rb");
+  const op2 = await apply(sql, await plan(sql, "inst_rb", s2), okStore());
   const rev2 = op2.revisionId as string;
   assert.notEqual(rev1, rev2, "the two applies must produce distinct revisions");
 
@@ -428,7 +424,7 @@ test("rollback: republish runs only after commit (publish failure ⇒ the DB rol
       throw new Error("unused");
     },
   };
-  await assert.rejects(rollback(db, rev1, throwingStore), /rollback publish boom/);
+  await assert.rejects(rollback(sql, rev1, throwingStore), /rollback publish boom/);
 
   // Pre-fix (publish INSIDE the txn) the throw rolls the DB back: rev2 stays active + the
   // installation still points at rev2. Post-fix the DB commit stands despite the publish failure.

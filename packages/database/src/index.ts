@@ -3,10 +3,10 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
-import * as schema from "./schema";
+import * as schema from "./schema.js";
 
-export * from "./schema";
-export * from "./columns";
+export * from "./schema.js";
+export * from "./columns.js";
 export { schema };
 
 export type Database = ReturnType<typeof getDb>;
@@ -53,14 +53,40 @@ export async function setWorkspaceGuc(
 }
 
 /**
- * Open a raw postgres-js client bound to the pooled connection string.
+ * Restore JSON.stringify serializers for json (oid 114) and jsonb (oid 3802) on a postgres-js
+ * client. This is the ONE definition of that fix (DRY §9): the gateway reservation client and the
+ * control-plane request/admin handles both route through it instead of copy-pasting.
+ *
+ * Why it's needed: drizzle-orm/postgres-js registers IDENTITY serializers for oids 114/3802 when it
+ * wraps a client, and it expects the caller to hand it pre-stringified strings. Our raw-SQL callers
+ * (@manifold/config's apply/revision writes, control-plane handlers) pass JS objects/arrays via
+ * `sql.json(...)`, which an identity serializer forwards straight to the wire encoder
+ * (Buffer.byteLength) and crashes on ("Received an instance of Array"). Restoring JSON.stringify makes
+ * `sql.json(obj|array)` encode correctly. Safe because we never use drizzle's query builder for these
+ * writes (which would then double-encode).
+ */
+function applyJsonSerializers(sql: Sql): void {
+  const serializers = (sql as unknown as {
+    options: { serializers: Record<number, (x: unknown) => string> };
+  }).options.serializers;
+  serializers[114] = (x: unknown) => JSON.stringify(x);
+  serializers[3802] = (x: unknown) => JSON.stringify(x);
+}
+
+/**
+ * Open a raw postgres-js client bound to the pooled connection string. This is the SOLE driver
+ * opener for the running apps (SPEC §4.2): the gateway reservation client and the control-plane
+ * handles both come from here, so the `postgres()` call and the json/jsonb serializer fix live in
+ * exactly one place.
  *
  * `max: 1` by default per SPEC §2.4 / §4.2 (one connection per serverless invocation
  * against the pooler); callers that need genuine intra-process concurrency — the budget
  * reservation load/attack tests, a Compose worker — pass a larger `max`.
  */
 export function getClient(url: string, options?: postgres.Options<{}>): Sql {
-  return postgres(url, { max: 1, ...options });
+  const sql = postgres(url, { max: 1, ...options });
+  applyJsonSerializers(sql);
+  return sql;
 }
 
 /**
@@ -69,7 +95,13 @@ export function getClient(url: string, options?: postgres.Options<{}>): Sql {
  * `max: 1` per SPEC §2.4 / §4.2: serverless functions use a single connection per
  * invocation against the pooler. Callers set `SET LOCAL manifold.workspace_id` at the
  * start of every request transaction to satisfy RLS (§6.16, §15.2).
+ *
+ * `drizzle(...)` overwrites the json/jsonb serializers with identity functions on construction, so
+ * we re-apply `applyJsonSerializers` to the wrapped client — restoring correct `sql.json(...)`
+ * encoding for the raw-SQL writes that share this connection (§9 DRY: no per-app patch).
  */
 export function getDb(url: string, options?: postgres.Options<{}>) {
-  return drizzle(getClient(url, options), { schema });
+  const handle = drizzle(getClient(url, options), { schema });
+  applyJsonSerializers(handle.$client as unknown as Sql);
+  return handle;
 }

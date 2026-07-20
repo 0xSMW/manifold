@@ -1,4 +1,4 @@
-// buildSnapshot(db, installationId) — SPEC §7.5. Reads the active route revisions, keys,
+// buildSnapshot(sql, installationId) — SPEC §7.5. Reads the active route revisions, keys,
 // offerings, profiles, policies and credentials for an installation and emits the compact §7
 // snapshot: profiles (host→profile), keys (hex(keyed_hash)→key), routes
 // (`${profileId}:${path}`→targets with ciphertext + wrappedDek + authInject), offerings,
@@ -16,7 +16,6 @@ import type {
   SnapshotRoute,
   SnapshotTarget,
 } from "@manifold/ports";
-import type { Database } from "@manifold/database";
 import { randomBytes } from "node:crypto";
 import { computeContentHash } from "./canonical.js";
 import * as q from "./db.js";
@@ -243,7 +242,6 @@ export async function assembleSnapshot(
         region: t.region ?? offering?.region ?? null,
         allowedHosts,
         authInject: authInjectFor(cred.provider),
-        secretEnv: null,
       });
       // offerings section (budget eligibility + dispatch-time price, §7.1/§6.10)
       if (offering && !offerings[offering.id]) {
@@ -404,10 +402,9 @@ export async function assembleSnapshot(
  * snapshot. The returned snapshot is unsigned (`meta.signature === ""`); call `signSnapshot`.
  */
 export async function buildSnapshot(
-  db: Database,
+  sql: PgSql,
   installationId: string,
 ): Promise<ConfigSnapshot> {
-  const sql = q.client(db);
   const inst = await q.readInstallation(sql, installationId);
   if (!inst) throw new Error(`installation not found: ${installationId}`);
   return assembleSnapshot(sql, installationId, inst.workspace_id);

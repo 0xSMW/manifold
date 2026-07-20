@@ -18,7 +18,6 @@ const target: SnapshotTarget = {
   region: null,
   allowedHosts: ["api.example.com"],
   authInject: { headers: {} },
-  secretEnv: null,
 };
 
 const profile = (policyRevision: string | null): SnapshotProfile => ({

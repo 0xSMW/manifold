@@ -11,23 +11,10 @@ import { ManifoldError } from "@/lib/http";
 let cached: Database | null = null;
 let cachedAdmin: Database | null = null;
 
-/**
- * drizzle-orm/postgres-js registers IDENTITY serializers for json (oid 114) and jsonb (oid 3802)
- * on the postgres client — it expects the caller to hand it pre-stringified strings. Our raw-SQL
- * handlers (and @manifold/config's apply/revision writes) pass JS objects/arrays via `sql.json(...)`,
- * which the identity serializer would forward straight to the wire encoder (Buffer.byteLength) and
- * crash on ("Received an instance of Array"). Restore JSON.stringify so `sql.json(obj|array)`
- * encodes correctly. Safe here because we never use drizzle's query builder (which would then
- * double-encode).
- */
-function patchJsonSerializers(handle: Database): Database {
-  const serializers = (handle.$client as unknown as {
-    options: { serializers: Record<number, (x: unknown) => string> };
-  }).options.serializers;
-  serializers[114] = (x: unknown) => JSON.stringify(x);
-  serializers[3802] = (x: unknown) => JSON.stringify(x);
-  return handle;
-}
+// getDb() restores the JSON.stringify serializers for json (oid 114) / jsonb (oid 3802) on the
+// wrapped client (drizzle-orm/postgres-js otherwise installs identity serializers), so raw-SQL
+// callers here and in @manifold/config can pass JS objects/arrays via `sql.json(...)`. That fix now
+// lives once in @manifold/database (§4.2/§9 DRY) — no per-app patch here.
 
 export function db(): Database {
   if (cached) return cached;
@@ -35,7 +22,7 @@ export function db(): Database {
   if (!url) {
     throw new Error("DATABASE_URL is not set");
   }
-  cached = patchJsonSerializers(getDb(url));
+  cached = getDb(url);
   return cached;
 }
 
@@ -52,7 +39,7 @@ export function adminDb(): Database | null {
   if (cachedAdmin) return cachedAdmin;
   const url = process.env.MANIFOLD_SEED_DB_URL;
   if (!url) return null;
-  cachedAdmin = patchJsonSerializers(getDb(url));
+  cachedAdmin = getDb(url);
   return cachedAdmin;
 }
 

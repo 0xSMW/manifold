@@ -70,38 +70,34 @@ export function decryptTargetSecret(
 }
 
 /**
- * Secret resolver: decrypts the credential envelope (real path). Falls back to an env var ONLY
- * for a legacy demo target that carries no ciphertext (e.g. the local Anthropic example).
+ * Secret resolver: decrypts the credential envelope in-proc (§14.3, ADR-0022). This is the ONLY
+ * credential path — there is no env fallback.
  *
- * FAIL CLOSED (§14.3): when there is neither a decryptable envelope NOR a non-empty env secret,
- * this THROWS instead of returning "". Returning an empty string would let handleRequest dispatch
- * `Authorization: Bearer <empty>` / `x-api-key: ''` upstream (a fail-OPEN credential). The throw is
- * mapped by handleRequest to 502 CREDENTIAL_UNAVAILABLE — never dispatched, never leaked.
+ * FAIL CLOSED (§14.3): when there is no decryptable envelope (missing/empty ciphertext or wrappedDek),
+ * or the envelope decrypts to an empty string, this THROWS instead of returning "". Returning an empty
+ * string would let handleRequest dispatch `Authorization: Bearer <empty>` / `x-api-key: ''` upstream (a
+ * fail-OPEN credential). The throw is mapped by handleRequest to 502 CREDENTIAL_UNAVAILABLE — never
+ * dispatched, never leaked.
  */
 export function makeSecretResolver(kek: Uint8Array): (target: SnapshotTarget) => Promise<string> {
   return async (target) => {
-    if (target.credentialCiphertext && target.wrappedDek) {
-      const secret = decryptTargetSecret(target, kek);
-      // An envelope that decrypts to EMPTY is NOT a real credential — returning "" would let
-      // handleRequest dispatch `x-api-key: ''` / `Authorization: Bearer ` upstream (fail-OPEN).
-      // Treat it as no-credential and THROW so the caller fails CLOSED (502), same as the env
-      // branch below which already rejects an empty value.
-      if (!secret) {
-        throw new Error(
-          `decrypted provider credential is empty for offering ${target.offeringId}: ` +
-            "an empty secret is not a credential (fail closed, §14.3)",
-        );
-      }
-      return secret;
+    if (!target.credentialCiphertext || !target.wrappedDek) {
+      throw new Error(
+        `no provider credential available for offering ${target.offeringId}: ` +
+          "no credentialCiphertext/wrappedDek to decrypt (fail closed, §14.3)",
+      );
     }
-    if (target.secretEnv) {
-      const fromEnv = process.env[target.secretEnv];
-      if (fromEnv) return fromEnv; // only a non-empty env secret is a real credential
+    const secret = decryptTargetSecret(target, kek);
+    // An envelope that decrypts to EMPTY is NOT a real credential — returning "" would let
+    // handleRequest dispatch `x-api-key: ''` / `Authorization: Bearer ` upstream (fail-OPEN).
+    // Treat it as no-credential and THROW so the caller fails CLOSED (502).
+    if (!secret) {
+      throw new Error(
+        `decrypted provider credential is empty for offering ${target.offeringId}: ` +
+          "an empty secret is not a credential (fail closed, §14.3)",
+      );
     }
-    throw new Error(
-      `no provider credential available for offering ${target.offeringId}: ` +
-        "no credentialCiphertext/wrappedDek to decrypt and no non-empty secretEnv",
-    );
+    return secret;
   };
 }
 

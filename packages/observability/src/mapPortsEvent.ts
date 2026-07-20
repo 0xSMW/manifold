@@ -17,6 +17,7 @@ import type {
   ObservationUsage,
   SnapshotPrice,
 } from "@manifold/ports";
+import { parseMicroUsdString } from "@manifold/ports/price";
 import type { PriceMicroUsd, TokenCounts } from "@manifold/domain";
 import type {
   AcceptedEvent,
@@ -52,17 +53,14 @@ function tokensFromUsage(u: ObservationUsage | undefined): Partial<TokenCounts> 
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
-/** Parse one decimal-string µ$ price field to a bigint; `null`/absent stays absent (µ$0 by §6.10). */
-function priceField(v: string | null | undefined): bigint | undefined {
-  return v === null || v === undefined || v === "" ? undefined : BigInt(v);
-}
-
-/** Widen the flat `price` (decimal strings) to `PriceMicroUsd` (bigint per §6.10). */
+/** Widen the flat `price` (decimal strings) to `PriceMicroUsd` (bigint per §6.10). Uses the ONE
+ *  shared `parseMicroUsdString` (owned next to `SnapshotPrice`), so a valid integer string maps to
+ *  the SAME bigint the gateway reserve path derives; `null`/absent/empty ⇒ absent (µ$0 by §6.10). */
 function priceFromSnapshot(p: SnapshotPrice | undefined): PriceMicroUsd | undefined {
   if (!p) return undefined;
   const out: PriceMicroUsd = {};
   const set = (k: keyof PriceMicroUsd, v: string | null | undefined): void => {
-    const b = priceField(v);
+    const b = parseMicroUsdString(v);
     if (b !== undefined) out[k] = b;
   };
   set("inputPerMtokMicroUsd", p.inputPerMtokMicroUsd);

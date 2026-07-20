@@ -20,11 +20,10 @@ import type {
 } from "@manifold/ports";
 import { isPrivateIp, schemeAllowed, type SsrfPolicy, STRICT_SSRF } from "@manifold/gateway-core";
 import { bucketStart, reserve as budgetReserve } from "@manifold/budget";
-// `@manifold/database` is the sole owner of the postgres driver (§4.2); we take only its `Sql`
-// TYPE from it (erased at build). The concrete reservation client is opened with the driver here in
-// the adapter layer — the one place allowed to touch platform/driver globals.
-import type { Sql } from "@manifold/database";
-import postgres from "postgres";
+// `@manifold/database` is the sole owner of the postgres driver (§4.2): we take both its `Sql` type
+// and its `getClient` opener from it, so the reservation connection is created (and its json/jsonb
+// serializers applied) in the one place allowed to touch the driver — not re-opened here.
+import { getClient, type Sql } from "@manifold/database";
 import { assertSnapshotTrusted } from "./snapshotVerify.ts";
 
 /** node:crypto-backed Crypto port (§14.3). */
@@ -233,8 +232,10 @@ export function makeDbBudgetReserveFn(
  * FakeBudgetReserver instead.
  */
 export function makeDbBudgetReserver(url: string, now?: () => Date): BudgetReserverAdapter {
-  // §2.4/§4.2: one connection per serverless invocation against the pooler.
-  const sql = postgres(url, { max: 1 }) as unknown as Sql;
+  // §2.4/§4.2: @manifold/database is the sole driver opener — getClient applies the max:1
+  // serverless default (one connection per invocation against the pooler) and the json/jsonb
+  // serializers for us.
+  const sql = getClient(url);
   return new BudgetReserverAdapter(makeDbBudgetReserveFn({ sql, now }));
 }
 

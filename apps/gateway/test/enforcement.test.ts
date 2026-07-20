@@ -56,7 +56,6 @@ function makeTarget(): SnapshotTarget {
     region: null,
     allowedHosts: ["api.anthropic.com"],
     authInject: { headers: { "x-api-key": "${secret}" } },
-    secretEnv: null,
   };
 }
 

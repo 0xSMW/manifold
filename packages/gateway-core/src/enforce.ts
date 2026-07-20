@@ -6,6 +6,7 @@
 // the hard-budget reservation goes through the injected BudgetReserver PORT (ADR-0012/§4.4) — no
 // @manifold/budget, no DB import here.
 import { evaluate, type PolicyDecision, type PolicySubject } from "@manifold/gateway-policy";
+import { parseMicroUsdString } from "@manifold/ports/price";
 import type {
   BudgetReserver,
   Snapshot,
@@ -83,13 +84,11 @@ const MICRO_PER_MTOK = 1_000_000n;
 /**
  * Parse a §6.10 per-mtok price (a DECIMAL µ$ string, per `SnapshotPrice`) to a non-negative bigint,
  * truncating any fractional µ$. Absent / empty / unparseable ⇒ 0 (that token class is unpriced).
+ * Delegates to the ONE shared `parseMicroUsdString` (owned next to `SnapshotPrice`) so this reserve
+ * path and the observability cost mapper parse identically; here an absent price collapses to µ$0.
  */
 function priceMtok(v: string | null | undefined): bigint {
-  if (!v) return 0n;
-  const digits = (v.trim().split(".")[0] ?? "").replace(/[^0-9]/g, "");
-  if (digits === "") return 0n;
-  const n = BigInt(digits);
-  return n > 0n ? n : 0n;
+  return parseMicroUsdString(v) ?? 0n;
 }
 
 /** Rough input-token estimate from the buffered request body (~4 chars/token): a monotone,

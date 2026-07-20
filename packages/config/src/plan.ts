@@ -1,11 +1,11 @@
-// plan(db, installationId, target) — SPEC §8.2 `plan()`. Diffs a freshly-built target
+// plan(sql, installationId, target) — SPEC §8.2 `plan()`. Diffs a freshly-built target
 // snapshot against the current active gateway_config_revision and produces
 // {baseConfigHash, targetConfigHash, planHash, diffJson, tripwireItems}. Route deletions and
 // entitlement removals are tripwires (destructive changes needing approval, §8.2). Paired with
 // `apply()` (apply.ts) — the two lifecycle halves now share the plan()/apply() naming.
-import type { Database } from "@manifold/database";
 import { sha256Canonical, stableStringify } from "./canonical.js";
 import * as q from "./db.js";
+import type { PgSql } from "./db.js";
 import type {
   ConfigPolicy,
   ConfigSnapshot,
@@ -56,11 +56,10 @@ function emptySnapshotSections(snap: Partial<ConfigSnapshot> | null): {
 }
 
 export async function plan(
-  db: Database,
+  sql: PgSql,
   installationId: string,
   target: ConfigSnapshot,
 ): Promise<Plan> {
-  const sql = q.client(db);
   const inst = await q.readInstallation(sql, installationId);
   if (!inst) throw new Error(`installation not found: ${installationId}`);
   const active = await q.readActiveRevision(sql, installationId);

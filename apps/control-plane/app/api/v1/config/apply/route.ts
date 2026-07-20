@@ -69,7 +69,7 @@ export async function POST(req: Request): Promise<Response> {
       .filter((it) => approvedRefs.has(it.ref))
       .map((it) => ({ kind: it.kind, ref: it.ref, planHash: plan.planHash }));
 
-    const op = await apply(db(), plan, snapshotStore(), tripwireApprovals);
+    const op = await apply(db().$client, plan, snapshotStore(), tripwireApprovals);
 
     if (op.outcome === "rejected" && op.reasonCode === "CONFIG_PRECONDITION_FAILED") {
       throw new ManifoldError({

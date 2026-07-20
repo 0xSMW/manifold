@@ -72,7 +72,6 @@ function freshSnapshot(): ConfigSnapshot {
             region: "us-east-1",
             allowedHosts: ["api.anthropic.com"],
             authInject: { headers: { "x-api-key": "${secret}", "anthropic-version": "2023-06-01" } },
-            secretEnv: null,
           },
         ],
         timeoutMs: 30000,
@@ -260,7 +259,6 @@ test("attack 5a: reordered keys / whitespace canonicalize to the SAME hash", () 
         timeoutMs: 30000,
         targets: [
           {
-            secretEnv: null,
             authInject: { headers: { "anthropic-version": "2023-06-01", "x-api-key": "${secret}" } },
             allowedHosts: ["api.anthropic.com"],
             region: "us-east-1",
