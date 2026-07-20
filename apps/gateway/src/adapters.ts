@@ -14,7 +14,7 @@ import type {
   Snapshot,
   SnapshotStore,
 } from "@manifold/ports";
-import { type SsrfPolicy, STRICT_SSRF } from "@manifold/gateway-core";
+import { isPrivateIp, type SsrfPolicy, STRICT_SSRF } from "@manifold/gateway-core";
 
 /** node:crypto-backed Crypto port (§14.3). */
 export class NodeCrypto implements Crypto {
@@ -78,28 +78,13 @@ export class SnapshotFileStore implements SnapshotStore {
   }
 }
 
-/** Is a resolved IP literal loopback / link-local / RFC-1918 / unique-local? (§14.4) */
+/**
+ * Is a resolved IP literal loopback / link-local / RFC-1918 / unique-local? (§14.4)
+ * Delegates to gateway-core's single classifier so the literal-URL check and the
+ * resolved-address check share one correct implementation (no duplicate blind spots).
+ */
 export function isPrivateAddress(ip: string): boolean {
-  const kind = isIP(ip);
-  if (kind === 4) {
-    const o = ip.split(".").map(Number);
-    const [a, b] = o as [number, number, number, number];
-    if (a === 127 || a === 10 || a === 0 || a >= 224) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 169 && b === 254) return true;
-    return false;
-  }
-  if (kind === 6) {
-    const h = ip.toLowerCase();
-    if (h === "::1" || h === "::") return true;
-    if (h.startsWith("fe80")) return true;
-    if (h.startsWith("fc") || h.startsWith("fd")) return true;
-    const mapped = /::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(h);
-    if (mapped) return isPrivateAddress(mapped[1]!);
-    return false;
-  }
-  return false;
+  return isPrivateIp(ip);
 }
 
 /**
