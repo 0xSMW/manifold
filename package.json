@@ -1,0 +1,18 @@
+{
+  "name": "manifold",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Manifold — OpenAI-compatible self-hostable AI gateway + logging/governance. Monorepo root.",
+  "workspaces": [
+    "packages/*",
+    "apps/control-plane"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "tsc -b",
+    "dev:control-plane": "npm run dev -w apps/control-plane"
+  }
+}
