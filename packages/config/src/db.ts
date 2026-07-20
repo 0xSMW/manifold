@@ -182,9 +182,19 @@ export async function readCredential(
   sql: PgSql,
   id: string,
 ): Promise<CredentialRow | null> {
+  // Only a LIVE credential may be embedded in the snapshot: never a revoked or invalid one
+  // (review bug: this read did not filter revoked_at/status, so a revoked/rotated-out provider key
+  // still shipped in the snapshot). A revoked/invalid credential returns null here → assembleSnapshot
+  // drops the referencing target, so a dead key never reaches the gateway. status IN
+  // ('valid','unvalidated'): 'unvalidated' is the default for a freshly-added, not-yet-probed
+  // credential and is still live; 'invalid' and 'revoked' are excluded, as is any revoked_at row.
   const rows = await sql<CredentialRow[]>`
     SELECT id, provider, encrypted_secret, dek_id, base_url, allowed_hosts
-    FROM provider_credential WHERE id = ${id} LIMIT 1`;
+    FROM provider_credential
+    WHERE id = ${id}
+      AND revoked_at IS NULL
+      AND status IN ('valid', 'unvalidated')
+    LIMIT 1`;
   return rows[0] ?? null;
 }
 

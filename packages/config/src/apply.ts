@@ -96,7 +96,13 @@ export async function apply(
   store: SnapshotPublishStore,
 ): Promise<ConfigOperation> {
   const sql = q.client(db);
-  return sql.begin(async (txRaw) => {
+
+  // Phase 1 — the DB transaction is the SOURCE OF TRUTH (§8.2). Nothing that advances the external
+  // store happens inside it: store.publish used to run mid-txn (before the installation update +
+  // config_operation insert), so if any later statement threw, the txn rolled back but the store had
+  // ALREADY advanced → the store pointed at a revision the DB no longer considered active (review
+  // bug). The store is a cache of committed DB truth, so publish MUST happen only AFTER commit.
+  const committed = (await sql.begin(async (txRaw) => {
     const tx = txRaw as unknown as PgSql;
     await setWorkspace(tx, plan.workspaceId);
     const active = await q.readActiveRevision(tx, plan.installationId);
@@ -104,22 +110,24 @@ export async function apply(
 
     // Optimistic-concurrency precondition (§16.2): base must equal the live active hash.
     if (activeHash !== plan.baseConfigHash) {
-      return insertOperation(tx, opFromPlan(plan, {
+      const op = await insertOperation(tx, opFromPlan(plan, {
         outcome: "rejected",
         edgeConfigVersion: null,
         revisionId: null,
         reasonCode: ReasonCode.enum.CONFIG_PRECONDITION_FAILED,
       }), plan.diffJson);
+      return { op, publish: null };
     }
 
-    // Idempotency (§8.2): identical content is a no-op.
+    // Idempotency (§8.2): identical content is a no-op (no new revision, nothing to publish).
     if (plan.targetConfigHash === activeHash) {
-      return insertOperation(tx, opFromPlan(plan, {
+      const op = await insertOperation(tx, opFromPlan(plan, {
         outcome: "accepted",
         edgeConfigVersion: null,
         revisionId: active?.id ?? null,
         reasonCode: null,
       }), plan.diffJson);
+      return { op, publish: null };
     }
 
     const snap = plan.snapshot;
@@ -139,20 +147,42 @@ export async function apply(
          ${active?.id ?? null}, ${tx.json(q.jval(snap))},
          ${tx.json(q.jval(routeIds))}, ${tx.json(q.jval(policyIds))}, ${tx.json(q.jval(priceIds))}, 'active')`;
 
-    // Publish to the store (Edge Config / KV). DB is source of truth; store is its cache (§8.2).
-    const published = await store.publish(plan.installationId, revisionId, snap as unknown as Snapshot /* publish serializes JSON; policy shape divergence is at rest, GROK_DRY #21 */);
-
     await tx`
       UPDATE gateway_installation SET applied_config_revision = ${revisionId}
       WHERE id = ${plan.installationId}`;
 
-    return insertOperation(tx, opFromPlan(plan, {
+    // edge_config_version is left null in this audit row: the publish is a post-commit cache write
+    // (below), so its version is not known yet. The returned op is patched with it in memory; the
+    // persisted backfill is the followup job's responsibility (TODO below).
+    const op = await insertOperation(tx, opFromPlan(plan, {
       outcome: "accepted",
-      edgeConfigVersion: published.version,
+      edgeConfigVersion: null,
       revisionId,
       reasonCode: null,
     }), plan.diffJson);
-  }) as Promise<ConfigOperation>;
+    return { op, publish: { snap, revisionId } };
+  })) as {
+    op: ConfigOperation;
+    publish: { snap: ConfigSnapshot; revisionId: string } | null;
+  };
+
+  // Phase 2 — AFTER the DB txn has committed, publish the snapshot to the store (its cache, §8.2).
+  // A failure here leaves the DB ahead of the store — the SAFE direction (the store simply still
+  // points at the prior revision; it can never point at a revision the DB rolled back). The gateway
+  // keeps serving the prior published snapshot until reconciliation.
+  // TODO(§8.2 followup-job): there is no publish-retry job path yet. When one exists, it must retry
+  // store.publish for installations whose applied_config_revision is ahead of the store pointer and
+  // backfill config_operation.edge_config_version. Until then a publish failure surfaces to the
+  // caller (the DB commit stands) so it is never silently lost.
+  if (committed.publish) {
+    const published = await store.publish(
+      plan.installationId,
+      committed.publish.revisionId,
+      committed.publish.snap as unknown as Snapshot /* publish serializes JSON; policy shape divergence is at rest, GROK_DRY #21 */,
+    );
+    committed.op.edgeConfigVersion = published.version;
+  }
+  return committed.op;
 }
 
 /**

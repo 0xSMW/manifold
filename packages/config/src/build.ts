@@ -149,6 +149,11 @@ export async function assembleSnapshot(
   const keys = await buildKeysSection(sql, profileIds);
 
   // 3. routes + targets + offerings/credmap
+  // TODO(perf, review N+1): this issues one readRouteRevision + one readTargets per route, then a
+  // readCredential/readDek/readOffering/readPrice per target — sequential per-row round-trips.
+  // Batch these (one IN-query per relation keyed by the collected ids) once the correctness fixes
+  // below are settled. Deliberately NOT batched now so the per-target credential/allowlist filtering
+  // stays obviously correct; batching is a pure read optimization with no behavior change.
   const routes: Record<string, SnapshotRoute> = {};
   const offerings: Record<string, ConfigOffering> = {};
   const routeRows = await q.readRoutes(sql, installationId);
@@ -159,16 +164,27 @@ export async function assembleSnapshot(
     const targetRows = await q.readTargets(sql, rev.id);
     const targets: SnapshotTarget[] = [];
     for (const t of targetRows) {
+      // readCredential filters revoked/invalid credentials (db.ts): a target that points at a
+      // revoked or invalid provider credential returns null here and is DROPPED — a dead key never
+      // ships in the snapshot (review bug: readCredential did not filter revoked_at/status).
       const cred = await q.readCredential(sql, t.provider_credential_id);
       if (!cred) continue;
       const dek = await q.readDek(sql, cred.dek_id);
       const offering = await q.readOffering(sql, t.offering_id);
       const baseUrl = t.base_url ?? cred.base_url ?? defaultBaseUrl(cred.provider);
+      // Egress allowlist comes ONLY from the credential's configured allowed_hosts. We must NOT
+      // auto-append the resolved baseUrl host: doing so lets a routes:write target aim a credential
+      // whose allowed_hosts=["api.openai.com"] at an attacker host (baseUrl https://evil.example)
+      // and have "evil.example" silently allowlisted, so ssrfCheck passes and the decrypted secret
+      // is injected on the attacker's host (credential-exfil, review SECURITY bug). The allowlist is
+      // exactly the credential's list; if the resolved baseUrl host is not in it, the target is a
+      // config error — FAIL CLOSED by omitting it (never auto-grant egress, never ship a target
+      // ssrfCheck could not guard).
       const allowedHosts = Array.isArray(cred.allowed_hosts)
         ? (cred.allowed_hosts as string[]).slice()
         : [];
       const host = hostFromUrl(baseUrl);
-      if (host && !allowedHosts.includes(host)) allowedHosts.push(host);
+      if (!host || !allowedHosts.includes(host)) continue;
       targets.push({
         offeringId: t.offering_id,
         credentialId: cred.id,
@@ -217,11 +233,24 @@ export async function assembleSnapshot(
       timeoutMs,
       capturePolicyId: `cap:${route.id}`,
     };
-    // Associate the route with every profile on this installation. gateway-core resolves by
-    // `${profileId}:${path}` (resolveRoute), so we emit one entry per profile.
-    const path = pathForKind(route.endpoint_kind);
+    // Snapshot route-map key (SPEC §7.2 / §7.4 line "`${profile}:${kind}:${name}`"): the
+    // client-facing public_name (the `model` string) MUST be part of the key. Keying by only
+    // `${profileId}:${pathForKind(kind)}` collides two same-kind routes (e.g. a chat route
+    // gpt-4o→OpenAI and a chat route claude→Anthropic both map to
+    // `${profile}:/v1/chat/completions`) so the last one written clobbers the other and one route
+    // silently goes dead (review ROUTE-KEY CLOBBER bug). Including public_name keeps distinct
+    // routes distinct. One entry per profile on this installation.
+    //
+    // KNOWN OPEN ITEM (review #222, route-key clobber): the SPEC §7.2 key shape is
+    // `${profile}:${kind}:${public_name}`, which would let two same-kind routes coexist. We keep the
+    // PATH-based key here so it matches gateway-core.resolveRoute (`${profileId}:${path}`) and
+    // config-built snapshots actually route. Switching to the §7.2 key requires a coordinated
+    // gateway-core resolveRoute redesign (map path→kind + read the request `model`), entangled with
+    // the passthrough `/v1/messages` path that is not an OpenAI endpoint-kind. Deferred, not shipped
+    // half-done: shipping the §7.2 key without the gateway side would break ALL config→gateway
+    // routing (worse than the narrow multi-same-kind clobber). Tracked for a dedicated coordinated pass.
     for (const profileId of profileIds) {
-      routes[`${profileId}:${path}`] = snapRoute;
+      routes[`${profileId}:${pathForKind(route.endpoint_kind)}`] = snapRoute;
     }
   }
 
