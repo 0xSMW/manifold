@@ -64,7 +64,7 @@ test("computeCost: hand-computed fixture across all seven token classes (SPEC §
   const tokens = {
     inputTokens: 2_000_000n,
     outputTokens: 500_000n,
-    cachedTokens: 1_000_000n,
+    cacheReadTokens: 1_000_000n,
     reasoningTokens: 200_000n,
     cacheWriteTokens: 100_000n,
     audioInputTokens: 50_000n,

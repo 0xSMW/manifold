@@ -85,7 +85,7 @@ export function computeCost(tokens: TokenCounts, price: PriceMicroUsd): MicroUsd
   return (
     term(tokens.inputTokens, price.inputPerMtokMicroUsd) +
     term(tokens.outputTokens, price.outputPerMtokMicroUsd) +
-    term(tokens.cachedTokens, price.cacheReadPerMtokMicroUsd) +
+    term(tokens.cacheReadTokens, price.cacheReadPerMtokMicroUsd) +
     term(tokens.reasoningTokens, price.reasoningPerMtokMicroUsd) +
     term(tokens.cacheWriteTokens, price.cacheWritePerMtokMicroUsd) +
     term(tokens.audioInputTokens, price.audioInPerMtokMicroUsd) +
@@ -116,7 +116,7 @@ function pricePairs(
   return [
     [tokens.inputTokens, price.inputPerMtokMicroUsd],
     [tokens.outputTokens, price.outputPerMtokMicroUsd],
-    [tokens.cachedTokens, price.cacheReadPerMtokMicroUsd],
+    [tokens.cacheReadTokens, price.cacheReadPerMtokMicroUsd],
     [tokens.reasoningTokens, price.reasoningPerMtokMicroUsd],
     [tokens.cacheWriteTokens, price.cacheWritePerMtokMicroUsd],
     [tokens.audioInputTokens, price.audioInPerMtokMicroUsd],

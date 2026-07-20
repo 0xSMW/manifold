@@ -44,7 +44,7 @@ function tokensFromUsage(u: ObservationUsage | undefined): Partial<TokenCounts> 
   };
   set("inputTokens", u.inputTokens);
   set("outputTokens", u.outputTokens);
-  set("cachedTokens", u.cachedTokens);
+  set("cacheReadTokens", u.cachedTokens);
   set("reasoningTokens", u.reasoningTokens);
   set("cacheWriteTokens", u.cacheWriteTokens);
   set("audioInputTokens", u.audioInputTokens);

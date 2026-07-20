@@ -7,7 +7,7 @@
 export interface TokenCounts {
   inputTokens: bigint;
   outputTokens: bigint;
-  cachedTokens: bigint; // cache_read
+  cacheReadTokens: bigint; // cache_read
   reasoningTokens: bigint;
   cacheWriteTokens: bigint; // A5/M7
   audioInputTokens: bigint; // A5/M7
@@ -18,7 +18,7 @@ export interface TokenCounts {
 export const ZERO_TOKEN_COUNTS: TokenCounts = {
   inputTokens: 0n,
   outputTokens: 0n,
-  cachedTokens: 0n,
+  cacheReadTokens: 0n,
   reasoningTokens: 0n,
   cacheWriteTokens: 0n,
   audioInputTokens: 0n,
