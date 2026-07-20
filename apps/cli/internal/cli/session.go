@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -31,11 +32,38 @@ func configDir() string {
 	return filepath.Join(base, "manifold")
 }
 
-func sessionPath(contextName string) string {
+// safeContextName reduces an arbitrary, attacker-controlled --context value to
+// a single, harmless path component. Only [A-Za-z0-9._-] survive; every other
+// byte (crucially the path separators '/' and '\') is replaced with '_', so the
+// result can never introduce a new path segment. A value that would still be a
+// traversal component on its own ("", ".", "..") falls back to "default". This
+// guarantees sessionPath() always resolves to a direct child of configDir(),
+// even for inputs like "../../.ssh/authorized_keys" or "/etc/passwd".
+func safeContextName(contextName string) string {
 	if contextName == "" {
-		contextName = "default"
+		return "default"
 	}
-	return filepath.Join(configDir(), "session-"+contextName+".json")
+	var b strings.Builder
+	for _, r := range contextName {
+		switch {
+		case r >= 'A' && r <= 'Z',
+			r >= 'a' && r <= 'z',
+			r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	name := b.String()
+	if name == "" || name == "." || name == ".." {
+		return "default"
+	}
+	return name
+}
+
+func sessionPath(contextName string) string {
+	return filepath.Join(configDir(), "session-"+safeContextName(contextName)+".json")
 }
 
 func saveSession(s session) error {

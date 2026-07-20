@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -111,5 +112,55 @@ func TestSessionRoundTrip(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir)); err != nil {
 		t.Fatalf("config dir missing: %v", err)
+	}
+}
+
+// TestSessionPathNoTraversal proves a malicious --context value cannot make
+// sessionPath resolve outside the config directory. Path separators, "..",
+// and absolute paths must all be neutralized so the session file always lands
+// as a direct child of configDir() (guarding the path-traversal report where
+// `manifold login --context '../../.ssh/authorized_keys'` could read/write/
+// remove files outside the config dir).
+func TestSessionPathNoTraversal(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MANIFOLD_CONFIG_DIR", dir)
+
+	base, err := filepath.Abs(configDir())
+	if err != nil {
+		t.Fatalf("abs configDir: %v", err)
+	}
+
+	malicious := []string{
+		"../../.ssh/authorized_keys",
+		"../../../etc/passwd",
+		"/etc/passwd",
+		"..",
+		"../",
+		"a/../../b",
+		`..\..\windows\system32`,
+		"foo/bar",
+		"....//....//x",
+	}
+
+	for _, name := range malicious {
+		got, err := filepath.Abs(sessionPath(name))
+		if err != nil {
+			t.Fatalf("abs sessionPath(%q): %v", name, err)
+		}
+
+		// The resolved path must stay strictly inside the config dir...
+		rel, err := filepath.Rel(base, got)
+		if err != nil {
+			t.Fatalf("Rel(%q, %q): %v", base, got, err)
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Errorf("sessionPath(%q) escaped config dir: %q (rel %q)", name, got, rel)
+		}
+
+		// ...and it must be a *direct* child of the config dir (no extra
+		// path segments introduced by the context value).
+		if parent := filepath.Dir(got); parent != base {
+			t.Errorf("sessionPath(%q) is not a direct child of config dir: parent=%q want=%q", name, parent, base)
+		}
 	}
 }
