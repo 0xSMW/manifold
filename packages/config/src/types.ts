@@ -127,6 +127,21 @@ export interface PlanDiff {
   keys: { added: string[]; removed: string[]; changed: string[] };
   offerings: { added: string[]; removed: string[]; changed: string[] };
   policies: { added: string[]; removed: string[]; changed: string[] };
+  /** Budget accounts (§16.3). Part of the signed content, so a budget-only edit is a real change. */
+  budgets: { added: string[]; removed: string[]; changed: string[] };
+}
+
+/**
+ * An operator's approval of ONE destructive tripwire (SPEC §8.2). `apply()` applies a
+ * destructive change (route delete / entitlement removal) ONLY when every `TripwireItem` in the
+ * plan is covered by an approval matching its `kind` + `ref` AND the `planHash` it was approved
+ * against — so an approval minted against a stale plan (the base moved) can never wave through a
+ * different destructive change.
+ */
+export interface Approval {
+  kind: TripwireItem["kind"];
+  ref: string;
+  planHash: string;
 }
 
 /** A projected `config_operation` row (SPEC §6.11). */

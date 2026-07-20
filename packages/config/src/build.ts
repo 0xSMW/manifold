@@ -68,8 +68,15 @@ export function stampMeta(
   };
 }
 
+/**
+ * The OpenAI endpoint kinds config path-maps by name (SPEC §7.2/§7.4); any other `endpoint_kind`
+ * string falls through to `/v1/<kind>`. Typed so a caller passing a known kind gets autocomplete
+ * while the DB's free-text `endpoint_kind` column still assigns (the `string & {}` member).
+ */
+export type EndpointKind = "chat" | "responses" | "embeddings" | (string & {});
+
 /** endpoint_kind → request pathname gateway-core resolves against (resolveRoute: `${profile}:${path}`). */
-export function pathForKind(kind: string): string {
+export function pathForKind(kind: EndpointKind): string {
   switch (kind) {
     case "chat":
       return "/v1/chat/completions";
@@ -140,6 +147,11 @@ export async function buildKeysSection(
       budgetAccountId: k.budget_account_id,
       expiresAt: toIso(k.expires_at),
       revoked: k.revoked_at != null,
+      // §6.6 policy-subject facets: enforce.ts stamps these onto the PolicySubject so a
+      // `subject_kind='team'` / `'cost_center'` entitlement can match this key. Emitted verbatim
+      // (null when unset — an absent facet never matches a scoped entitlement, deny-first).
+      team: k.team_id,
+      costCenter: k.cost_center_id,
     };
   }
   return keys;
@@ -313,7 +325,12 @@ export async function assembleSnapshot(
       modelEntitlements: ents.map((e) => ({
         subjectKind: e.subject_kind as PolicySubjectKind,
         subjectRef: e.subject_ref,
-        canonicalModelId: e.canonical_model_id,
+        // Scope an `offering_id`-scoped entitlement to exactly that offering's canonical model.
+        // The evaluator treats `canonicalModelId:null` as a MODEL WILDCARD (all models); emitting
+        // null for an offering-scoped row would turn an offering-scoped allow into allow-ALL (a
+        // privilege escalation) and a deny into deny-all. Resolve offering → canonical model
+        // (readEntitlements JOIN); a row scoped by neither stays null (a genuine wildcard).
+        canonicalModelId: e.canonical_model_id ?? e.offering_canonical_model_id,
         effect: e.effect,
       })),
       // NUMERIC bounds: `numeric` columns arrive from postgres-js as strings; the evaluator compares

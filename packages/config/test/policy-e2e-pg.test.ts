@@ -48,6 +48,15 @@ const HOST = "e2e.local";
 const DENIED_MODEL = "cm_denied"; // canonical model M (DB row) the operator DENIES
 const ALLOWED_MODEL = "gpt-4o-open"; // matched by the wildcard `all/allow` grant, never denied
 
+// ── Fix 3 (team-scoped governance) key material + scenario ids ──────────────────────────────────
+const TEAM_KEY = "sk-e2e-team-key";
+const teamKeyHashHex = await keyedHashHex(crypto, pepper, TEAM_KEY);
+const INST_TEAM = "inst_team";
+const HOST_TEAM = "team.local";
+const TEAM = "team_x"; // the team the key belongs to AND the team-scoped deny targets
+const TEAM_BLOCKED = "team-blocked-model"; // denied for TEAM by a subject_kind='team' entitlement
+const TEAM_OK = "team-ok-model"; // not team-denied ⇒ allowed by the all/allow grant
+
 let pg: PgHarness;
 let sql: Sql;
 let db: Database;
@@ -123,6 +132,48 @@ before(async () => {
     INSERT INTO virtual_key
       (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids) VALUES
       ('vk_e2e','ws_e2e','${PROFILE}','sk-e2e','\\x${keyHashHex}','[]','[]');
+
+    -- ── Fix 3: team-scoped governance end-to-end. A key on team_x, and a policy that allows all
+    --    models EXCEPT one denied specifically for team_x. Pre-fix, config never SELECTed/emitted
+    --    virtual_key.team_id → SnapshotKey.team, so the team-scoped deny matched NO key and the
+    --    request was (wrongly) allowed. The key must carry its team facet for the deny to bind.
+    INSERT INTO team (id, workspace_id, slug, name) VALUES ('team_x','ws_e2e','team-x','Team X');
+
+    -- The canonical model the team-scoped deny targets (model_entitlement.canonical_model_id FK).
+    INSERT INTO canonical_model (id, canonical_slug, display_name, catalog_revision) VALUES
+      ('${TEAM_BLOCKED}','team-blocked','Team Blocked Model','cat1');
+
+    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
+      ('${INST_TEAM}','ws_e2e','inst-team','{"kind":"test"}');
+
+    INSERT INTO gateway_policy (id, workspace_id, name) VALUES ('pol_team','ws_e2e','team-policy');
+    INSERT INTO gateway_policy_revision (id, workspace_id, policy_id, content_hash) VALUES
+      ('polrev_team','ws_e2e','pol_team','sha256:polteam');
+    UPDATE gateway_policy SET active_revision_id = 'polrev_team' WHERE id = 'pol_team';
+
+    INSERT INTO model_entitlement
+      (id, workspace_id, policy_revision_id, subject_kind, subject_ref, canonical_model_id, offering_id, effect) VALUES
+      ('ent_team_allow','ws_e2e','polrev_team','all',NULL,NULL,NULL,'allow'),
+      ('ent_team_deny','ws_e2e','polrev_team','team','${TEAM}','${TEAM_BLOCKED}',NULL,'deny');
+
+    INSERT INTO gateway_ingress_profile
+      (id, workspace_id, installation_id, hostname, mode, auth_config, policy_revision_id) VALUES
+      ('prof_team','ws_e2e','${INST_TEAM}','${HOST_TEAM}','public_app','{}','polrev_team');
+
+    INSERT INTO gateway_route (id, workspace_id, installation_id, public_name, endpoint_kind) VALUES
+      ('route_team','ws_e2e','${INST_TEAM}','team-chat','chat');
+    INSERT INTO gateway_route_revision
+      (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
+      ('rev_team','ws_e2e','route_team','ordered','{}','{"overall_ms":30000}','sha256:revteam');
+    INSERT INTO gateway_target
+      (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url) VALUES
+      ('tg_team','ws_e2e','rev_team','cred_e2e','off_e2e','ar1',NULL);
+    UPDATE gateway_route SET active_revision_id = 'rev_team' WHERE id = 'route_team';
+
+    -- The team key: keyed_hash from the SAME FakeCrypto; team_id = team_x (the fix emits this).
+    INSERT INTO virtual_key
+      (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, team_id) VALUES
+      ('vk_team','ws_e2e','prof_team','sk-team','\\x${teamKeyHashHex}','[]','[]','${TEAM}');
   `);
 }, { timeout: 300_000 });
 
@@ -158,6 +209,20 @@ function req(body: unknown): Request {
   return new Request(`http://${HOST}/v1/chat/completions`, {
     method: "POST",
     headers: { host: HOST, authorization: `Bearer ${VALID_KEY}` },
+    body: JSON.stringify(body),
+  });
+}
+
+/** A ctx for an arbitrary installation (the team scenario runs under a second installation). */
+function ctxFor(installationId: string, snapshot: Snapshot, fetcher: Fetcher): GatewayContext {
+  return { ...makeCtx(snapshot, fetcher), installationId };
+}
+
+/** A chat request to an arbitrary host with an arbitrary bearer key. */
+function reqTo(host: string, key: string, body: unknown): Request {
+  return new Request(`http://${host}/v1/chat/completions`, {
+    method: "POST",
+    headers: { host, authorization: `Bearer ${key}` },
     body: JSON.stringify(body),
   });
 }
@@ -229,4 +294,35 @@ test("config-built numeric reject constraint ⇒ over-ceiling max_tokens is 403 
   const body = (await res.json()) as { error: { code: string } };
   assert.equal(body.error.code, "POLICY_PARAM_REJECTED", "the numeric reject constraint fired");
   assert.equal(fetcher.count, 0, "a rejected request must NEVER reach the provider");
+});
+
+// ── (4) TEAM GOVERNANCE — a subject_kind='team' deny actually blocks a key on that team ─────────
+test("config-built team-scoped deny BLOCKS a key on that team ⇒ 403 POLICY_MODEL_DENIED, 0 upstream calls", async () => {
+  const snap = await buildSnapshot(db, INST_TEAM);
+
+  // The key must carry its team facet, or the team-scoped deny can never match (the whole fix). On
+  // pre-fix code `SnapshotKey.team` is undefined here and the request below would (wrongly) dispatch.
+  const teamKey = Object.values(snap.keys).find((k) => k.id === "vk_team");
+  assert.ok(teamKey, "the team key must be in the snapshot");
+  assert.equal(teamKey.team, TEAM, "buildSnapshot must emit virtual_key.team_id as SnapshotKey.team");
+
+  const fetcher = new CountingFetcher();
+  const ctx = ctxFor(INST_TEAM, snap, fetcher);
+  const res = await handleRequest(ctx, reqTo(HOST_TEAM, TEAM_KEY, { model: TEAM_BLOCKED, max_tokens: 10 }));
+
+  assert.equal(res.status, 403, "the team-denied model must be blocked for a key on that team");
+  const body = (await res.json()) as { error: { code: string } };
+  assert.equal(body.error.code, "POLICY_MODEL_DENIED", "the team deny reaches the client");
+  assert.equal(fetcher.count, 0, "a team deny must NEVER reach the provider");
+});
+
+// ── (5) THE TEAM POLICY IS REAL — a non-denied model on the SAME team key dispatches (not deny-all) ──
+test("config-built team policy ALLOWS a non-team-denied model for the same team key ⇒ dispatched, 1 upstream call", async () => {
+  const snap = await buildSnapshot(db, INST_TEAM);
+  const fetcher = new CountingFetcher();
+  const ctx = ctxFor(INST_TEAM, snap, fetcher);
+  const res = await handleRequest(ctx, reqTo(HOST_TEAM, TEAM_KEY, { model: TEAM_OK, max_tokens: 10 }));
+
+  assert.equal(res.status, 200, "a non-team-denied model dispatches (proves the team policy is not deny-all)");
+  assert.equal(fetcher.count, 1, "the allowed request WAS dispatched exactly once");
 });

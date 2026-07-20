@@ -1,7 +1,8 @@
-// planApply(db, installationId, target) — SPEC §8.2 `plan()`. Diffs a freshly-built target
+// plan(db, installationId, target) — SPEC §8.2 `plan()`. Diffs a freshly-built target
 // snapshot against the current active gateway_config_revision and produces
 // {baseConfigHash, targetConfigHash, planHash, diffJson, tripwireItems}. Route deletions and
-// entitlement removals are tripwires (destructive changes needing approval, §8.2).
+// entitlement removals are tripwires (destructive changes needing approval, §8.2). Paired with
+// `apply()` (apply.ts) — the two lifecycle halves now share the plan()/apply() naming.
 import type { Database } from "@manifold/database";
 import { sha256Canonical, stableStringify } from "./canonical.js";
 import * as q from "./db.js";
@@ -39,6 +40,7 @@ function emptySnapshotSections(snap: Partial<ConfigSnapshot> | null): {
   routes: Rec;
   offerings: Rec;
   policies: Rec;
+  budgets: Rec;
 } {
   return {
     profiles: (snap?.profiles as Rec) ?? {},
@@ -46,10 +48,14 @@ function emptySnapshotSections(snap: Partial<ConfigSnapshot> | null): {
     routes: (snap?.routes as Rec) ?? {},
     offerings: (snap?.offerings as Rec) ?? {},
     policies: (snap?.policies as Rec) ?? {},
+    // `budgets` is part of the signed content (canonical.ts) — a budget-only edit changes the
+    // content hash, so it is NOT a no-op. Diff it here too so the plan surfaces the change (a
+    // hard→soft enforcement flip / an account removal shows up in diffJson.budgets).
+    budgets: (snap?.budgets as Rec) ?? {},
   };
 }
 
-export async function planApply(
+export async function plan(
   db: Database,
   installationId: string,
   target: ConfigSnapshot,
@@ -68,6 +74,7 @@ export async function planApply(
     keys: diffMaps(b.keys, t.keys),
     offerings: diffMaps(b.offerings, t.offerings),
     policies: diffMaps(b.policies, t.policies),
+    budgets: diffMaps(b.budgets, t.budgets),
   };
 
   // Tripwires (§8.2): destructive changes require approval.

@@ -43,6 +43,9 @@ export interface VirtualKeyRow {
   budget_account_id: string | null;
   expires_at: Date | null;
   revoked_at: Date | null;
+  /** §6.6 policy-subject facets. Match `model_entitlement.subject_ref` for subject_kind team/cost_center. */
+  team_id: string | null;
+  cost_center_id: string | null;
 }
 export interface RouteRow {
   id: string;
@@ -109,6 +112,9 @@ export interface EntitlementRow {
   canonical_model_id: string | null;
   offering_id: string | null;
   effect: "allow" | "deny";
+  /** The `canonical_model_id` of the row's `offering_id` (resolved via JOIN), else null. Used to
+   *  scope an offering-scoped entitlement to exactly that offering's model in the evaluator shape. */
+  offering_canonical_model_id: string | null;
 }
 export interface RequestConstraintRow {
   policy_revision_id: string;
@@ -166,9 +172,12 @@ export async function readVirtualKeys(
   profileIds: string[],
 ): Promise<VirtualKeyRow[]> {
   if (profileIds.length === 0) return [];
+  // team_id / cost_center_id drive the §6.6 team / cost_center policy subjects (SnapshotKey.team /
+  // .costCenter). Without them a `subject_kind='team'` deny in a policy revision never matches any
+  // key, so team/cost-center governance is silently dead — SELECT + emit them (review).
   return sql<VirtualKeyRow[]>`
     SELECT id, profile_id, keyed_hash, scopes, allowed_app_ids,
-           budget_account_id, expires_at, revoked_at
+           budget_account_id, expires_at, revoked_at, team_id, cost_center_id
     FROM virtual_key WHERE profile_id IN ${sql(profileIds)}`;
 }
 
@@ -245,9 +254,17 @@ export async function readEntitlements(
   sql: PgSql,
   policyRevisionId: string,
 ): Promise<EntitlementRow[]> {
+  // LEFT JOIN the offering so an `offering_id`-scoped entitlement can be projected to that
+  // offering's canonical_model_id. Without it, build.ts would emit `canonicalModelId:null` for an
+  // offering-scoped row, which the evaluator treats as a MODEL WILDCARD — an offering-scoped allow
+  // silently becomes allow-ALL (privilege escalation) and a deny becomes deny-all (review).
   return sql<EntitlementRow[]>`
-    SELECT policy_revision_id, subject_kind, subject_ref, canonical_model_id, offering_id, effect
-    FROM model_entitlement WHERE policy_revision_id = ${policyRevisionId}`;
+    SELECT me.policy_revision_id, me.subject_kind, me.subject_ref, me.canonical_model_id,
+           me.offering_id, me.effect,
+           o.canonical_model_id AS offering_canonical_model_id
+    FROM model_entitlement me
+    LEFT JOIN provider_model_offering o ON o.id = me.offering_id
+    WHERE me.policy_revision_id = ${policyRevisionId}`;
 }
 
 export async function readRequestConstraints(

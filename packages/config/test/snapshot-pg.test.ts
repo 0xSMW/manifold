@@ -22,8 +22,10 @@ import postgres from "postgres";
 import type { Database } from "@manifold/database";
 import {
   buildSnapshot,
-  planApply,
+  plan,
   apply,
+  rollback,
+  type Approval,
   type ConfigSnapshot,
   type SnapshotPublishStore,
 } from "@manifold/config";
@@ -113,6 +115,73 @@ before(async () => {
     UPDATE gateway_route SET active_revision_id = 'rev_claude'  WHERE id = 'route_claude';
     UPDATE gateway_route SET active_revision_id = 'rev_evil'    WHERE id = 'route_evil';
     UPDATE gateway_route SET active_revision_id = 'rev_revoked' WHERE id = 'route_revoked';
+
+    -- ── Fix 1 (budgets in the signed content hash): an installation whose only content is a key
+    --    referencing an advisory budget account, so buildSnapshot emits a budgets section.
+    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
+      ('inst_budget','ws1','inst-budget','{"kind":"test"}');
+    INSERT INTO gateway_ingress_profile
+      (id, workspace_id, installation_id, hostname, mode, auth_config) VALUES
+      ('prof_budget','ws1','inst_budget','budget.local','public_app','{}');
+    INSERT INTO budget_account
+      (id, workspace_id, scope_type, unit, "window", limit_amount, enforcement) VALUES
+      ('ba_budget','ws1','key','cost_microusd','monthly',1000000,'advisory');
+    INSERT INTO virtual_key
+      (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, budget_account_id) VALUES
+      ('vk_budget','ws1','prof_budget','sk-bud','\\xb0d9','[]','[]','ba_budget');
+
+    -- ── Fix 2 (offering-scoped entitlement → correct model, not a wildcard): a policy revision with
+    --    an offering_id-scoped allow (canonical_model_id NULL). off1's canonical model is cm1.
+    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
+      ('inst_ent','ws1','inst-ent','{"kind":"test"}');
+    INSERT INTO gateway_policy (id, workspace_id, name) VALUES ('pol_ent','ws1','ent-policy');
+    INSERT INTO gateway_policy_revision (id, workspace_id, policy_id, content_hash) VALUES
+      ('polrev_ent','ws1','pol_ent','sha256:polent');
+    UPDATE gateway_policy SET active_revision_id = 'polrev_ent' WHERE id = 'pol_ent';
+    INSERT INTO gateway_ingress_profile
+      (id, workspace_id, installation_id, hostname, mode, auth_config, policy_revision_id) VALUES
+      ('prof_ent','ws1','inst_ent','ent.local','public_app','{}','polrev_ent');
+    INSERT INTO model_entitlement
+      (id, workspace_id, policy_revision_id, subject_kind, subject_ref, canonical_model_id, offering_id, effect) VALUES
+      ('ent_off','ws1','polrev_ent','all',NULL,NULL,'off1','allow');
+
+    -- ── Fix 4 (apply() enforces tripwire approval): two DISTINCT-kind routes (chat + embeddings so
+    --    they do not clobber), so removing one produces a route_delete tripwire on re-plan.
+    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
+      ('inst_tw','ws1','inst-tw','{"kind":"test"}');
+    INSERT INTO gateway_ingress_profile
+      (id, workspace_id, installation_id, hostname, mode, auth_config) VALUES
+      ('prof_tw','ws1','inst_tw','tw.local','public_app','{}');
+    INSERT INTO gateway_route (id, workspace_id, installation_id, public_name, endpoint_kind) VALUES
+      ('route_tw_chat','ws1','inst_tw','tw-chat','chat'),
+      ('route_tw_emb','ws1','inst_tw','tw-emb','embeddings');
+    INSERT INTO gateway_route_revision
+      (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
+      ('rev_tw_chat','ws1','route_tw_chat','ordered','{}','{"overall_ms":30000}','sha256:rtwc'),
+      ('rev_tw_emb','ws1','route_tw_emb','ordered','{}','{"overall_ms":30000}','sha256:rtwe');
+    INSERT INTO gateway_target
+      (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url) VALUES
+      ('tg_tw_chat','ws1','rev_tw_chat','cred_openai','off1','ar1',NULL),
+      ('tg_tw_emb','ws1','rev_tw_emb','cred_openai','off1','ar1',NULL);
+    UPDATE gateway_route SET active_revision_id = 'rev_tw_chat' WHERE id = 'route_tw_chat';
+    UPDATE gateway_route SET active_revision_id = 'rev_tw_emb'  WHERE id = 'route_tw_emb';
+
+    -- ── Fix 5 (rollback publishes AFTER commit): one route; two applies produce a superseded + an
+    --    active revision to roll back between.
+    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
+      ('inst_rb','ws1','inst-rb','{"kind":"test"}');
+    INSERT INTO gateway_ingress_profile
+      (id, workspace_id, installation_id, hostname, mode, auth_config) VALUES
+      ('prof_rb','ws1','inst_rb','rb.local','public_app','{}');
+    INSERT INTO gateway_route (id, workspace_id, installation_id, public_name, endpoint_kind) VALUES
+      ('route_rb','ws1','inst_rb','rb-chat','chat');
+    INSERT INTO gateway_route_revision
+      (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
+      ('rev_rb','ws1','route_rb','ordered','{}','{"overall_ms":30000}','sha256:rrb');
+    INSERT INTO gateway_target
+      (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url, weight) VALUES
+      ('tg_rb','ws1','rev_rb','cred_openai','off1','ar1',NULL,100);
+    UPDATE gateway_route SET active_revision_id = 'rev_rb' WHERE id = 'route_rb';
   `);
 }, { timeout: 300_000 });
 
@@ -193,9 +262,9 @@ test("apply: store.publish runs only after the DB txn commits (publish failure �
   };
 
   const target = await buildSnapshot(db, "inst_apply_fail");
-  const plan = await planApply(db, "inst_apply_fail", target);
+  const p = await plan(db, "inst_apply_fail", target);
 
-  await assert.rejects(apply(db, plan, throwingStore), /publish boom/);
+  await assert.rejects(apply(db, p, throwingStore), /publish boom/);
 
   // The DB txn committed BEFORE publish was attempted: the new revision is present and active.
   const rows = await sql`
@@ -220,8 +289,8 @@ test("apply: happy path publishes after commit and records exactly one active re
   };
 
   const target = await buildSnapshot(db, "inst_apply_ok");
-  const plan = await planApply(db, "inst_apply_ok", target);
-  const op = await apply(db, plan, store);
+  const p = await plan(db, "inst_apply_ok", target);
+  const op = await apply(db, p, store);
 
   assert.equal(op.outcome, "accepted");
   assert.equal(op.edgeConfigVersion, "v1", "the published version is reflected on the returned op");
@@ -233,4 +302,118 @@ test("apply: happy path publishes after commit and records exactly one active re
     WHERE installation_id = 'inst_apply_ok' AND status = 'active'`;
   assert.equal(rows.length, 1, "exactly one active revision after apply");
   assert.equal(rows[0].id, target.meta.revision);
+});
+
+/** An in-memory publish store that always succeeds (for tests that need an active revision). */
+const okStore = (): SnapshotPublishStore => ({
+  publish: async () => ({ version: "v1" }),
+  pointer: async () => null,
+  loadActive: async () => {
+    throw new Error("unused");
+  },
+});
+
+// ── Fix 1: `budgets` is inside the signed content hash ⇒ a budget-only edit is NOT a no-op ────
+test("plan: a budget-only change is NOT a no-op (budgets are inside the signed content hash)", async () => {
+  const s1 = await buildSnapshot(db, "inst_budget");
+  assert.ok(s1.budgets && s1.budgets["ba_budget"], "the advisory budget must ship in the snapshot");
+
+  // Establish an active revision carrying the budget.
+  await apply(db, await plan(db, "inst_budget", s1), okStore());
+
+  // Change ONLY the budget account's cap — nothing else about the installation changes.
+  await sql`UPDATE budget_account SET limit_amount = 2000000 WHERE id = 'ba_budget'`;
+  const s2 = await buildSnapshot(db, "inst_budget");
+
+  // Pre-fix (budgets excluded from the hash) s1 and s2 hash identically → plan() is a no-op and the
+  // change never publishes. Post-fix the hash differs and the diff surfaces the budget change.
+  assert.notEqual(s1.meta.contentHash, s2.meta.contentHash, "a budget-only edit must change the content hash");
+  const p2 = await plan(db, "inst_budget", s2);
+  assert.equal(p2.noop, false, "a budget-only change must NOT be a no-op");
+  assert.ok(
+    p2.diffJson.budgets.changed.includes("ba_budget"),
+    `budget change must appear in diffJson.budgets.changed; got ${JSON.stringify(p2.diffJson.budgets)}`,
+  );
+});
+
+// ── Fix 2: offering-scoped entitlement resolves to that offering's model (not a wildcard) ──────
+test("build: an offering-scoped entitlement scopes to that offering's canonical model, not a wildcard", async () => {
+  const snap = await buildSnapshot(db, "inst_ent");
+  const pol = snap.policies["polrev_ent"];
+  assert.ok(pol, "the bound policy revision must be present");
+  const ent = pol.modelEntitlements.find((e) => e.effect === "allow");
+  assert.ok(ent, "the offering-scoped allow must be emitted in the evaluator shape");
+  // The whole fix: off1's canonical model is cm1. Pre-fix this was null, which the evaluator treats
+  // as an all-models WILDCARD (offering-scoped allow → allow-ALL). It must be exactly cm1.
+  assert.notEqual(ent.canonicalModelId, null, "an offering-scoped allow must NOT collapse to a model wildcard");
+  assert.equal(ent.canonicalModelId, "cm1", `must scope to the offering's model; got ${JSON.stringify(ent)}`);
+});
+
+// ── Fix 4: apply() enforces tripwire approval (unapproved route_delete rejected) ───────────────
+test("apply: an unapproved route_delete is rejected; a matching {kind,ref,planHash} approval lets it through", async () => {
+  // Active revision with BOTH routes (chat + embeddings, distinct keys).
+  const s1 = await buildSnapshot(db, "inst_tw");
+  assert.equal(Object.keys(s1.routes).length, 2, "two distinct-kind routes must be present");
+  await apply(db, await plan(db, "inst_tw", s1), okStore());
+
+  // Delete the embeddings route → re-plan produces a route_delete tripwire.
+  await sql`UPDATE gateway_route SET active_revision_id = NULL WHERE id = 'route_tw_emb'`;
+  const s2 = await buildSnapshot(db, "inst_tw");
+  const p2 = await plan(db, "inst_tw", s2);
+  const tw = p2.tripwireItems.find((t) => t.kind === "route_delete");
+  assert.ok(tw, `a route_delete tripwire must be produced; got ${JSON.stringify(p2.tripwireItems)}`);
+
+  // (a) No approval → apply REJECTS and inserts NO new revision (the base stays active).
+  const rejected = await apply(db, p2, okStore());
+  assert.equal(rejected.outcome, "rejected");
+  assert.equal(rejected.reasonCode, "CONFIG_TRIPWIRE_HELD");
+  assert.equal(rejected.revisionId, null, "a held tripwire must not produce a new revision");
+  const active1 = await sql`
+    SELECT content_hash FROM gateway_config_revision
+    WHERE installation_id = 'inst_tw' AND status = 'active'`;
+  assert.equal(active1.length, 1);
+  assert.equal(active1[0].content_hash, s1.meta.contentHash, "the base revision must remain active");
+
+  // (b) An approval for a DIFFERENT planHash must NOT clear the hold (approval is plan-bound).
+  const staleApproval: Approval[] = [{ kind: tw.kind, ref: tw.ref, planHash: "sha256:stale" }];
+  const stale = await apply(db, p2, okStore(), staleApproval);
+  assert.equal(stale.outcome, "rejected", "an approval bound to a different plan must not clear the hold");
+
+  // (c) A matching {kind, ref, planHash} approval lets it through.
+  const approvals: Approval[] = [{ kind: tw.kind, ref: tw.ref, planHash: p2.planHash }];
+  const accepted = await apply(db, p2, okStore(), approvals);
+  assert.equal(accepted.outcome, "accepted");
+  assert.equal(accepted.revisionId, s2.meta.revision, "the approved change produces the new revision");
+});
+
+// ── Fix 5: rollback publishes only AFTER the DB txn commits ────────────────────────────────────
+test("rollback: republish runs only after commit (publish failure ⇒ the DB rollback still stands)", async () => {
+  // rev1 (active) then a content-different rev2 (active; rev1 → superseded).
+  const op1 = await apply(db, await plan(db, "inst_rb", await buildSnapshot(db, "inst_rb")), okStore());
+  const rev1 = op1.revisionId as string;
+
+  await sql`UPDATE gateway_target SET weight = 55 WHERE id = 'tg_rb'`; // change snapshot content
+  const s2 = await buildSnapshot(db, "inst_rb");
+  const op2 = await apply(db, await plan(db, "inst_rb", s2), okStore());
+  const rev2 = op2.revisionId as string;
+  assert.notEqual(rev1, rev2, "the two applies must produce distinct revisions");
+
+  // Roll back to rev1 with a store whose publish always throws.
+  const throwingStore: SnapshotPublishStore = {
+    publish: async () => {
+      throw new Error("rollback publish boom");
+    },
+    pointer: async () => null,
+    loadActive: async () => {
+      throw new Error("unused");
+    },
+  };
+  await assert.rejects(rollback(db, rev1, throwingStore), /rollback publish boom/);
+
+  // Pre-fix (publish INSIDE the txn) the throw rolls the DB back: rev2 stays active + the
+  // installation still points at rev2. Post-fix the DB commit stands despite the publish failure.
+  const inst = await sql`SELECT applied_config_revision FROM gateway_installation WHERE id = 'inst_rb'`;
+  assert.equal(inst[0].applied_config_revision, rev1, "installation must point at the rolled-back-to revision");
+  const rev2row = await sql`SELECT status FROM gateway_config_revision WHERE id = ${rev2}`;
+  assert.equal(rev2row[0].status, "rolled_back", "the prior active revision must be marked rolled_back");
 });

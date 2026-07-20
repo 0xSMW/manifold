@@ -15,7 +15,7 @@ import {
   buildSnapshot,
   computeContentHash,
   genId,
-  planApply,
+  plan,
   signSnapshot as signSnapshotImpl,
   stableStringify,
   type ConfigOperation,
@@ -56,22 +56,22 @@ export function signSnapshot(snapshot: ConfigSnapshot): ConfigSnapshot {
 
 /**
  * The deterministic plan pipeline shared by /config/plan and /config/apply:
- * buildSnapshot → signSnapshot → planApply. Extracting it guarantees both routes hash the
+ * buildSnapshot → signSnapshot → plan. Extracting it guarantees both routes hash the
  * SAME bytes, so planHash cannot diverge between plan-time and apply-time (§8.2, §16.2). The
  * target content hash excludes build time, so a re-plan at apply reproduces the caller's plan.
  *
  * CRITICAL (§6.16/§15.2): the app connects as the non-superuser `manifold_app` role, so RLS is
- * live. buildSnapshot/planApply read installation/profiles/routes/keys/credentials, which are all
+ * live. buildSnapshot/plan read installation/profiles/routes/keys/credentials, which are all
  * workspace-scoped — with no `manifold.workspace_id` GUC set they return ZERO rows (empty snapshot
  * / "installation not found"). We therefore run the whole pipeline inside `withWorkspace`, which
- * opens a txn and sets the GUC, and hand buildSnapshot/planApply that GUC-scoped connection.
+ * opens a txn and sets the GUC, and hand buildSnapshot/plan that GUC-scoped connection.
  */
 export function buildSignedPlan(workspaceId: string, installationId: string) {
   return withWorkspace(workspaceId, async (sql) => {
-    // buildSnapshot/planApply only touch `db.$client`; give them the GUC-scoped tx as that client.
+    // buildSnapshot/plan only touch `db.$client`; give them the GUC-scoped tx as that client.
     const scoped = { $client: sql } as unknown as Database;
     const built = await buildSnapshot(scoped, installationId);
-    return planApply(scoped, installationId, signSnapshot(built));
+    return plan(scoped, installationId, signSnapshot(built));
   });
 }
 
@@ -97,7 +97,7 @@ export async function publishKeysOnly(
   workspaceId: string,
   installationId: string,
 ): Promise<ConfigOperation | null> {
-  const plan = await withWorkspace(workspaceId, async (sql) => {
+  const keyPlan = await withWorkspace(workspaceId, async (sql) => {
     const scoped = { $client: sql } as unknown as Database;
     const rows = await sql<{ content_hash: string; snapshot: unknown }[]>`
       SELECT content_hash, snapshot FROM gateway_config_revision
@@ -126,10 +126,11 @@ export async function publishKeysOnly(
       },
     };
     next.meta.contentHash = computeContentHash(next);
-    return planApply(scoped, installationId, signSnapshot(next));
+    return plan(scoped, installationId, signSnapshot(next));
   });
 
-  if (!plan) return null;
-  // Apply with the real client (its own txn sets the workspace GUC; §8.2 apply()).
-  return apply(db(), plan, snapshotStore());
+  if (!keyPlan) return null;
+  // Apply with the real client (its own txn sets the workspace GUC; §8.2 apply()). A key-only
+  // rebuild has no route/entitlement removals → no tripwires → no approvals needed.
+  return apply(db(), keyPlan, snapshotStore());
 }

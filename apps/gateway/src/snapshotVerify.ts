@@ -36,20 +36,34 @@ function stableStringify(value: unknown): string {
 
 /**
  * The canonical body over which `contentHash` is computed (§7.3): the whole snapshot minus the
- * derived/signature meta fields. Selects the exact same field set as @manifold/config
- * `canonicalBody` — undefined sections (a ports.Snapshot has no offerings/policies) are dropped
- * by JSON.stringify, exactly as they are in config.
+ * derived/signature meta fields. Selects the exact same field set — IN THE SAME ORDER — as
+ * @manifold/config `canonicalBody` (packages/config/src/canonical.ts); the two MUST stay
+ * byte-for-byte identical or a config-signed snapshot would fail to verify here. `budgets` is
+ * SECURITY-critical: it carries each account's `enforcement` (hard vs soft) that the reserve gate
+ * trusts, so it must be inside the signed hash (else a tamperer flips hard→soft under a valid
+ * signature). Undefined sections (a plain ports.Snapshot may have no offerings/policies/budgets)
+ * are dropped by JSON.stringify, exactly as they are in config.
  */
 function canonicalBody(snapshot: Snapshot): string {
   const snap = snapshot as unknown as Record<string, unknown>;
-  const { profiles, keys, routes, offerings, policies } = snap;
-  return stableStringify({ profiles, keys, routes, offerings, policies });
+  const { profiles, keys, routes, offerings, policies, budgets } = snap;
+  return stableStringify({ profiles, keys, routes, offerings, policies, budgets });
 }
 
 /** Compute `sha256:<hex>` over the canonical body (matches @manifold/config `computeContentHash`). */
 export function computeSnapshotContentHash(snapshot: Snapshot): string {
   const hex = createHash("sha256").update(canonicalBody(snapshot), "utf8").digest("hex");
   return `sha256:${hex}`;
+}
+
+/**
+ * The exact bytes the ed25519 signature is computed over — a byte-for-byte reimplementation of
+ * @manifold/config `snapshotSigningMessage` (signing.ts). Binds the content hash to the snapshot's
+ * identity (installationId + revision) so a signature is not portable across installations/revisions
+ * that share an identical body. A plain JSON array (no key ordering) keeps the two impls identical.
+ */
+function snapshotSigningMessage(contentHash: string, installationId: string, revision: string): Buffer {
+  return Buffer.from(JSON.stringify([contentHash, installationId, revision]), "utf8");
 }
 
 /** Normalize a base64-encoded ed25519 public key (raw 32-byte or full SPKI DER) into a KeyObject. */
@@ -73,16 +87,21 @@ export interface SnapshotVerifyResult {
 /**
  * Verify a snapshot the way §7.3 requires a loader to (byte-for-byte with @manifold/config
  * `verifySnapshot`): recompute `contentHash` over the canonical body and compare to
- * `meta.contentHash` (catches any body tamper), then ed25519-verify `meta.signature` over that
- * contentHash string against the pinned public key.
+ * `meta.contentHash` (catches any body tamper), then ed25519-verify `meta.signature` over the
+ * identity-bound message (contentHash + installationId + revision) against the pinned public key.
  */
 export function verifySnapshot(snapshot: Snapshot, publicKeyBase64: string): SnapshotVerifyResult {
   const recomputed = computeSnapshotContentHash(snapshot);
   if (recomputed !== snapshot.meta.contentHash) return { ok: false, reason: "content_hash_mismatch" };
   if (!snapshot.meta.signature) return { ok: false, reason: "no_signature" };
+  const message = snapshotSigningMessage(
+    snapshot.meta.contentHash,
+    snapshot.meta.installationId,
+    snapshot.meta.revision,
+  );
   const ok = edVerify(
     null,
-    Buffer.from(snapshot.meta.contentHash, "utf8"),
+    message,
     publicKeyFromBase64(publicKeyBase64),
     Buffer.from(snapshot.meta.signature, "base64"),
   );

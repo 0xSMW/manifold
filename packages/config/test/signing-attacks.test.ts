@@ -389,3 +389,51 @@ test("attack: tamper + resign under attacker key → still content_hash_mismatch
   assert.equal(r.ok, false);
   assert.equal(r.reason, "content_hash_mismatch");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 1 (CRITICAL) — `budgets` MUST be inside the signed content hash. A snapshot carries a
+// `budgets` section whose `enforcement` (hard vs soft) the gateway's reserve gate trusts; if it
+// were excluded from the hash (as it was), a tamperer could flip hard→soft under a still-valid
+// signature to bypass a hard cap. These pin that budgets are hashed AND signature-protected.
+// ─────────────────────────────────────────────────────────────────────────────
+test("fix1: flipping a budget account's enforcement changes the content hash (budgets are hashed)", () => {
+  const hard = freshSnapshot();
+  hard.budgets = { ba_1: { id: "ba_1", enforcement: "hard", unit: "cost_microusd", window: "monthly", limit: "1000000" } };
+  const soft = freshSnapshot();
+  soft.budgets = { ba_1: { id: "ba_1", enforcement: "soft", unit: "cost_microusd", window: "monthly", limit: "1000000" } };
+
+  assert.notEqual(computeContentHash(hard), computeContentHash(soft), "hard→soft must change the content hash");
+  // And the difference is in the canonical body (not a formatting fluke) — budgets ARE in the body.
+  assert.notEqual(canonicalBody(hard), canonicalBody(soft));
+});
+
+test("fix1: a budgets-tampered but otherwise-signed snapshot is REJECTED (content_hash_mismatch)", () => {
+  const snap = freshSnapshot();
+  snap.budgets = { ba_1: { id: "ba_1", enforcement: "hard", unit: "cost_microusd", window: "monthly", limit: "1000000" } };
+  const signed = signSnapshot(snap, PINNED.privateKey);
+  assert.deepEqual(verifySnapshot(signed, PINNED.publicKey), { ok: true }, "sanity: the signed budgeted snapshot verifies");
+
+  // Attacker flips the hard cap to soft under the (unchanged) ed25519 signature — must be caught.
+  signed.budgets!["ba_1"].enforcement = "soft";
+  assert.deepEqual(verifySnapshot(signed, PINNED.publicKey), { ok: false, reason: "content_hash_mismatch" });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 6 (defense-in-depth) — the signature BINDS installationId + revision, not just the content
+// hash (which excludes meta). Two snapshots with an identical body share a content hash, so a
+// lifted signature would otherwise be portable across installations/revisions. Both replays fail.
+// ─────────────────────────────────────────────────────────────────────────────
+test("fix6: a signature is bound to installationId — replay onto a different installation is REJECTED", () => {
+  const a = signSnapshot(freshSnapshot(), PINNED.privateKey); // meta.installationId = "inst_alpha"
+  const b: ConfigSnapshot = { ...a, meta: { ...a.meta, installationId: "inst_victim" } };
+  // The body-only content hash is identical (meta is excluded), so this reaches the signature check.
+  assert.equal(computeContentHash(a), computeContentHash(b), "body-only hash is identical across installations");
+  assert.deepEqual(verifySnapshot(b, PINNED.publicKey), { ok: false, reason: "bad_signature" });
+});
+
+test("fix6: a signature is bound to revision — replay onto a different revision is REJECTED", () => {
+  const a = signSnapshot(freshSnapshot(), PINNED.privateKey); // meta.revision = "rev_0001"
+  const b: ConfigSnapshot = { ...a, meta: { ...a.meta, revision: "rev_9999" } };
+  assert.equal(computeContentHash(a), computeContentHash(b), "body-only hash is identical across revisions");
+  assert.deepEqual(verifySnapshot(b, PINNED.publicKey), { ok: false, reason: "bad_signature" });
+});

@@ -12,10 +12,20 @@ import { assembleSnapshot, buildKeysSection, genId, stampMeta } from "./build.js
 import { computeContentHash, stableStringify } from "./canonical.js";
 import * as q from "./db.js";
 import type { PgSql } from "./db.js";
-import { planApply } from "./plan.js";
+import { plan } from "./plan.js";
 import { signSnapshot, type PrivateKeyInput } from "./signing.js";
-import type { ConfigOperation, ConfigSnapshot, Plan, SnapshotPublishStore } from "./types.js";
+import type {
+  Approval,
+  ConfigOperation,
+  ConfigSnapshot,
+  Plan,
+  SnapshotPublishStore,
+} from "./types.js";
 
+// P2-3 (held rename): @manifold/database exposes no `setWorkspaceGuc` helper today, so we keep the
+// local `set_config(..., true)` (transaction-scoped GUC). Do NOT create the helper here — it is a
+// cross-package concern (database owns the GUC surface). Swap this to the shared helper if/when it
+// lands in @manifold/database.
 async function setWorkspace(sql: PgSql, workspaceId: string): Promise<void> {
   await sql`SELECT set_config('manifold.workspace_id', ${workspaceId}, true)`;
 }
@@ -88,11 +98,19 @@ function opFromPlan(id: OpIdentity, patch: OpOutcome): Omit<ConfigOperation, "id
  * SPEC §8.2 apply(). One transaction. Returns the recorded ConfigOperation; on a moved base
  * the operation is recorded with outcome 'rejected' and reasonCode CONFIG_PRECONDITION_FAILED
  * (the txn still commits the audit row).
+ *
+ * Destructive changes (route deletions, entitlement removals) are TRIPWIRES (§8.2). apply() is
+ * the authoritative gate: it applies them ONLY when every `plan.tripwireItems` entry is covered by
+ * an `approvals` entry matching its `{kind, ref}` AND the plan's `planHash`. Any uncovered tripwire
+ * → the new revision is NOT inserted; the operation is recorded 'rejected' / CONFIG_TRIPWIRE_HELD.
+ * Callers with no destructive changes (e.g. keyOnlyPublish) pass no approvals — an empty tripwire
+ * set is trivially covered.
  */
 export async function apply(
   db: Database,
   plan: Plan,
   store: SnapshotPublishStore,
+  approvals: Approval[] = [],
 ): Promise<ConfigOperation> {
   const sql = q.client(db);
 
@@ -125,6 +143,26 @@ export async function apply(
         edgeConfigVersion: null,
         revisionId: active?.id ?? null,
         reasonCode: null,
+      }), plan.diffJson);
+      return { op, publish: null };
+    }
+
+    // Tripwire approval gate (§8.2): a destructive change applies ONLY with a matching approval.
+    // Match on {kind, ref} AND the plan's planHash, so an approval minted against a stale plan can
+    // never wave through a different destructive change. Any uncovered tripwire → reject (do NOT
+    // insert the new active revision); the audit row still commits (CONFIG_TRIPWIRE_HELD).
+    const heldTripwires = plan.tripwireItems.filter(
+      (it) =>
+        !approvals.some(
+          (a) => a.kind === it.kind && a.ref === it.ref && a.planHash === plan.planHash,
+        ),
+    );
+    if (heldTripwires.length > 0) {
+      const op = await insertOperation(tx, opFromPlan(plan, {
+        outcome: "rejected",
+        edgeConfigVersion: null,
+        revisionId: null,
+        reasonCode: ReasonCode.enum.CONFIG_TRIPWIRE_HELD,
       }), plan.diffJson);
       return { op, publish: null };
     }
@@ -195,6 +233,12 @@ export async function apply(
  * a re-insert; the authoritative live pointer after rollback is the store + the installation's
  * applied_config_revision (ADR-0007 "republish, never mutate"; §8.2 "the store is a cache of
  * [the DB]"). The prior revision row remains 'superseded'; the current is marked 'rolled_back'.
+ *
+ * Two-phase like apply(): the DB txn commits FIRST, then store.publish. Publishing inside the txn
+ * (as it did) let the store advance to the rolled-back revision even if a later statement threw and
+ * rolled the DB back — the store would then point at a revision the DB never committed. Publish is
+ * a cache of committed DB truth, so it MUST happen only after commit; a post-commit publish failure
+ * leaves the DB ahead of the store (the safe direction).
  */
 export async function rollback(
   db: Database,
@@ -202,7 +246,9 @@ export async function rollback(
   store: SnapshotPublishStore,
 ): Promise<ConfigOperation> {
   const sql = q.client(db);
-  return sql.begin(async (txRaw) => {
+
+  // Phase 1 — DB txn (source of truth). Nothing that advances the external store runs inside it.
+  const committed = (await sql.begin(async (txRaw) => {
     const tx = txRaw as unknown as PgSql;
     const target = await q.readRevisionById(tx, revisionId);
     if (!target) throw new Error(`revision not found: ${revisionId}`);
@@ -213,13 +259,13 @@ export async function rollback(
       await tx`UPDATE gateway_config_revision SET status = 'rolled_back' WHERE id = ${active.id}`;
     }
 
-    const priorSnap = target.snapshot as ConfigSnapshot;
-    const published = await store.publish(target.installation_id, target.id, priorSnap);
     await tx`
       UPDATE gateway_installation SET applied_config_revision = ${target.id}
       WHERE id = ${target.installation_id}`;
 
-    return insertOperation(tx, opFromPlan(
+    // edge_config_version left null here; the publish (post-commit) yields it and the returned op
+    // is patched in memory (mirrors apply()).
+    const op = await insertOperation(tx, opFromPlan(
       {
         installationId: target.installation_id,
         workspaceId: target.workspace_id,
@@ -230,12 +276,32 @@ export async function rollback(
       },
       {
         outcome: "accepted",
-        edgeConfigVersion: published.version,
+        edgeConfigVersion: null,
         revisionId: target.id,
         reasonCode: null,
       },
     ), { rollback: true, restoredRevision: target.id, from: active?.id ?? null });
-  }) as Promise<ConfigOperation>;
+    return {
+      op,
+      publish: {
+        installationId: target.installation_id,
+        revisionId: target.id,
+        snap: target.snapshot as ConfigSnapshot,
+      },
+    };
+  })) as {
+    op: ConfigOperation;
+    publish: { installationId: string; revisionId: string; snap: ConfigSnapshot };
+  };
+
+  // Phase 2 — republish the prior revision's stored bytes AFTER the DB txn commits.
+  const published = await store.publish(
+    committed.publish.installationId,
+    committed.publish.revisionId,
+    committed.publish.snap,
+  );
+  committed.op.edgeConfigVersion = published.version;
+  return committed.op;
 }
 
 export interface KeyOnlyPublishOptions {
@@ -294,8 +360,9 @@ export async function keyOnlyPublish(
 
   if (opts.signingKey) next = signSnapshot(next, opts.signingKey, opts.signingKeyId);
 
-  const plan = await planApply(db, installationId, next);
-  return apply(db, plan, store);
+  // A key-only rebuild changes no routes/entitlements → no tripwires → no approvals required.
+  const keyPlan = await plan(db, installationId, next);
+  return apply(db, keyPlan, store);
 }
 
 // buildSnapshot is re-exported for callers wanting a full rebuild before keyOnlyPublish paths.

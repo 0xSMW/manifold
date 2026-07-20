@@ -62,7 +62,14 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const op = await apply(db(), plan, snapshotStore());
+    // apply() is the authoritative tripwire gate (§8.2): pass an approval bound to {kind, ref} AND
+    // this plan's planHash for each user-approved tripwire. The HTTP pre-check above guarantees every
+    // tripwire is approved, so this covers them all; a mismatch would make apply() reject.
+    const tripwireApprovals = plan.tripwireItems
+      .filter((it) => approvedRefs.has(it.ref))
+      .map((it) => ({ kind: it.kind, ref: it.ref, planHash: plan.planHash }));
+
+    const op = await apply(db(), plan, snapshotStore(), tripwireApprovals);
 
     if (op.outcome === "rejected" && op.reasonCode === "CONFIG_PRECONDITION_FAILED") {
       throw new ManifoldError({

@@ -116,9 +116,27 @@ export function generateSigningKeyPair(): {
 }
 
 /**
+ * The exact bytes the ed25519 signature is computed over (§7.3, ADR-0024). Beyond the content
+ * hash it BINDS the snapshot's identity (installationId + revision) — `contentHash` deliberately
+ * excludes meta, so without this a signature would be portable across installations/revisions that
+ * happen to share an identical body (a cross-installation replay vector). Defense-in-depth: the
+ * loader recomputes this and any identity mismatch fails the signature.
+ *
+ * apps/gateway/src/snapshotVerify.ts reimplements this byte-for-byte (a plain JSON array so the two
+ * impls cannot drift on key ordering) — keep them identical.
+ */
+export function snapshotSigningMessage(
+  contentHash: string,
+  installationId: string,
+  revision: string,
+): Buffer {
+  return Buffer.from(JSON.stringify([contentHash, installationId, revision]), "utf8");
+}
+
+/**
  * Sign a snapshot in place-returning a new object: (re)computes `contentHash`, then signs the
- * contentHash string with ed25519 and sets `meta.signature` (base64) + `meta.signingKeyId`
- * (§7.2/§7.3).
+ * identity-bound message (contentHash + installationId + revision) with ed25519 and sets
+ * `meta.signature` (base64) + `meta.signingKeyId` (§7.2/§7.3).
  */
 export function signSnapshot(
   snapshot: ConfigSnapshot,
@@ -127,7 +145,12 @@ export function signSnapshot(
 ): ConfigSnapshot {
   const key = normalizePrivateKey(privateKey);
   const contentHash = computeContentHash(snapshot);
-  const signature = edSign(null, Buffer.from(contentHash, "utf8"), key).toString("base64");
+  const message = snapshotSigningMessage(
+    contentHash,
+    snapshot.meta.installationId,
+    snapshot.meta.revision,
+  );
+  const signature = edSign(null, message, key).toString("base64");
   const keyId =
     signingKeyId ??
     (() => {
@@ -148,7 +171,9 @@ export interface VerifyResult {
 /**
  * Verify a snapshot the way §7.3 requires a loader to: recompute `contentHash` over the
  * canonical body and compare to `meta.contentHash` (catches truncation/corruption), then
- * verify the ed25519 signature over that contentHash against the pinned public key.
+ * verify the ed25519 signature over the identity-bound message (contentHash + installationId +
+ * revision) against the pinned public key — so a signature lifted onto a snapshot with a different
+ * installationId/revision fails even when the body (hence contentHash) is identical.
  */
 export function verifySnapshot(
   snapshot: ConfigSnapshot,
@@ -158,11 +183,11 @@ export function verifySnapshot(
   if (recomputed !== snapshot.meta.contentHash) return { ok: false, reason: "content_hash_mismatch" };
   if (!snapshot.meta.signature) return { ok: false, reason: "no_signature" };
   const key = normalizePublicKey(publicKey);
-  const ok = edVerify(
-    null,
-    Buffer.from(snapshot.meta.contentHash, "utf8"),
-    key,
-    Buffer.from(snapshot.meta.signature, "base64"),
+  const message = snapshotSigningMessage(
+    snapshot.meta.contentHash,
+    snapshot.meta.installationId,
+    snapshot.meta.revision,
   );
+  const ok = edVerify(null, message, key, Buffer.from(snapshot.meta.signature, "base64"));
   return ok ? { ok: true } : { ok: false, reason: "bad_signature" };
 }

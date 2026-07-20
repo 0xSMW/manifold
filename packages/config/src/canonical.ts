@@ -33,8 +33,15 @@ function sortValue(value: Json): Json {
  * function of routing/key/policy content — see the module doc.
  */
 export function canonicalBody(snapshot: ConfigSnapshot): string {
-  const { profiles, keys, routes, offerings, policies } = snapshot;
-  return stableStringify({ profiles, keys, routes, offerings, policies });
+  // SECURITY (§16.3): `budgets` MUST be inside the signed content hash. It carries each account's
+  // `enforcement` (hard vs soft) — the gateway's pre-dispatch reserve gate (enforce.ts) trusts it.
+  // If budgets were excluded (as it was), a tamperer could flip `enforcement` hard→soft (or delete
+  // an account) under a still-valid signature to bypass a hard cap, AND a pure budget edit would
+  // hash identically to the prior snapshot → plan() sees a no-op and never publishes the change.
+  // The gateway's DB-free reimplementation (apps/gateway/src/snapshotVerify.ts `canonicalBody`)
+  // MUST select the identical field set in the identical order — keep the two byte-for-byte equal.
+  const { profiles, keys, routes, offerings, policies, budgets } = snapshot;
+  return stableStringify({ profiles, keys, routes, offerings, policies, budgets });
 }
 
 /** Compute `sha256:<hex>` over the canonical body (§7.3). */
