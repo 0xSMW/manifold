@@ -1,0 +1,26 @@
+{
+  "name": "@manifold/domain",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure domain types, value objects, and state machines (SPEC §5). Depends only on @manifold/contracts — no platform imports, no drizzle, no react (SPEC §4.2).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "test": "node --test $(find dist -name '*.test.js')"
+  },
+  "dependencies": {
+    "@manifold/contracts": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}

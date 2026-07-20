@@ -1,0 +1,59 @@
+// authenticate(request, profileId, snapshot) — SPEC §8.1 profiled→authenticated guard.
+// Computes HMAC(pepper, presentedKey), indexes snapshot.keys (O(1), zero DB, ADR-0005),
+// then checks revoked / expiry / profile match, returning AUTH_* reason codes (§0.2).
+import type { ReasonCode } from "@manifold/contracts";
+import type { Crypto, Snapshot, SnapshotKey } from "@manifold/ports";
+
+export type AuthResult =
+  | { ok: true; key: SnapshotKey; keyHash: string }
+  | { ok: false; reason: ReasonCode; message: string };
+
+/** Lower-case hex encode. */
+function toHex(bytes: Uint8Array): string {
+  let out = "";
+  for (const b of bytes) out += b.toString(16).padStart(2, "0");
+  return out;
+}
+
+/** Extract the presented virtual key from the Authorization header ("Bearer <key>" or raw). */
+export function presentedKey(request: Request): string | null {
+  const raw = request.headers.get("authorization");
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  const m = /^Bearer\s+(.+)$/i.exec(trimmed);
+  return m ? m[1]!.trim() : trimmed;
+}
+
+export async function authenticate(
+  request: Request,
+  profileId: string,
+  snapshot: Snapshot,
+  crypto: Crypto,
+  pepper: Uint8Array,
+  now: Date,
+): Promise<AuthResult> {
+  const key = presentedKey(request);
+  if (!key) {
+    return { ok: false, reason: "AUTH_KEY_UNKNOWN", message: "no api key presented" };
+  }
+  const digest = await crypto.hmacSha256(pepper, new TextEncoder().encode(key));
+  const keyHash = toHex(digest);
+  const record = snapshot.keys[keyHash];
+  if (!record) {
+    return { ok: false, reason: "AUTH_KEY_UNKNOWN", message: "api key not recognized" };
+  }
+  if (record.revoked) {
+    return { ok: false, reason: "AUTH_KEY_REVOKED", message: "api key has been revoked" };
+  }
+  if (record.expiresAt !== null && new Date(record.expiresAt).getTime() <= now.getTime()) {
+    return { ok: false, reason: "AUTH_KEY_EXPIRED", message: "api key has expired" };
+  }
+  if (record.profileId !== profileId) {
+    return {
+      ok: false,
+      reason: "AUTH_PROFILE_MISMATCH",
+      message: "api key is not valid for this host",
+    };
+  }
+  return { ok: true, key: record, keyHash };
+}

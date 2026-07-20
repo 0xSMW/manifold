@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1784510276369,
+      "tag": "0000_tiresome_piledriver",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1784510276370,
+      "tag": "0001_partitions",
+      "breakpoints": true
+    }
+  ]
+}

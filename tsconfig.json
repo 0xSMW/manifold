@@ -1,6 +1,10 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/contracts" }
+    { "path": "packages/contracts" },
+    { "path": "packages/domain" },
+    { "path": "packages/ports" },
+    { "path": "packages/gateway-core" },
+    { "path": "packages/database" }
   ]
 }

@@ -1,0 +1,192 @@
+// handleRequest(ctx, request) — SPEC §8.1 gateway request lifecycle, passthrough scope.
+// received → profiled → authenticated → dispatching → streaming → (observation emitted).
+// Zero platform imports: only Web-standard Request/Response/Headers/AbortSignal + injected ports.
+import type {
+  AuthInject,
+  Clock,
+  Crypto,
+  Fetcher,
+  IngestSink,
+  ObservationEvent,
+  Snapshot,
+  SnapshotTarget,
+} from "@manifold/ports";
+import { authenticate } from "./authenticate.js";
+import { errorResponse } from "./errors.js";
+import { headerAllowlist, sanitizeResponseHeaders } from "./headers.js";
+import { resolveProfile } from "./resolveProfile.js";
+import { resolveRoute } from "./resolveRoute.js";
+import { selectTarget } from "./selectTarget.js";
+import { ssrfCheck, STRICT_SSRF, type SsrfPolicy } from "./ssrf.js";
+
+/** The injected capabilities + loaded snapshot the core runs against (SPEC §4.3). */
+export interface GatewayContext {
+  installationId: string;
+  snapshot: Snapshot;
+  crypto: Crypto;
+  clock: Clock;
+  ingest: IngestSink;
+  /** Provider egress. Implementation wraps DNS-pinned SSRF (§14.4). */
+  fetcher: Fetcher;
+  /** HMAC pepper for key hashing (§14.3). */
+  pepper: Uint8Array;
+  /**
+   * Resolve the fresh provider secret for a target. SKELETON: the adapter reads it from env.
+   * TODO(§14.3, ADR-0022): the real path decrypts target.credentialCiphertext in-proc with the
+   * KEK-unwrapped DEK via ctx.crypto.openAesGcm — no env, no DB read.
+   */
+  resolveSecret(target: SnapshotTarget): Promise<string>;
+  /** Egress policy. Defaults to strict (https-only, no private addresses). */
+  ssrfPolicy?: SsrfPolicy;
+  /** Deterministic target selection in tests. */
+  rand?: () => number;
+}
+
+function injectProviderAuth(headers: Headers, authInject: AuthInject, secret: string): void {
+  for (const [name, template] of Object.entries(authInject.headers)) {
+    headers.set(name.toLowerCase(), template.replaceAll("${secret}", secret));
+  }
+}
+
+export async function handleRequest(ctx: GatewayContext, request: Request): Promise<Response> {
+  const { snapshot } = ctx;
+  const traceId = ctx.crypto.randomId("trace");
+  const now = ctx.clock.now();
+  const url = new URL(request.url);
+  const path = url.pathname;
+
+  // Best-effort observation; never blocks or fails the client response (§8.1 public path).
+  let seq = 0;
+  const emit = (e: Omit<ObservationEvent, "seq" | "occurredAt" | "traceId">): void => {
+    const event: ObservationEvent = {
+      traceId,
+      seq: seq++,
+      occurredAt: now.toISOString(),
+      ...e,
+    };
+    void ctx.ingest.emit(event).catch(() => {});
+  };
+
+  // 1. resolveProfile — pre-auth, from the trusted Host (ADR-0001). Prefer the Host header;
+  //    fall back to the URL authority (some runtimes drop the forbidden `host` header).
+  const host = request.headers.get("host") ?? url.host;
+  const resolved = resolveProfile(host, snapshot);
+  if (!resolved) {
+    emit(rejectEvent(null, "PROFILE_UNKNOWN"));
+    return errorResponse("PROFILE_UNKNOWN", "unknown host", traceId);
+  }
+  const { profileId } = resolved;
+
+  // 2. authenticate — HMAC(key) → snapshot.keys, then revoked/expiry/profile guards.
+  const auth = await authenticate(request, profileId, snapshot, ctx.crypto, ctx.pepper, now);
+  if (!auth.ok) {
+    emit({ kind: "terminal", profileId, keyId: null, routeId: null, offeringId: null, status: shapeStatus(auth.reason), reasonCodes: [auth.reason] });
+    return errorResponse(auth.reason, auth.message, traceId);
+  }
+
+  // 3. resolveRoute — O(1) composite key lookup → ROUTE_UNKNOWN.
+  const route = resolveRoute(profileId, path, snapshot);
+  if (!route) {
+    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: null, offeringId: null, status: 404, reasonCodes: ["ROUTE_UNKNOWN"] });
+    return errorResponse("ROUTE_UNKNOWN", `no route for '${path}' on this endpoint`, traceId);
+  }
+
+  // 4. selectTarget — ordered/weighted → ROUTE_NO_HEALTHY_TARGET.
+  const target = selectTarget(route, ctx.rand);
+  if (!target) {
+    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: null, status: 503, reasonCodes: ["ROUTE_NO_HEALTHY_TARGET"] });
+    return errorResponse("ROUTE_NO_HEALTHY_TARGET", "no healthy target for route", traceId);
+  }
+
+  // 5. Build the upstream URL and enforce SSRF (§14.4).
+  const upstreamUrl = new URL(url.pathname + url.search, target.baseUrl).toString();
+  const ssrf = ssrfCheck(upstreamUrl, target.allowedHosts, ctx.ssrfPolicy ?? STRICT_SSRF);
+  if (!ssrf.ok) {
+    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, status: 403, reasonCodes: [] });
+    return errorResponse("SSRF_BLOCKED", `egress blocked: ${ssrf.reason}`, traceId);
+  }
+
+  // 6. Header allowlist (drops inbound Authorization + hop-by-hop) + fresh provider auth.
+  const upstreamHeaders = headerAllowlist(request.headers);
+  const secret = await ctx.resolveSecret(target);
+  injectProviderAuth(upstreamHeaders, target.authInject, secret);
+
+  // 7. Dispatch with a bounded timeout; stream the body straight through (no buffering).
+  const method = request.method.toUpperCase();
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const init: RequestInit & { duplex?: "half" } = {
+    method,
+    headers: upstreamHeaders,
+    signal: AbortSignal.timeout(route.timeoutMs),
+  };
+  if (hasBody) {
+    init.body = request.body;
+    init.duplex = "half";
+  }
+  const upstreamReq = new Request(upstreamUrl, init);
+
+  let upstream: Response;
+  try {
+    upstream = await ctx.fetcher.fetch(upstreamReq);
+  } catch (err) {
+    const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
+    const code = isTimeout ? "PROVIDER_TIMEOUT" : "PROVIDER_HTTP_5XX";
+    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, status: shapeStatus(code), reasonCodes: isTimeout ? ["PROVIDER_TIMEOUT"] : [] });
+    return errorResponse(code, isTimeout ? "upstream timed out" : "upstream request failed", traceId);
+  }
+
+  // 8. Response started: emit the observation, then relay the stream with flat memory.
+  emit({
+    kind: "accepted",
+    profileId,
+    keyId: auth.key.id,
+    routeId: route.routeId,
+    offeringId: target.offeringId,
+    status: upstream.status,
+    reasonCodes: [],
+  });
+
+  const responseHeaders = sanitizeResponseHeaders(upstream.headers);
+  responseHeaders.set("x-trace-id", traceId);
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  });
+}
+
+function rejectEvent(
+  keyId: string | null,
+  code: string,
+): Omit<ObservationEvent, "seq" | "occurredAt" | "traceId"> {
+  return {
+    kind: "terminal",
+    profileId: "",
+    keyId,
+    routeId: null,
+    offeringId: null,
+    status: shapeStatus(code),
+    reasonCodes: [],
+  };
+}
+
+function shapeStatus(code: string): number {
+  switch (code) {
+    case "AUTH_KEY_UNKNOWN":
+    case "AUTH_KEY_REVOKED":
+    case "AUTH_KEY_EXPIRED":
+    case "AUTH_PROFILE_MISMATCH":
+      return 401;
+    case "ROUTE_UNKNOWN":
+    case "PROFILE_UNKNOWN":
+      return 404;
+    case "ROUTE_NO_HEALTHY_TARGET":
+      return 503;
+    case "PROVIDER_TIMEOUT":
+      return 504;
+    case "PROVIDER_HTTP_5XX":
+      return 502;
+    default:
+      return 400;
+  }
+}

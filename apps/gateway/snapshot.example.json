@@ -1,0 +1,67 @@
+{
+  "_comment": "DEV SNAPSHOT. Plaintext test virtual key = 'sk-manifold-localtest-key'. Its keys[] entry is hex(HMAC-SHA256(pepper='dev-pepper-not-for-production', key)). Change the pepper (MANIFOLD_KEY_PEPPER) and this hash must be recomputed. Provider secret is read from env ANTHROPIC_API_KEY (skeleton); the real path decrypts credentialCiphertext in-proc per SPEC §14.3/ADR-0022.",
+  "meta": {
+    "schema": "manifold.snapshot.v1",
+    "installationId": "local-dev",
+    "revision": "rev_local_1",
+    "contentHash": "sha256:dev-unsigned",
+    "builtAt": "2026-07-20T00:00:00.000Z",
+    "signature": "",
+    "signingKeyId": "dev"
+  },
+  "profiles": {
+    "localhost": {
+      "id": "public_app",
+      "mode": "public_app",
+      "policyRevision": null,
+      "defaultRouteSet": null
+    },
+    "127.0.0.1": {
+      "id": "public_app",
+      "mode": "public_app",
+      "policyRevision": null,
+      "defaultRouteSet": null
+    }
+  },
+  "keys": {
+    "b71f83ff642060e453bf3d11980d0164b99b82b18c6a1bc68a8309593d9f2879": {
+      "id": "vk_local_test",
+      "profileId": "public_app",
+      "scopes": ["routes:read"],
+      "allowedAppIds": [],
+      "budgetAccountId": null,
+      "expiresAt": null,
+      "revoked": false
+    }
+  },
+  "routes": {
+    "public_app:/v1/messages": {
+      "routeId": "route_anthropic_messages",
+      "revision": "rev_local_1",
+      "mode": "ordered",
+      "timeoutMs": 60000,
+      "capturePolicyId": "cap_none",
+      "targets": [
+        {
+          "offeringId": "anthropic.messages",
+          "credentialId": "cred_anthropic_dev",
+          "dekId": "dek_dev",
+          "credentialCiphertext": "",
+          "wrappedDek": "",
+          "weight": 1,
+          "priority": 0,
+          "baseUrl": "https://api.anthropic.com",
+          "region": null,
+          "allowedHosts": ["api.anthropic.com"],
+          "authInject": {
+            "headers": {
+              "x-api-key": "${secret}",
+              "anthropic-version": "2023-06-01"
+            }
+          },
+          "secretEnv": "ANTHROPIC_API_KEY"
+        }
+      ]
+    }
+  }
+}

@@ -5,7 +5,8 @@
   "description": "Manifold — OpenAI-compatible self-hostable AI gateway + logging/governance. Monorepo root.",
   "workspaces": [
     "packages/*",
-    "apps/control-plane"
+    "apps/control-plane",
+    "apps/gateway"
   ],
   "engines": {
     "node": ">=22"

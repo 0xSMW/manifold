@@ -1,0 +1,73 @@
+// packages/domain/src/machines/providerCredential.ts — provider credential lifecycle (SPEC §5.4, §6.4).
+//
+// `unvalidated → valid ⇄ invalid → rotating → revoked`. Terminal: `revoked`. Credentials
+// use lifecycle columns (never row deletion, §5.3), so `revoked` is reachable directly
+// from `valid`/`invalid` (immediate revoke) as well as via `rotating` (planned rotation).
+import { invalidTransition, ok, type Transition } from "./types.js";
+
+export type ProviderCredentialState =
+  | "unvalidated"
+  | "valid"
+  | "invalid"
+  | "rotating"
+  | "revoked";
+
+export const PROVIDER_CREDENTIAL_STATES: readonly ProviderCredentialState[] = [
+  "unvalidated",
+  "valid",
+  "invalid",
+  "rotating",
+  "revoked",
+];
+
+export const PROVIDER_CREDENTIAL_TERMINAL_STATES: readonly ProviderCredentialState[] = [
+  "revoked",
+];
+
+export type ProviderCredentialEvent =
+  /** unvalidated|invalid → valid | invalid: validation probe result. */
+  | { type: "VALIDATE"; ok: boolean }
+  /** valid → invalid: a subsequent probe/health-check failed. */
+  | { type: "INVALIDATE" }
+  /** valid|invalid → rotating: rotation to a successor credential begins. */
+  | { type: "ROTATE" }
+  /** rotating → revoked: rotation complete, predecessor retired. */
+  | { type: "ROTATION_COMPLETE" }
+  /** valid|invalid|rotating → revoked: immediate revoke. */
+  | { type: "REVOKE" };
+
+export function transitionProviderCredential(
+  state: ProviderCredentialState,
+  event: ProviderCredentialEvent,
+): Transition<ProviderCredentialState> {
+  switch (state) {
+    case "unvalidated":
+      if (event.type === "VALIDATE") {
+        return ok(event.ok ? "valid" : "invalid");
+      }
+      return invalidTransition();
+
+    case "valid":
+      if (event.type === "INVALIDATE") return ok("invalid");
+      if (event.type === "ROTATE") return ok("rotating");
+      if (event.type === "REVOKE") return ok("revoked");
+      return invalidTransition();
+
+    case "invalid":
+      if (event.type === "VALIDATE") {
+        return ok(event.ok ? "valid" : "invalid");
+      }
+      if (event.type === "ROTATE") return ok("rotating");
+      if (event.type === "REVOKE") return ok("revoked");
+      return invalidTransition();
+
+    case "rotating":
+      if (event.type === "ROTATION_COMPLETE") return ok("revoked");
+      if (event.type === "REVOKE") return ok("revoked");
+      return invalidTransition();
+
+    case "revoked":
+      // Terminal — no outgoing transitions.
+      return invalidTransition();
+  }
+}
