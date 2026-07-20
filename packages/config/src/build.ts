@@ -80,9 +80,12 @@ function scopesToArray(scopes: unknown): string[] {
   return [];
 }
 
-function hostFromUrl(url: string): string | null {
+export function hostFromUrl(url: string): string | null {
   try {
-    return new URL(url).host;
+    // hostname (NOT host): ssrfCheck allowlist-matches URL.hostname, which never includes the
+    // port. Using .host here (e.g. "proxy.example:8443") would self-block a ported target with
+    // SSRF_BLOCKED even though it is the configured base_url (review bug #10).
+    return new URL(url).hostname;
   } catch {
     return null;
   }
