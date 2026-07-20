@@ -6,6 +6,10 @@
     "tsBuildInfoFile": "tsconfig.tsbuildinfo",
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "references": [{ "path": "../contracts" }, { "path": "../ports" }],
+  "references": [
+    { "path": "../contracts" },
+    { "path": "../ports" },
+    { "path": "../gateway-policy" }
+  ],
   "include": ["src/**/*.ts"]
 }
