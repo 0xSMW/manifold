@@ -105,6 +105,15 @@ function makeSnapshot(cfg: SnapCfg = {}): Snapshot {
         targets: [makeTarget()],
       },
     },
+    // The target's offering, PRICED (review #4: a µ$ hard budget over an unpriced offering fails
+    // closed). 1,000,000 µ$/mtok = 1 µ$/token, so the reserve estimate stays est ≈ max_tokens and the
+    // capReserver comparisons (100 vs 1e6, generous 1e6) are unchanged.
+    offerings: {
+      "anthropic.messages": {
+        priceRevisionId: "pr1",
+        price: { inputPerMtokMicroUsd: "1000000", outputPerMtokMicroUsd: "1000000" },
+      },
+    },
     ...(cfg.policy ? { policies: { pol1: cfg.policy } } : {}),
     ...(cfg.budgets ? { budgets: cfg.budgets } : {}),
   };

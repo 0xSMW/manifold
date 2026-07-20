@@ -44,6 +44,9 @@ export function shapeForCode(code: string): ErrorShape {
     // Hard-budget reservation denied (SPEC §16.3): over cap → 402 Payment Required, never dispatched.
     case "BUDGET_RESERVE_DENIED":
       return { status: 402, type: "invalid_request_error", param: null };
+    // Hard µ$ budget over an offering with no known price (review #4): can't meter → fail closed, 402.
+    case "BUDGET_PRICE_UNKNOWN":
+      return { status: 402, type: "invalid_request_error", param: null };
     case "PROVIDER_TIMEOUT":
       return { status: 504, type: "api_error", param: null };
     case "PROVIDER_HTTP_5XX":

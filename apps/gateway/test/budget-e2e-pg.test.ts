@@ -78,6 +78,15 @@ before(async () => {
        capabilities, catalog_revision) VALUES
       ('off_be2e','cm_be2e','openai','be2e-model','["chat"]','ar1','{}','cat1');
 
+    -- A price for the offering (review #4: a µ$ hard budget over an UNPRICED offering fails closed).
+    -- 1,000,000 µ$/mtok = exactly 1 µ$/token, so the reserve estimate stays est ≈ max_tokens — the
+    -- 100 µ$ cap still admits max_tokens=50 and denies max_tokens=1000, exactly as before pricing.
+    INSERT INTO provider_price_revision
+      (id, offering_id, workspace_id, input_per_mtok_microusd, output_per_mtok_microusd,
+       fidelity, content_hash, catalog_revision) VALUES
+      ('prc_be2e','off_be2e','ws_be2e',1000000,1000000,'provider_verified','sha256:pricebe2e','cat1');
+    UPDATE provider_model_offering SET active_price_revision_id = 'prc_be2e' WHERE id = 'off_be2e';
+
     INSERT INTO provider_credential
       (id, workspace_id, provider, label, encrypted_secret, dek_id, base_url, allowed_hosts, status) VALUES
       ('cred_be2e','ws_be2e','openai','openai key','\\xc0ffee','dek_be2e',NULL,'["api.openai.com"]','valid');

@@ -260,6 +260,21 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
       return { ok: false, code: "BUDGET_RESERVE_DENIED", message: "budget reserver unavailable" };
     }
     const price = snapshot.offerings?.[target.offeringId]?.price;
+    // Fail CLOSED when a µ$ (cost_microusd) hard budget rides an offering with NO known price
+    // (review #4): the reserve estimate AND the committed actual would both be ~$0, letting unbounded
+    // spend slip under the cap. A token-unit budget caps tokens (not µ$) and needs no price, so scope
+    // the guard to cost_microusd budgets — token budgets over unpriced offerings still enforce.
+    const budgetUnit = budget?.unit ?? "cost_microusd";
+    const priceKnown =
+      !!price &&
+      (priceMtok(price.inputPerMtokMicroUsd) > 0n || priceMtok(price.outputPerMtokMicroUsd) > 0n);
+    if (budgetUnit === "cost_microusd" && !priceKnown) {
+      return {
+        ok: false,
+        code: "BUDGET_PRICE_UNKNOWN",
+        message: "hard cost budget over an offering with no known price",
+      };
+    }
     const reservation = await reserveBudget({
       budgetAccountId: budgetAccountId!,
       requestId: traceId,

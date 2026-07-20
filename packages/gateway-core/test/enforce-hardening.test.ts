@@ -92,7 +92,7 @@ test("HIGH #6: oversized request body fails CLOSED (POLICY_BODY_TOO_LARGE)", asy
 // silently dropped so a max_tokens ceiling is bypassed and the raw value forwarded.
 test("config-F7: non-finite numeric param fails CLOSED (POLICY_PARAM_REJECTED)", async () => {
   const res = await enforceRequest({
-    snapshot: { budgets: { ba: { id: "ba", enforcement: "hard" } } } as unknown as Snapshot,
+    snapshot: { budgets: { ba: { id: "ba", enforcement: "hard", unit: "tokens" } } } as unknown as Snapshot,
     profile: profile(null),
     key: key("ba"),
     request: req('{"model":"m","max_tokens":1e999}'),
@@ -102,4 +102,34 @@ test("config-F7: non-finite numeric param fails CLOSED (POLICY_PARAM_REJECTED)",
   });
   assert.equal(res.ok, false);
   assert.equal((res as { code: string }).code, "POLICY_PARAM_REJECTED");
+});
+
+// #4 — a µ$ (cost_microusd) HARD budget over an offering with NO known price must fail closed: a $0
+// estimate + $0 committed would let unbounded spend slip under the cap (unlimited free spend).
+test("#4: hard COST budget over an unpriced offering fails CLOSED (BUDGET_PRICE_UNKNOWN)", async () => {
+  const res = await enforceRequest({
+    snapshot: { budgets: { ba: { id: "ba", enforcement: "hard", unit: "cost_microusd" } } } as unknown as Snapshot,
+    profile: profile(null),
+    key: key("ba"),
+    request: req('{"model":"m","max_tokens":10}'),
+    traceId: "t",
+    target, // no snapshot.offerings ⇒ price unknown
+    reserveBudget: okReserve,
+  });
+  assert.equal(res.ok, false);
+  assert.equal((res as { code: string }).code, "BUDGET_PRICE_UNKNOWN");
+});
+
+// #4 control — a TOKEN-unit hard budget caps tokens, not µ$, so an unpriced offering still reserves.
+test("#4 control: hard TOKEN budget over an unpriced offering still reserves (no price needed)", async () => {
+  const res = await enforceRequest({
+    snapshot: { budgets: { ba: { id: "ba", enforcement: "hard", unit: "tokens" } } } as unknown as Snapshot,
+    profile: profile(null),
+    key: key("ba"),
+    request: req('{"model":"m","max_tokens":10}'),
+    traceId: "t",
+    target,
+    reserveBudget: okReserve,
+  });
+  assert.equal(res.ok, true);
 });

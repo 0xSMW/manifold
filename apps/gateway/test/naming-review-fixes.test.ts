@@ -155,6 +155,15 @@ test("(P0-1) reserve request id is a ULID: created_at decodes to ≈now and land
   const snapshot = makeSnapshot({
     budgetAccountId: "acct1",
     budgets: { acct1: { id: "acct1", enforcement: "hard" } },
+    // Priced offering (review #4: a µ$ hard budget over an UNPRICED offering fails closed before the
+    // reserve). The price value is irrelevant here — the fake reserver always allows; this test asserts
+    // on the reservation's ULID request id.
+    offerings: {
+      [OFFERING_ID]: {
+        priceRevisionId: "pr1",
+        price: { inputPerMtokMicroUsd: "1000000", outputPerMtokMicroUsd: "1000000" },
+      },
+    },
   });
   const ctx = makeCtx(snapshot, fetcher, clock, (i) => reserver.reserve(i));
 
