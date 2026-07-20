@@ -56,8 +56,21 @@ Test deploys use the `ai-marketing` team. Never the `klu` scope.
 
 ## Status
 
-Skeleton (M0/M1). The control plane serves a landing page and a `/api/v1/health`
-endpoint (checks report `skipped` until wired to Neon/Edge Config — honest, not
-fabricated). The CLI has the full §12 command tree with correct exit codes; leaf
-commands print structured stub output. Real routing, auth, budgets, observation
-ingest, and storage-bounded mode are specified in SPEC and not yet implemented.
+Early but real (M1 in progress) — a working vertical slice, plus stubs for the rest.
+
+**Real & verified:**
+- `@manifold/domain` — integer-µ$ Money (banker's rounding, 7-term cost incl.
+  cache-write/audio) + all 8 §5.4 state machines · 32/32 tests.
+- `@manifold/database` — full §6 schema (47 tables, 8 RANGE + 1 LIST partitions),
+  applied to real Postgres 16: composite-PK partitions, immutability triggers, and
+  fail-closed RLS verified.
+- `packages/ports` + `gateway-core` + `apps/gateway` — passthrough gateway (key
+  auth, SSRF, header allowlist, flat-memory streaming). Proven end-to-end with a
+  1-token Haiku call routed through the gateway (`output_tokens=1`, observation logged).
+- `apps/control-plane` — deployed to Vercel; `/api/v1/health` live.
+- `apps/cli` — full §12 command tree, 153 commands, correct exit codes (stub output).
+
+**Not yet built:** control-plane `/api/v1` CRUD, config/snapshot engine wiring the
+gateway to the DB (gateway currently loads a static example snapshot), envelope-
+encrypted credentials, observation reduce/projections, budget reservation runtime,
+storage-bounded compaction, console UI. See SPEC §28 backlog and §29 live log.
