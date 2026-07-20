@@ -20,6 +20,42 @@
 const DECIMAL_LITERAL = /^(-?)(\d+)(?:\.(\d+))?$/;
 
 /**
+ * Render a JS number as a plain (non-exponential) decimal string.
+ *
+ * `String(n)` switches to scientific notation for magnitudes below 1e-6
+ * (e.g. `String(5e-7) === "5e-7"`), and that form is rejected by
+ * `DECIMAL_LITERAL`, which would abort the whole import for a single tiny
+ * price. models.dev does quote sub-µ$ prices this small, so expand any
+ * exponential form back to a plain decimal string here. The expansion is
+ * pure digit-shuffling on the string `String(n)` already produced — it adds
+ * no float error of its own.
+ */
+function numberToPlainDecimalString(n: number): string {
+  const s = String(n);
+  const match = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(s);
+  if (!match) return s;
+
+  const sign = match[1] ?? "";
+  const intDigits = match[2] ?? "0";
+  const fracDigits = match[3] ?? "";
+  const exp = Number(match[4]);
+  const digits = intDigits + fracDigits;
+  // Decimal point currently sits after `intDigits.length` digits; the
+  // exponent shifts it right (positive) or left (negative).
+  const pointPos = intDigits.length + exp;
+
+  let result: string;
+  if (pointPos <= 0) {
+    result = "0." + "0".repeat(-pointPos) + digits;
+  } else if (pointPos >= digits.length) {
+    result = digits + "0".repeat(pointPos - digits.length);
+  } else {
+    result = digits.slice(0, pointPos) + "." + digits.slice(pointPos);
+  }
+  return sign + result;
+}
+
+/**
  * Convert a models.dev `cost.*` value (USD per 1,000,000 tokens) to integer
  * micro-USD per 1M tokens (SPEC §11.6, ADR-0008).
  *
@@ -32,7 +68,9 @@ const DECIMAL_LITERAL = /^(-?)(\d+)(?:\.(\d+))?$/;
  */
 export function priceToMicroUnits(dollarsPerMtok: number | string): bigint {
   const raw =
-    typeof dollarsPerMtok === "string" ? dollarsPerMtok.trim() : String(dollarsPerMtok);
+    typeof dollarsPerMtok === "string"
+      ? dollarsPerMtok.trim()
+      : numberToPlainDecimalString(dollarsPerMtok);
 
   const match = DECIMAL_LITERAL.exec(raw);
   if (!match) {

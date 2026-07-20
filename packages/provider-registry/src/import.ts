@@ -54,8 +54,8 @@ type PriceFields = Pick<
   | "audio_out_per_mtok_microusd"
 >;
 
-function microOrNull(value: number | string | undefined): bigint | null {
-  return value === undefined ? null : priceToMicroUnits(value);
+function microOrNull(value: number | string | null | undefined): bigint | null {
+  return value === undefined || value === null ? null : priceToMicroUnits(value);
 }
 
 /** SPEC §11.6 mapping: each `cost.*` USD/1M field → its µ$/1M column. */
@@ -127,11 +127,18 @@ export function importFromModelsDev(
         region: null,
       });
 
-      const hasCost = model.cost !== undefined;
+      // A `cost` block only counts as pricing if it carries at least one
+      // usable numeric field. A missing block, an empty `{}`, or a block
+      // whose every field is null/absent all yield null prices — and must
+      // fail closed to `unknown` fidelity, never provider_verified/aggregator
+      // (which would let hard budgets treat the null prices as $0 free
+      // dispatch). SPEC §11.6 / ADR-0009.
+      const priceFields = priceFieldsFromCost(model.cost);
+      const hasCost = Object.values(priceFields).some((value) => value !== null);
       priceRevisions.push({
         id: `prc_${offeringId}`,
         offering_id: offeringId,
-        ...priceFieldsFromCost(model.cost),
+        ...priceFields,
         currency: "USD",
         unit: "per_mtok",
         fidelity: priceRevisionFidelity(providerId, hasCost),

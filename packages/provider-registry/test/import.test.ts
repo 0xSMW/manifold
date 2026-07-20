@@ -51,6 +51,17 @@ test("priceToMicroUnits: accepts a decimal string directly", () => {
   assert.equal(priceToMicroUnits("3.75"), 3_750_000n);
 });
 
+test("priceToMicroUnits: sub-1e-6 numbers (scientific notation) convert without throwing", () => {
+  // BUG: String(5e-7) === "5e-7"; the exponential form was rejected by the
+  // DECIMAL_LITERAL parser and threw, aborting the import / dropping the
+  // offering. 5e-7 === 0.0000005 -> exactly half a µ$; kept magnitude 0 is
+  // even, half-to-even rounds down to 0µ$.
+  assert.equal(priceToMicroUnits(5e-7), 0n);
+  assert.equal(priceToMicroUnits(0.0000005), 0n);
+  // 6e-7 -> String is "6e-7"; the 7th fractional digit (6) rounds the µ$ up.
+  assert.equal(priceToMicroUnits(6e-7), 1n);
+});
+
 test("priceToMicroUnits: rounds half-to-even at the sub-µ$ boundary", () => {
   // 1.0000015 * 1e6 = 1000.0015 -> nowhere near a tie, rounds down to 1000000...
   // Use an exact-tie case instead: 0.0000005 -> exactly half a µ$; the kept
@@ -176,6 +187,54 @@ test("importFromModelsDev: missing cost block fails closed to unknown fidelity a
   // not be confused with the unknowns around it.
   assert.equal(mysteryOffering!.capabilities.tool_call, "unsupported");
   assert.equal(mysteryOffering!.capabilities.attachment, "unknown");
+});
+
+test("importFromModelsDev: empty cost block {} fails closed to unknown fidelity and null prices", () => {
+  // BUG: hasCost was `model.cost !== undefined`, so a present-but-empty cost
+  // block ({}) was treated as PRICED with first-party (provider_verified)
+  // fidelity while every price column was null — letting hard budgets treat
+  // null as $0 free dispatch. A cost block with no usable numeric field must
+  // yield fidelity 'unknown', exactly like a missing block.
+  const payload: ModelsDevPayload = {
+    anthropic: {
+      id: "anthropic",
+      name: "Anthropic",
+      models: {
+        "claude-empty-cost": { id: "claude-empty-cost", name: "Empty Cost", cost: {} },
+      },
+    },
+  };
+  const catalog = importFromModelsDev(payload);
+  const revision = catalog.priceRevisions[0];
+  assert.ok(revision);
+  assert.equal(revision!.fidelity, "unknown");
+  assert.equal(revision!.input_per_mtok_microusd, null);
+  assert.equal(revision!.output_per_mtok_microusd, null);
+});
+
+test("importFromModelsDev: cost block with all-null fields fails closed to unknown fidelity and null prices", () => {
+  // A cost block present in the JSON but with every field null must behave
+  // identically to a missing block: null prices, fidelity 'unknown'. (Before
+  // the fix this even threw, since null was fed straight into priceToMicroUnits.)
+  const payload = {
+    anthropic: {
+      id: "anthropic",
+      name: "Anthropic",
+      models: {
+        "claude-null-cost": {
+          id: "claude-null-cost",
+          name: "Null Cost",
+          cost: { input: null, output: null, cache_read: null },
+        },
+      },
+    },
+  } as unknown as ModelsDevPayload;
+  const catalog = importFromModelsDev(payload);
+  const revision = catalog.priceRevisions[0];
+  assert.ok(revision);
+  assert.equal(revision!.fidelity, "unknown");
+  assert.equal(revision!.input_per_mtok_microusd, null);
+  assert.equal(revision!.output_per_mtok_microusd, null);
 });
 
 test("importFromModelsDev: catalog is stamped with the wire schema version", () => {
