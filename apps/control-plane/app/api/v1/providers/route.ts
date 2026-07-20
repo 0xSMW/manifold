@@ -69,7 +69,7 @@ export async function GET(req: Request): Promise<Response> {
           lastValidatedAt: r.last_validated_at,
           createdAt: r.created_at,
         })),
-        next_cursor: null,
+        nextCursor: null,
       },
       requestId,
     );

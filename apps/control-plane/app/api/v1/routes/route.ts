@@ -50,7 +50,7 @@ export async function GET(req: Request): Promise<Response> {
           status: r.active_revision_id ? "active" : "draft",
           createdAt: r.created_at,
         })),
-        next_cursor: null,
+        nextCursor: null,
       },
       requestId,
     );

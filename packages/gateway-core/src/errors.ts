@@ -1,7 +1,6 @@
 // OpenAI-shaped data-plane error envelopes (SPEC §0.3). Guard failures return these so a
 // base-URL swap is transparent to OpenAI-compatible clients. Every response also carries
 // X-Trace-Id before the body (§0.3).
-import type { ReasonCode } from "@manifold/contracts";
 
 export interface OpenAiErrorBody {
   error: {
@@ -75,7 +74,3 @@ export function errorResponse(code: string, message: string, traceId: string): R
   });
 }
 
-/** Reason codes are a subset of guard codes; this narrows for call sites that have one. */
-export function reasonResponse(reason: ReasonCode, message: string, traceId: string): Response {
-  return errorResponse(reason, message, traceId);
-}

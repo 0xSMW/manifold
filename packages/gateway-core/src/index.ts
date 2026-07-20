@@ -11,7 +11,6 @@ export { ssrfCheck, isPrivateIp, schemeAllowed, STRICT_SSRF, type SsrfPolicy, ty
 export { headerAllowlist, sanitizeResponseHeaders } from "./headers.js";
 export {
   errorResponse,
-  reasonResponse,
   shapeForCode,
   type OpenAiErrorBody,
   type ErrorShape,

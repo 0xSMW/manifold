@@ -55,7 +55,7 @@ export async function GET(req: Request): Promise<Response> {
           revoked: r.revoked_at != null,
           createdAt: r.created_at,
         })),
-        next_cursor: null,
+        nextCursor: null,
       },
       requestId,
     );
