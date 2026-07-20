@@ -7,6 +7,9 @@
     { "path": "packages/gateway-core" },
     { "path": "packages/database" },
     { "path": "packages/config" },
-    { "path": "packages/crypto" }
+    { "path": "packages/crypto" },
+    { "path": "packages/gateway-policy" },
+    { "path": "packages/observability" },
+    { "path": "packages/provider-registry" }
   ]
 }
