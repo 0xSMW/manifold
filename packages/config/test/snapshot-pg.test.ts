@@ -160,7 +160,7 @@ test("build: a target baseUrl host absent from the credential allowlist is NOT a
 
   // Fail closed: the misconfigured target (host ∉ credential allow_hosts) is dropped, so the route
   // ships with no target for ssrfCheck to (fail to) guard.
-  const evil = snap.routes["prof_sec:chat:evil-route"];
+  const evil = snap.routes["prof_sec:/v1/chat/completions"];
   assert.ok(evil, "route_evil should still be present as a route");
   assert.equal(evil.targets.length, 0, "the target aimed at evil.example must be dropped");
 });
@@ -172,7 +172,7 @@ test("build: a revoked provider credential is not embedded; its target is droppe
   for (const t of allTargets(snap)) {
     assert.notEqual(t.credentialId, "cred_revoked", "a revoked credential must never ship in the snapshot");
   }
-  const rev = snap.routes["prof_rev:chat:revoked-route"];
+  const rev = snap.routes["prof_rev:/v1/chat/completions"];
   assert.ok(rev, "route_revoked should still be present as a route");
   assert.equal(rev.targets.length, 0, "the target referencing the revoked credential must be dropped");
 });
