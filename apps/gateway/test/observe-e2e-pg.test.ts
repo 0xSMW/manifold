@@ -274,3 +274,43 @@ test("real request → correct cost_ledger row AND reservation reserved→commit
     "committed_microusd is the real spend (reserved→committed)",
   );
 });
+
+// review HIGH #12 / data-F6: the ingest transport is at-least-once, so a REDELIVERED trace must not
+// double-write the money-truth ledger nor double-commit the reservation. The deterministic created_at
+// + ON CONFLICT DO NOTHING (and idempotent commit) make the whole ingest at-most-once.
+test("idempotent re-ingest: same trace twice ⇒ cost_ledger written ONCE and committed ONCE (#12)", async () => {
+  const snap = await buildSnapshot(db, INSTALLATION);
+  const fetcher = new UsageFetcher();
+  const { ctx, ingest } = makeCtx(snap, fetcher);
+
+  const res = await handleRequest(ctx, req({ model: "oe2e-model", max_tokens: 500 }));
+  assert.equal(res.status, 200, "the under-cap request dispatches");
+  const traceId = res.headers.get("x-trace-id");
+  assert.ok(traceId, "trace id returned");
+
+  // window committed_microusd accumulates across tests → measure the DELTA this trace contributes.
+  const before = await pg.sql<{ committed_microusd: string }[]>`
+    SELECT committed_microusd FROM budget_window_state WHERE budget_account_id = ${BUDGET_ACCOUNT}
+  `;
+  const committedBefore = BigInt(before[0]?.committed_microusd ?? "0");
+
+  const args = {
+    sql: pg.sql as unknown as Sql,
+    events: ingest.events,
+    workspaceId: WORKSPACE,
+    producerId: INSTALLATION,
+  };
+  await ingestTrace(args);
+  await ingestTrace(args); // REDELIVERY of the identical trace — must be a clean no-op
+
+  const ledger = await pg.sql<{ n: string }[]>`
+    SELECT count(*)::text AS n FROM cost_ledger WHERE trace_id = ${traceId}
+  `;
+  assert.equal(ledger[0]!.n, "1", "a redelivered trace must NOT double-write the money-truth ledger");
+
+  const after = await pg.sql<{ committed_microusd: string }[]>`
+    SELECT committed_microusd FROM budget_window_state WHERE budget_account_id = ${BUDGET_ACCOUNT}
+  `;
+  const committedDelta = BigInt(after[0]!.committed_microusd) - committedBefore;
+  assert.equal(committedDelta, EXPECTED_COST, "the reservation commits exactly once, not twice");
+});

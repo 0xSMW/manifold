@@ -10,10 +10,9 @@
 // stay pure. The ingest TRANSPORT is in-process (call this directly with the collected events); the
 // DB writes and the §6.10 cost math are REAL. A durable queue/worker is the production transport, but
 // it reduces/projects with this exact code.
-import type { Sql } from "@manifold/database";
+import type { Sql, TransactionSql } from "@manifold/database";
 import type { ObservationEvent as PortsEvent } from "@manifold/ports";
-import { ulid } from "@manifold/budget";
-import { commit, type CommitResult } from "@manifold/budget";
+import { commit, ulid, ulidCreatedAt, type CommitResult } from "@manifold/budget";
 import {
   journalFromPortsEvents,
   project,
@@ -57,26 +56,49 @@ export async function ingestTrace(input: IngestTraceInput): Promise<IngestTraceR
 
   // A single observation id ties the usage + cost rows to one another and back to the trace.
   const observationId = `obs_${observation.traceId}`;
-  const occurredAt = observation.occurredAt ?? new Date().toISOString();
+  // created_at (the partition + dedup key) is set DETERMINISTICALLY so a REDELIVERED trace (the ingest
+  // transport is at-least-once, §8.3) collides on the (workspace_id, observation_id, created_at) unique
+  // and DO NOTHING dedups it — the money-truth ledger is written at-most-once (review HIGH #12/data-F6).
+  // occurredAt is derived from the trace itself; the fallback decodes the trace ULID's timestamp rather
+  // than wall-clock now() (which would differ per delivery and defeat the unique).
+  const occurredAt = observation.occurredAt ?? deterministicOccurredAt(observation.traceId);
 
-  await insertUsageRecord(sql, observationId, occurredAt, usage);
-  await insertCostLedger(sql, observationId, occurredAt, cost);
+  // Project-insert both rows in ONE transaction so the ledger and usage rows never diverge on a partial
+  // failure (money reviewer #9). Both are ON CONFLICT DO NOTHING, so a redelivery is a clean no-op.
+  await sql.begin(async (tx) => {
+    await insertUsageRecord(tx, observationId, occurredAt, usage);
+    await insertCostLedger(tx, observationId, occurredAt, cost);
+  });
 
-  // BUDGET RECONCILE (§8.4): move the hold reserved→committed at the ACTUAL cost. The reservation id
-  // rode on the flat terminal event (threaded from enforce.ts); the actual is exactly the µ$ we just
-  // wrote to cost_ledger, so committed spend and recorded spend agree to the µ$.
+  // BUDGET RECONCILE (§8.4): move the hold reserved→committed at the ACTUAL cost AND actual tokens. The
+  // reservation id rode on the flat terminal event (threaded from enforce.ts); actual µ$ is exactly what
+  // we wrote to cost_ledger, and actual tokens (input+output) reconcile a unit='tokens' hard cap (#3).
+  // commit() is idempotent, so a redelivery does not double-commit.
   let committed: CommitResult | undefined;
   const terminal = events.find((e) => e.kind === "terminal" && e.reservationId);
   if (terminal?.reservationId) {
-    committed = await commit(sql, terminal.reservationId, cost.amountMicroUsd, workspaceId);
+    const actualTokens = usage.tokens.inputTokens + usage.tokens.outputTokens;
+    committed = await commit(sql, terminal.reservationId, cost.amountMicroUsd, workspaceId, actualTokens);
   }
 
   return { observation, usage, cost, committed };
 }
 
-/** INSERT one `usage_record` row (SPEC §6.9). Token truth + fidelity; occurred_at is NOT NULL. */
+/** A deterministic occurred_at/created_at for a trace with no terminal timestamp: decode the trace
+ *  ULID's own millisecond so a redelivery yields the SAME value (keeps the dedup unique effective).
+ *  Falls back to the epoch only if the id isn't ULID-decodable — never wall-clock now(). */
+function deterministicOccurredAt(traceId: string): string {
+  try {
+    return ulidCreatedAt(traceId).toISOString();
+  } catch {
+    return new Date(0).toISOString();
+  }
+}
+
+/** INSERT one `usage_record` row (SPEC §6.9). Token truth + fidelity; occurred_at is NOT NULL.
+ *  created_at is set = occurredAt (deterministic) and ON CONFLICT dedups a redelivered trace (#12). */
 async function insertUsageRecord(
-  sql: Sql,
+  sql: Sql | TransactionSql,
   observationId: string,
   occurredAt: string,
   u: UsageRecord,
@@ -87,19 +109,21 @@ async function insertUsageRecord(
       id, workspace_id, observation_id, trace_id,
       input_tokens, output_tokens, cache_read_tokens, reasoning_tokens,
       cache_write_tokens, audio_input_tokens, audio_output_tokens,
-      fidelity, occurred_at
+      fidelity, occurred_at, created_at
     ) VALUES (
       ${ulid()}, ${u.workspaceId}, ${observationId}, ${u.traceId},
       ${p(t.inputTokens)}, ${p(t.outputTokens)}, ${p(t.cacheReadTokens)}, ${p(t.reasoningTokens)},
       ${p(t.cacheWriteTokens)}, ${p(t.audioInputTokens)}, ${p(t.audioOutputTokens)},
-      ${u.fidelity}, ${occurredAt}
+      ${u.fidelity}, ${occurredAt}, ${occurredAt}
     )
+    ON CONFLICT (workspace_id, observation_id, created_at) DO NOTHING
   `;
 }
 
-/** INSERT one `cost_ledger` row (SPEC §6.9). Money truth; amount_microusd is the §6.10 computeCost. */
+/** INSERT one `cost_ledger` row (SPEC §6.9). Money truth; amount_microusd is the §6.10 computeCost.
+ *  created_at = occurredAt + ON CONFLICT makes the money-truth write at-most-once per trace (#12). */
 async function insertCostLedger(
-  sql: Sql,
+  sql: Sql | TransactionSql,
   observationId: string,
   occurredAt: string,
   c: CostLedgerRow,
@@ -108,11 +132,12 @@ async function insertCostLedger(
     INSERT INTO cost_ledger (
       id, workspace_id, observation_id, trace_id,
       budget_account_id, cost_center_id, team_id, app_id, virtual_key_id,
-      amount_microusd, fidelity, price_revision_id, offering_id, occurred_at
+      amount_microusd, fidelity, price_revision_id, offering_id, occurred_at, created_at
     ) VALUES (
       ${ulid()}, ${c.workspaceId}, ${observationId}, ${c.traceId},
       ${c.budgetAccountId}, ${c.costCenterId}, ${c.teamId}, ${c.appId}, ${c.virtualKeyId},
-      ${p(c.amountMicroUsd)}, ${c.fidelity}, ${c.priceRevisionId}, ${c.offeringId}, ${occurredAt}
+      ${p(c.amountMicroUsd)}, ${c.fidelity}, ${c.priceRevisionId}, ${c.offeringId}, ${occurredAt}, ${occurredAt}
     )
+    ON CONFLICT (workspace_id, observation_id, created_at) DO NOTHING
   `;
 }
