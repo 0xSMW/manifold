@@ -107,8 +107,16 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   }
 
   // 6. Header allowlist (drops inbound Authorization + hop-by-hop) + fresh provider auth.
+  //    resolveSecret decrypts the credential in-proc (§14.3/ADR-0022); if it fails (tamper /
+  //    wrong KEK / missing material) we FAIL CLOSED — never dispatch, never leak.
   const upstreamHeaders = headerAllowlist(request.headers);
-  const secret = await ctx.resolveSecret(target);
+  let secret: string;
+  try {
+    secret = await ctx.resolveSecret(target);
+  } catch {
+    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, status: 502, reasonCodes: [] });
+    return errorResponse("CREDENTIAL_UNAVAILABLE", "provider credential could not be resolved", traceId);
+  }
   injectProviderAuth(upstreamHeaders, target.authInject, secret);
 
   // 7. Dispatch with a bounded timeout; stream the body straight through (no buffering).

@@ -12,7 +12,8 @@
   "dependencies": {
     "@manifold/contracts": "0.0.0",
     "@manifold/gateway-core": "0.0.0",
-    "@manifold/ports": "0.0.0"
+    "@manifold/ports": "0.0.0",
+    "@manifold/crypto": "*"
   },
   "devDependencies": {
     "@types/node": "^22",

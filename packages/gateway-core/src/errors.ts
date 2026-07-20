@@ -37,6 +37,10 @@ export function shapeForCode(code: string): ErrorShape {
       return { status: 504, type: "api_error", param: null };
     case "PROVIDER_HTTP_5XX":
       return { status: 502, type: "api_error", param: null };
+    // Credential envelope decrypt failed (tamper / wrong KEK / missing material): fail closed,
+    // never dispatch to the provider, never leak. §14.3/ADR-0022.
+    case "CREDENTIAL_UNAVAILABLE":
+      return { status: 502, type: "api_error", param: null };
     // Synthetic guard codes (no reason-code registry entry): pre-auth profile + egress safety.
     case "PROFILE_UNKNOWN":
       return { status: 404, type: "invalid_request_error", param: null };

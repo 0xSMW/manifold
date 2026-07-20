@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { SnapshotTarget } from "@manifold/ports";
+import { openAesGcm, unpackBase64, unwrapDek } from "@manifold/crypto";
 import { handleRequest, type GatewayContext, type SsrfPolicy } from "@manifold/gateway-core";
 import {
   EgressFetcher,
@@ -27,17 +28,47 @@ export interface ServerOptions {
   ssrfPolicy?: SsrfPolicy;
   /** Fetcher override (tests inject a fake/mock-pointing fetcher). */
   fetcher?: GatewayContext["fetcher"];
+  /** KEK override for credential decryption (tests supply a known 32-byte key). */
+  kek?: Uint8Array;
+}
+
+/** Dev-only KEK (all-zero 32 bytes) for local runs without MANIFOLD_DATA_KEK. */
+const DEV_KEK = new Uint8Array(32);
+
+/** Resolve the KEK from env (base64 32-byte) or fall back to the dev KEK. */
+function kekFromEnv(): Uint8Array {
+  const b64 = process.env.MANIFOLD_DATA_KEK;
+  if (!b64) return DEV_KEK;
+  const k = unpackBase64(b64);
+  if (k.length !== 32) throw new Error("MANIFOLD_DATA_KEK must be base64 of exactly 32 bytes");
+  return k;
 }
 
 /**
- * SKELETON secret resolution: read the provider secret from the env var named on the target.
- * TODO(§14.3, ADR-0022): the real path decrypts target.credentialCiphertext in-proc with the
- * KEK-unwrapped DEK via crypto.openAesGcm — no env var, no DB read on the hot path.
+ * Real provider-secret resolution (§14.3, ADR-0022): decrypt the credential envelope in-proc —
+ * unwrap the DEK with the KEK, then open the AES-256-GCM ciphertext. No DB read, no plaintext at
+ * rest. THROWS on a tampered ciphertext / wrong KEK — the caller (handleRequest) fails closed.
  */
-function makeSecretResolver(): (target: SnapshotTarget) => Promise<string> {
+export function decryptTargetSecret(
+  target: Pick<SnapshotTarget, "credentialCiphertext" | "wrappedDek">,
+  kek: Uint8Array,
+): string {
+  const dek = unwrapDek(kek, unpackBase64(target.wrappedDek));
+  const plaintext = openAesGcm(dek, unpackBase64(target.credentialCiphertext));
+  return new TextDecoder().decode(plaintext);
+}
+
+/**
+ * Secret resolver: decrypts the credential envelope (real path). Falls back to an env var ONLY
+ * for a legacy demo target that carries no ciphertext (e.g. the local Anthropic example).
+ */
+export function makeSecretResolver(kek: Uint8Array): (target: SnapshotTarget) => Promise<string> {
   return async (target) => {
-    if (!target.secretEnv) return "";
-    return process.env[target.secretEnv] ?? "";
+    if (target.credentialCiphertext && target.wrappedDek) {
+      return decryptTargetSecret(target, kek);
+    }
+    if (target.secretEnv) return process.env[target.secretEnv] ?? "";
+    return "";
   };
 }
 
@@ -60,7 +91,7 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
     ingest: new JsonlIngestSink(opts.observationsPath ?? "./observations.log"),
     fetcher: opts.fetcher ?? new EgressFetcher(opts.ssrfPolicy),
     pepper,
-    resolveSecret: makeSecretResolver(),
+    resolveSecret: makeSecretResolver(opts.kek ?? kekFromEnv()),
     ssrfPolicy: opts.ssrfPolicy,
   };
 }
