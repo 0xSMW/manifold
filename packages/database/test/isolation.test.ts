@@ -14,124 +14,27 @@
 //                      pg_partitioned_table shape (8 RANGE + 1 LIST).
 //   * §6.15          — immutability triggers (IMMUTABLE_ROW) and the two whitelisted deltas.
 //
-// Connection approach (host-port mapping was flaky earlier): the pg `postgres` driver
-// connects over a published LOOPBACK host port (127.0.0.1:<port> -> 5432) — that is the
-// only way a host-side Node process can reach a Docker-Desktop container, and it is what
-// every driver-side ATTACK uses. Migrations and seed rows are applied via
-// `docker exec -i … psql -f -` (piping SQL over the container's stdin), which sidesteps
-// any driver DDL/dollar-quoting quirks and does not depend on the host port at all.
+// Container/migration lifecycle is the shared `startPg` harness (test/pg-harness.ts); this
+// suite adds only its own two-workspace seed and the non-superuser `app_role` the ATTACKs
+// run as. See the harness for the loopback-port / `docker exec … psql` rationale.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import postgres from "postgres";
+import { startPg, type PgHarness } from "./pg-harness.ts";
 
 type Sql = ReturnType<typeof postgres>;
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(HERE, "..", "migrations");
-
-const CONTAINER = `mf-db-test-${process.pid}-${Math.floor(Math.random() * 1e6)}`;
-let HOST_PORT = 0;
-let containerStarted = false;
+let pg: PgHarness;
 let sql: Sql;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function docker(args: string[], input?: string): string {
-  return execFileSync("docker", args, {
-    input,
-    encoding: "utf8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-}
-
-// Apply a SQL blob inside the container as the (superuser) postgres role. ON_ERROR_STOP=1
-// makes any failed statement a non-zero exit -> execFileSync throws with psql's stderr.
-function psql(sqlText: string): void {
-  try {
-    docker(
-      [
-        "exec", "-i", CONTAINER,
-        "psql", "-U", "postgres", "-d", "postgres",
-        "-v", "ON_ERROR_STOP=1", "-q", "-f", "-",
-      ],
-      sqlText,
-    );
-  } catch (e: unknown) {
-    const err = e as { stderr?: string; stdout?: string; message?: string };
-    throw new Error(`psql failed: ${err.stderr || err.stdout || err.message}`);
-  }
-}
-
-async function waitForReady(): Promise<void> {
-  // Poll with the pg driver itself (NOT host pg_isready). The postgres:16 image runs a
-  // transient socket-only server during initdb; the published TCP port only answers once
-  // the real server is up, so the first successful TCP `select 1` means genuinely ready.
-  const deadline = Date.now() + 90_000;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    const probe = postgres({
-      host: "127.0.0.1",
-      port: HOST_PORT,
-      database: "postgres",
-      username: "postgres",
-      password: "postgres",
-      max: 1,
-      connect_timeout: 4,
-      idle_timeout: 1,
-      prepare: false,
-      onnotice: () => {},
-    });
-    try {
-      await probe`select 1`;
-      await probe.end({ timeout: 2 });
-      return;
-    } catch (e) {
-      lastErr = e;
-      try { await probe.end({ timeout: 1 }); } catch { /* ignore */ }
-      await sleep(1000);
-    }
-  }
-  throw new Error(`Postgres never became ready on 127.0.0.1:${HOST_PORT}: ${String(lastErr)}`);
-}
-
 before(async () => {
-  // Start the container, retrying a few random loopback ports in case of a bind clash.
-  let started = false;
-  let startErr: unknown;
-  for (let attempt = 0; attempt < 6 && !started; attempt++) {
-    HOST_PORT = 20000 + Math.floor(Math.random() * 40000);
-    try {
-      docker([
-        "run", "-d", "--name", CONTAINER,
-        "-p", `127.0.0.1:${HOST_PORT}:5432`,
-        "-e", "POSTGRES_PASSWORD=postgres",
-        "-e", "POSTGRES_DB=postgres",
-        "postgres:16",
-      ]);
-      started = true;
-      containerStarted = true;
-    } catch (e) {
-      startErr = e;
-      // Clean up a half-created container before retrying another port.
-      try { docker(["rm", "-f", CONTAINER]); } catch { /* ignore */ }
-    }
-  }
-  if (!started) throw new Error(`could not start postgres container: ${String(startErr)}`);
-
-  await waitForReady();
-
-  // Apply BOTH migrations in order (0000 schema, then 0001 partitions + RLS + triggers).
-  psql(readFileSync(join(MIGRATIONS_DIR, "0000_tiresome_piledriver.sql"), "utf8"));
-  psql(readFileSync(join(MIGRATIONS_DIR, "0001_partitions.sql"), "utf8"));
+  pg = await startPg({ namePrefix: "mf-db-test" });
+  sql = pg.sql;
 
   // Seed reference/tenant rows for TWO workspaces (superuser => RLS-exempt, the migration
   // / control-plane path), and create the non-superuser app role the attacks run as.
-  psql(`
+  pg.psql(`
     INSERT INTO workspace (id, slug, name, region) VALUES
       ('ws_a','ws-a','Workspace A','local'),
       ('ws_b','ws-b','Workspace B','local');
@@ -170,26 +73,10 @@ before(async () => {
     GRANT USAGE ON SCHEMA public TO app_role;
     GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_role;
   `);
-
-  // Long-lived driver handle used by all ATTACK cases (connects as superuser `postgres`;
-  // RLS cases downshift to app_role per-transaction via SET LOCAL ROLE).
-  sql = postgres({
-    host: "127.0.0.1",
-    port: HOST_PORT,
-    database: "postgres",
-    username: "postgres",
-    password: "postgres",
-    max: 4,
-    prepare: false,
-    onnotice: () => {},
-  });
 }, { timeout: 180_000 });
 
 after(async () => {
-  try { if (sql) await sql.end({ timeout: 5 }); } catch { /* ignore */ }
-  if (containerStarted) {
-    try { docker(["rm", "-f", CONTAINER]); } catch { /* ignore */ }
-  }
+  if (pg) await pg.stop();
 });
 
 // ---------------------------------------------------------------------------

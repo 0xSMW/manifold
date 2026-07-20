@@ -11,18 +11,15 @@
 // limit. The service imports the SAME @manifold/database driver surface, @manifold/domain
 // money math + state machine, and @manifold/contracts reason codes that production uses.
 //
-// Container/connection approach mirrors packages/database/test/isolation.test.ts: the pg
-// `postgres` driver connects over a published LOOPBACK host port; migrations/seed are
-// applied via `docker exec -i … psql -f -` (piping SQL over stdin), which sidesteps any
-// driver DDL/dollar-quoting quirks.
+// Container/migration lifecycle is the shared `startPg` harness (imported from
+// @manifold/database's test dir); this suite adds only its own budget-account seed and a
+// max:30 pool for the stampede. See the harness for the loopback-port / `docker exec …
+// psql` rationale.
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import postgres from "postgres";
+import { startPg, type PgHarness } from "../../database/test/pg-harness.ts";
 
 // Import the REAL service under test from its built output (Node type-stripping does not
 // resolve .js->.ts sibling imports, so the test drives the compiled dist).
@@ -38,12 +35,7 @@ import {
 
 type Sql = ReturnType<typeof postgres>;
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(HERE, "..", "..", "database", "migrations");
-
-const CONTAINER = `mf-budget-test-${process.pid}-${Math.floor(Math.random() * 1e6)}`;
-let HOST_PORT = 0;
-let containerStarted = false;
+let pg: PgHarness;
 let sql: Sql;
 
 // The hard budgets under attack: cost-unit, each with a limit that fits EXACTLY 10
@@ -67,80 +59,14 @@ const ACCOUNTS: Array<{ id: string; window: string }> = [
   { id: "ba_release", window: "monthly" },
 ];
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-function docker(args: string[], input?: string): string {
-  return execFileSync("docker", args, {
-    input,
-    encoding: "utf8",
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-}
-
-function psql(sqlText: string): void {
-  try {
-    docker(
-      ["exec", "-i", CONTAINER, "psql", "-U", "postgres", "-d", "postgres",
-        "-v", "ON_ERROR_STOP=1", "-q", "-f", "-"],
-      sqlText,
-    );
-  } catch (e: unknown) {
-    const err = e as { stderr?: string; stdout?: string; message?: string };
-    throw new Error(`psql failed: ${err.stderr || err.stdout || err.message}`);
-  }
-}
-
-async function waitForReady(): Promise<void> {
-  // Poll with the pg driver itself: the postgres:16 image runs a transient socket-only
-  // server during initdb; the published TCP port only answers once the real server is up.
-  const deadline = Date.now() + 90_000;
-  let lastErr: unknown;
-  while (Date.now() < deadline) {
-    const probe = postgres({
-      host: "127.0.0.1", port: HOST_PORT, database: "postgres",
-      username: "postgres", password: "postgres",
-      max: 1, connect_timeout: 4, idle_timeout: 1, prepare: false, onnotice: () => {},
-    });
-    try {
-      await probe`select 1`;
-      await probe.end({ timeout: 2 });
-      return;
-    } catch (e) {
-      lastErr = e;
-      try { await probe.end({ timeout: 1 }); } catch { /* ignore */ }
-      await sleep(1000);
-    }
-  }
-  throw new Error(`Postgres never became ready on 127.0.0.1:${HOST_PORT}: ${String(lastErr)}`);
-}
-
 before(async () => {
-  let started = false;
-  let startErr: unknown;
-  for (let attempt = 0; attempt < 6 && !started; attempt++) {
-    HOST_PORT = 20000 + Math.floor(Math.random() * 40000);
-    try {
-      docker([
-        "run", "-d", "--name", CONTAINER,
-        "-p", `127.0.0.1:${HOST_PORT}:5432`,
-        "-e", "POSTGRES_PASSWORD=postgres",
-        "-e", "POSTGRES_DB=postgres",
-        "postgres:16",
-      ]);
-      started = true;
-      containerStarted = true;
-    } catch (e) {
-      startErr = e;
-      try { docker(["rm", "-f", CONTAINER]); } catch { /* ignore */ }
-    }
-  }
-  if (!started) throw new Error(`could not start postgres container: ${String(startErr)}`);
-
-  await waitForReady();
-
-  // Apply BOTH migrations in order (0000 schema, then 0001 partitions + RLS + triggers).
-  psql(readFileSync(join(MIGRATIONS_DIR, "0000_tiresome_piledriver.sql"), "utf8"));
-  psql(readFileSync(join(MIGRATIONS_DIR, "0001_partitions.sql"), "utf8"));
+  // A REAL connection pool (max: 30) so the 50-way stampede genuinely runs transactions in
+  // parallel and contends on the SELECT ... FOR UPDATE row lock — not a single serialized
+  // connection that would hide an oversell bug. Superuser role (RLS-exempt, models the
+  // migration/control-plane path); reserve() still SETs the tenant GUC inside every txn so
+  // it is correct under a non-exempt role too.
+  pg = await startPg({ poolSize: 30, namePrefix: "mf-budget-test" });
+  sql = pg.sql;
 
   // Seed the workspace + one hard budget per test. `hard` requires a
   // pricing_catalog_revision_id (CHECK hard_requires_pricing, §5.2); no FK on that column,
@@ -149,7 +75,7 @@ before(async () => {
     (a) => `('${a.id}','${WORKSPACE_ID}','app','${a.id}','cost_microusd','${a.window}',` +
       ` ${LIMIT}, 'hard', 'pcr_test')`,
   ).join(",\n      ");
-  psql(`
+  pg.psql(`
     INSERT INTO workspace (id, slug, name, region) VALUES
       ('${WORKSPACE_ID}','ws-budget','Budget WS','local');
 
@@ -159,24 +85,10 @@ before(async () => {
     VALUES
       ${accountValues};
   `);
-
-  // The service driver: a REAL connection pool (max: 30) so the 50-way stampede genuinely
-  // runs transactions in parallel and contends on the SELECT ... FOR UPDATE row lock —
-  // not a single serialized connection that would hide an oversell bug. Superuser role
-  // (RLS-exempt, models the migration/control-plane path); reserve() still SETs the tenant
-  // GUC inside every txn so it is correct under a non-exempt role too.
-  sql = postgres({
-    host: "127.0.0.1", port: HOST_PORT, database: "postgres",
-    username: "postgres", password: "postgres",
-    max: 30, prepare: false, onnotice: () => {},
-  });
 }, { timeout: 180_000 });
 
 after(async () => {
-  try { if (sql) await sql.end({ timeout: 5 }); } catch { /* ignore */ }
-  if (containerStarted) {
-    try { docker(["rm", "-f", CONTAINER]); } catch { /* ignore */ }
-  }
+  if (pg) await pg.stop();
 });
 
 // The monthly window bucket for "now" — every request minted in this run buckets here.

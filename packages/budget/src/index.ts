@@ -282,35 +282,18 @@ export async function commit(
 ): Promise<CommitResult> {
   const actual = BigInt(actualMicroUsd);
   return db.begin(async (sql: TransactionSql): Promise<CommitResult> => {
-    const res = await lockReservation(sql, reservationId);
-    if (!res) return { ok: false, status: "expired", committedMicroUsd: 0n };
-    await sql`SELECT set_config('manifold.workspace_id', ${res.workspace_id}, true)`;
-
-    if (res.status !== "reserved") {
-      // Already terminal — no-op (idempotent reconcile).
-      return { ok: false, status: res.status, committedMicroUsd: actual };
+    const out = await releaseReservation(sql, reservationId, "RECONCILE", { actual });
+    switch (out.kind) {
+      case "released":
+        return { ok: true, status: out.status, committedMicroUsd: actual };
+      case "missing":
+        return { ok: false, status: "expired", committedMicroUsd: 0n };
+      case "noop":
+        // Already terminal — no-op (idempotent reconcile); echoes the requested actual.
+        return { ok: false, status: out.status, committedMicroUsd: actual };
+      case "blocked":
+        return { ok: false, status: out.status, committedMicroUsd: 0n };
     }
-    // Domain state machine is the source of truth for the legal transition.
-    const next = transitionBudgetReservation("reserved", { type: "RECONCILE" });
-    if (!next.ok) return { ok: false, status: res.status, committedMicroUsd: 0n };
-
-    const held = BigInt(res.reserved_microusd);
-    // Move held → committed adjusted to actual, in the counter row (§16.3).
-    await sql`
-      UPDATE budget_window_state
-      SET reserved_microusd = reserved_microusd - ${p(held)},
-          committed_microusd = committed_microusd + ${p(actual)},
-          updated_at = now()
-      WHERE budget_account_id = ${res.budget_account_id}
-        AND window_start = ${bucketStart(res.window, res.created_at)}
-        AND shard = ${DEFAULT_SHARD}
-    `;
-    await sql`
-      UPDATE budget_reservation
-      SET status = ${next.state}, reconciled_microusd = ${p(actual)}, reconciled_at = now()
-      WHERE id = ${reservationId} AND created_at = ${res.created_at}
-    `;
-    return { ok: true, status: next.state, committedMicroUsd: actual };
   });
 }
 
@@ -320,28 +303,8 @@ export async function commit(
  */
 export async function rollback(db: Sql, reservationId: string): Promise<{ ok: boolean; status: BudgetReservationState }> {
   return db.begin(async (sql: TransactionSql): Promise<{ ok: boolean; status: BudgetReservationState }> => {
-    const res = await lockReservation(sql, reservationId);
-    if (!res) return { ok: false, status: "expired" };
-    await sql`SELECT set_config('manifold.workspace_id', ${res.workspace_id}, true)`;
-    if (res.status !== "reserved") return { ok: false, status: res.status };
-
-    const next = transitionBudgetReservation("reserved", { type: "ROLLBACK" });
-    if (!next.ok) return { ok: false, status: res.status };
-
-    const held = BigInt(res.reserved_microusd);
-    await sql`
-      UPDATE budget_window_state
-      SET reserved_microusd = reserved_microusd - ${p(held)}, updated_at = now()
-      WHERE budget_account_id = ${res.budget_account_id}
-        AND window_start = ${bucketStart(res.window, res.created_at)}
-        AND shard = ${DEFAULT_SHARD}
-    `;
-    await sql`
-      UPDATE budget_reservation
-      SET status = ${next.state}, reconciled_at = now()
-      WHERE id = ${reservationId} AND created_at = ${res.created_at}
-    `;
-    return { ok: true, status: next.state };
+    const out = await releaseReservation(sql, reservationId, "ROLLBACK");
+    return { ok: out.kind === "released", status: out.status };
   });
 }
 
@@ -361,25 +324,8 @@ export async function sweepExpired(db: Sql, now: Date = new Date()): Promise<num
   let count = 0;
   for (const row of expired) {
     const done = await db.begin(async (sql: TransactionSql): Promise<boolean> => {
-      const res = await lockReservation(sql, row.id);
-      if (!res || res.status !== "reserved") return false;
-      await sql`SELECT set_config('manifold.workspace_id', ${res.workspace_id}, true)`;
-      const next = transitionBudgetReservation("reserved", { type: "EXPIRE" });
-      if (!next.ok) return false;
-      const held = BigInt(res.reserved_microusd);
-      await sql`
-        UPDATE budget_window_state
-        SET reserved_microusd = reserved_microusd - ${p(held)}, updated_at = now()
-        WHERE budget_account_id = ${res.budget_account_id}
-          AND window_start = ${bucketStart(res.window, res.created_at)}
-          AND shard = ${DEFAULT_SHARD}
-      `;
-      await sql`
-        UPDATE budget_reservation
-        SET status = ${next.state}, reconciled_at = now()
-        WHERE id = ${res.id} AND created_at = ${res.created_at}
-      `;
-      return true;
+      const out = await releaseReservation(sql, row.id, "EXPIRE");
+      return out.kind === "released";
     });
     if (done) count++;
   }
@@ -389,6 +335,75 @@ export async function sweepExpired(db: Sql, now: Date = new Date()): Promise<num
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The disjoint outcomes of `releaseReservation`, letting each caller map to its own result
+ * shape while the release skeleton stays in one place:
+ *   - `released` — the transition applied; `status` is the new terminal state.
+ *   - `missing`  — no such reservation row (treated as `expired` by callers).
+ *   - `noop`     — the reservation is already terminal; `status` is its current state.
+ *   - `blocked`  — the domain machine rejected the transition (status still `reserved`).
+ */
+type ReleaseOutcome =
+  | { kind: "released"; status: BudgetReservationState }
+  | { kind: "missing"; status: "expired" }
+  | { kind: "noop"; status: BudgetReservationState }
+  | { kind: "blocked"; status: BudgetReservationState };
+
+/**
+ * The shared release skeleton behind commit / rollback / sweepExpired (§8.4). Under the
+ * reservation's row lock it: scopes the tenant GUC, requires the reservation still be
+ * `reserved`, runs the domain state transition for `event`, subtracts the held estimate
+ * from `reserved_microusd` in the window counter, and flips the reservation to its terminal
+ * state. `RECONCILE` (commit) additionally passes `actual`, which is added to
+ * `committed_microusd` and stamped onto `reconciled_microusd`; the other paths pass nothing
+ * and leave `committed_microusd` / `reconciled_microusd` untouched. MUST run inside a
+ * `db.begin` transaction — the caller owns BEGIN/COMMIT.
+ */
+async function releaseReservation(
+  sql: TransactionSql,
+  reservationId: string,
+  event: "RECONCILE" | "ROLLBACK" | "EXPIRE",
+  opts: { actual?: bigint } = {},
+): Promise<ReleaseOutcome> {
+  const res = await lockReservation(sql, reservationId);
+  if (!res) return { kind: "missing", status: "expired" };
+  await sql`SELECT set_config('manifold.workspace_id', ${res.workspace_id}, true)`;
+  if (res.status !== "reserved") return { kind: "noop", status: res.status };
+
+  // Domain state machine is the source of truth for the legal transition. (`event` is a
+  // union of literal tags; re-narrow it to the discriminated event the machine expects.)
+  const next = transitionBudgetReservation(
+    "reserved",
+    { type: event } as Parameters<typeof transitionBudgetReservation>[1],
+  );
+  if (!next.ok) return { kind: "blocked", status: res.status };
+
+  const held = BigInt(res.reserved_microusd);
+  const actual = opts.actual ?? 0n; // rollback/sweep add nothing to committed
+  // Move held → committed adjusted to actual, in the counter row (§16.3). For the
+  // release-only paths `actual` is 0, so `committed_microusd` is written back unchanged.
+  await sql`
+    UPDATE budget_window_state
+    SET reserved_microusd = reserved_microusd - ${p(held)},
+        committed_microusd = committed_microusd + ${p(actual)},
+        updated_at = now()
+    WHERE budget_account_id = ${res.budget_account_id}
+      AND window_start = ${bucketStart(res.window, res.created_at)}
+      AND shard = ${DEFAULT_SHARD}
+  `;
+  // Only commit stamps reconciled_microusd; rollback/sweep leave it as-is (COALESCE keeps
+  // the existing value when `actual` was not supplied).
+  const reconciled = opts.actual !== undefined ? p(opts.actual) : null;
+  await sql`
+    UPDATE budget_reservation
+    SET status = ${next.state},
+        reconciled_microusd = COALESCE(${reconciled}, reconciled_microusd),
+        reconciled_at = now()
+    WHERE id = ${reservationId} AND created_at = ${res.created_at}
+  `;
+  return { kind: "released", status: next.state };
+}
 
 /**
  * Lock a reservation row FOR UPDATE by id (ULID → practically unique across partitions),
