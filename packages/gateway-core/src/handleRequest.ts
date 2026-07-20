@@ -3,6 +3,7 @@
 // Zero platform imports: only Web-standard Request/Response/Headers/AbortSignal + injected ports.
 import type {
   AuthInject,
+  BudgetReserver,
   Clock,
   Crypto,
   Fetcher,
@@ -13,6 +14,7 @@ import type {
 } from "@manifold/ports";
 import type { ReasonCode } from "@manifold/contracts";
 import { authenticate } from "./authenticate.js";
+import { enforceRequest } from "./enforce.js";
 import { errorResponse, shapeForCode } from "./errors.js";
 import { headerAllowlist, sanitizeResponseHeaders } from "./headers.js";
 import { resolveProfile } from "./resolveProfile.js";
@@ -39,6 +41,12 @@ export interface GatewayContext {
   resolveSecret(target: SnapshotTarget): Promise<string>;
   /** Egress policy. Defaults to strict (https-only, no private addresses). */
   ssrfPolicy?: SsrfPolicy;
+  /**
+   * Hard-budget reservation port (SPEC §16.3, ADR-0012/§4.4). Injected by the adapter; the core
+   * NEVER imports @manifold/budget or a DB driver. Absent ⇒ no key can carry a honored hard budget
+   * (a snapshot that marks one then fails closed). Only invoked for a key with a `hard` budget.
+   */
+  reserveBudget?: BudgetReserver["reserve"];
   /** Deterministic target selection in tests. */
   rand?: () => number;
 }
@@ -99,7 +107,7 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     emitTerminal("PROFILE_UNKNOWN");
     return errorResponse("PROFILE_UNKNOWN", "unknown host", traceId);
   }
-  const { profileId } = resolved;
+  const { profileId, profile } = resolved;
 
   // 2. authenticate — HMAC(key) → snapshot.keys, then revoked/expiry/profile guards.
   const auth = await authenticate(request, profileId, snapshot, ctx.crypto, ctx.pepper, now);
@@ -113,6 +121,23 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   if (!route) {
     emitTerminal("ROUTE_UNKNOWN", { profileId, keyId: auth.key.id });
     return errorResponse("ROUTE_UNKNOWN", `no route for '${path}' on this endpoint`, traceId);
+  }
+
+  // 3.5 ENFORCEMENT (SPEC §11 policy + §16.3 hard budget, review bug #9). After route resolution,
+  //     BEFORE target selection / SSRF / dispatch: a denied model or an over-cap hard budget MUST
+  //     NOT reach the provider. No-op (body untouched) when the profile carries no policy and the
+  //     key has no hard budget. May consume the request body to read model/params + rewrite clamps.
+  const enforcement = await enforceRequest({
+    snapshot,
+    profile,
+    key: auth.key,
+    request,
+    traceId,
+    reserveBudget: ctx.reserveBudget,
+  });
+  if (!enforcement.ok) {
+    emitTerminal(enforcement.code, { profileId, keyId: auth.key.id, routeId: route.routeId });
+    return errorResponse(enforcement.code, enforcement.message, traceId);
   }
 
   // 4. selectTarget — ordered/weighted → ROUTE_NO_HEALTHY_TARGET.
@@ -152,8 +177,15 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     signal: AbortSignal.timeout(route.timeoutMs),
   };
   if (hasBody) {
-    init.body = request.body;
-    init.duplex = "half";
+    if (enforcement.forwardBody !== undefined) {
+      // Enforcement buffered the request body to read model/params (and may have rewritten a
+      // policy clamp); the original stream is consumed, so forward the buffered string.
+      init.body = enforcement.forwardBody;
+    } else {
+      // Fast path (no policy, no hard budget): stream the request body straight through, no buffer.
+      init.body = request.body;
+      init.duplex = "half";
+    }
   }
   const upstreamReq = new Request(upstreamUrl, init);
 

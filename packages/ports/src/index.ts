@@ -45,6 +45,51 @@ export interface SnapshotKey {
   /** ISO timestamp; null = never expires. */
   expiresAt: string | null;
   revoked: boolean;
+  /** Optional policy-subject facets (SPEC §6.6 `subject_kind`). Absent facets never match a
+   *  scoped entitlement (deny-first). `keyScope`/`app` are derived from scopes/allowedAppIds. */
+  team?: string | null;
+  costCenter?: string | null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Static policy carried in the snapshot (SPEC §6.6, §11 Policies). These mirror
+// @manifold/gateway-policy's `PolicyRevision` shape STRUCTURALLY — ports imports no
+// evaluator, so the snapshot stays self-describing and the SAME object the gateway
+// reads here is passed straight to `policy.evaluate()` in the core (SPEC §21.5 parity).
+// ────────────────────────────────────────────────────────────────────────────
+
+/** SPEC §6.6 `subject_kind`. */
+export type PolicySubjectKind = "key_scope" | "team" | "cost_center" | "app" | "all";
+/** SPEC §6.6 `effect`. */
+export type PolicyEntitlementEffect = "allow" | "deny";
+/** SPEC §6.6 `on_violation`. */
+export type PolicyOnViolation = "clamp" | "reject";
+
+export interface SnapshotModelEntitlement {
+  subjectKind: PolicySubjectKind;
+  subjectRef: string | null;
+  canonicalModelId: string | null;
+  effect: PolicyEntitlementEffect;
+}
+
+export interface SnapshotRequestConstraint {
+  param: string;
+  maxValue: number | null;
+  minValue: number | null;
+  onViolation: PolicyOnViolation;
+}
+
+/** The immutable policy revision the evaluator reads (SPEC §11). Indexed by SnapshotProfile.policyRevision. */
+export interface SnapshotPolicyRevision {
+  modelEntitlements: SnapshotModelEntitlement[];
+  requestConstraints: SnapshotRequestConstraint[];
+}
+
+/** A budget account's enforcement class (SPEC §16.3). Only `hard` reserves pre-dispatch. */
+export interface SnapshotBudgetAccount {
+  id: string;
+  /** `hard` ⇒ strong-consistency reserve before dispatch (§16.3); `soft` ⇒ observe-only. */
+  enforcement: "hard" | "soft";
 }
 
 /**
@@ -101,6 +146,16 @@ export interface Snapshot {
   keys: Record<string, SnapshotKey>;
   /** `${profileId}:${path}` → route (§7.2, composite string key). O(1) lookup. */
   routes: Record<string, SnapshotRoute>;
+  /**
+   * Bound policy revisions by id (§7.2). `SnapshotProfile.policyRevision` indexes this.
+   * Absent / unmatched ⇒ the profile carries no static policy and enforcement is a no-op.
+   */
+  policies?: Record<string, SnapshotPolicyRevision>;
+  /**
+   * Budget accounts by id (§16.3). `SnapshotKey.budgetAccountId` indexes this. A key whose
+   * account is absent or `soft` is not reserved pre-dispatch; a `hard` account is (deny-first).
+   */
+  budgets?: Record<string, SnapshotBudgetAccount>;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -162,4 +217,27 @@ export interface Crypto {
 export interface Fetcher {
   /** Provider egress. Implementations wrap SSRF policy (§14.4). */
   fetch(req: Request): Promise<Response>;
+}
+
+/**
+ * Hard-budget reservation seam (SPEC §16.3, ADR-0012). The gateway core NEVER imports
+ * @manifold/budget or any DB driver (§4.2/§4.4); it calls this port, whose adapter runs the
+ * one strong-consistency reserve transaction. `reserve` is the single pre-dispatch guard:
+ * `committed + reserved + est ≤ limit`. A denial means "over cap" — the request MUST NOT be
+ * dispatched to the provider.
+ */
+export interface BudgetReserveInput {
+  budgetAccountId: string;
+  /** Gateway trace-id; the idempotency anchor for the reservation (§8.4). */
+  requestId: string;
+  /** Pre-dispatch cost estimate in µ$ (§6.10). */
+  estMicroUsd: bigint;
+}
+
+export type BudgetReserveResult =
+  | { ok: true; reservationId: string }
+  | { ok: false; reason: "BUDGET_RESERVE_DENIED" };
+
+export interface BudgetReserver {
+  reserve(input: BudgetReserveInput): Promise<BudgetReserveResult>;
 }

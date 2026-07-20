@@ -7,6 +7,9 @@ import { appendFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { sealAesGcm as cryptoSealAesGcm, openAesGcm as cryptoOpenAesGcm } from "@manifold/crypto";
 import type {
+  BudgetReserveInput,
+  BudgetReserveResult,
+  BudgetReserver,
   Clock,
   Crypto,
   Fetcher,
@@ -73,6 +76,29 @@ export class SnapshotFileStore implements SnapshotStore {
   }
   async loadActive(_installationId: string): Promise<Snapshot> {
     return this.snapshot;
+  }
+}
+
+/**
+ * BudgetReserver adapter (SPEC §16.3, ADR-0012/§4.4). The port's single `reserve` maps to the
+ * one strong-consistency transaction in @manifold/budget (`committed + reserved + est ≤ limit`).
+ *
+ * The gateway core calls the PORT only — it never imports @manifold/budget or a DB driver (§4.2).
+ * The concrete transaction is injected here as `reserveFn` so this adapter carries no `Sql` and no
+ * driver import of its own: production wiring binds `reserveFn` to `budget.reserve(sql, …)` (which
+ * also resolves workspace + fixed-window bucket from the account), exactly as `makeSecretResolver`
+ * is the seam for credential decryption. Tests inject the in-memory FakeBudgetReserver instead.
+ */
+export class BudgetReserverAdapter implements BudgetReserver {
+  // NOTE: explicit field assignment (no constructor parameter property) — Node runs this file
+  // under strip-only TS, which rejects parameter properties (same reason the other adapters here
+  // assign fields by hand).
+  private readonly reserveFn: (input: BudgetReserveInput) => Promise<BudgetReserveResult>;
+  constructor(reserveFn: (input: BudgetReserveInput) => Promise<BudgetReserveResult>) {
+    this.reserveFn = reserveFn;
+  }
+  reserve(input: BudgetReserveInput): Promise<BudgetReserveResult> {
+    return this.reserveFn(input);
   }
 }
 

@@ -3,6 +3,9 @@
 // (crypto.subtle, TextEncoder) — no node:* imports — so it runs unchanged under Node
 // and Workers, keeping ports platform-free.
 import type {
+  BudgetReserveInput,
+  BudgetReserveResult,
+  BudgetReserver,
   Clock,
   Crypto,
   Fetcher,
@@ -99,6 +102,28 @@ export class FakeFetcher implements Fetcher {
     this.lastHeaders = Object.fromEntries(req.headers.entries());
     return this.handler(req);
   }
+}
+
+/**
+ * BudgetReserver fake: records every reserve() call and decides allow/deny via an injected
+ * predicate (default: always allow). Lets adversarial tests assert BOTH that a reservation was
+ * attempted with the right estimate AND that a denial stops dispatch. `estMicroUsd` is a bigint,
+ * so the default cap-based predicate compares against a bigint ceiling.
+ */
+export class FakeBudgetReserver implements BudgetReserver {
+  readonly calls: BudgetReserveInput[] = [];
+  constructor(private readonly decide: (input: BudgetReserveInput) => boolean = () => true) {}
+  async reserve(input: BudgetReserveInput): Promise<BudgetReserveResult> {
+    this.calls.push(input);
+    return this.decide(input)
+      ? { ok: true, reservationId: `resv_${this.calls.length}` }
+      : { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+  }
+}
+
+/** Deny-over-cap predicate for FakeBudgetReserver: allow iff estMicroUsd ≤ capMicroUsd. */
+export function capReserver(capMicroUsd: bigint): FakeBudgetReserver {
+  return new FakeBudgetReserver((input) => input.estMicroUsd <= capMicroUsd);
 }
 
 /** Convenience: hex(HMAC(pepper, plaintextKey)) using the fake crypto, for building test snapshots. */

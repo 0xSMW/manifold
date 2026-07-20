@@ -30,6 +30,12 @@ export interface ServerOptions {
   fetcher?: GatewayContext["fetcher"];
   /** KEK override for credential decryption (tests supply a known 32-byte key). */
   kek?: Uint8Array;
+  /**
+   * Hard-budget reserver (SPEC §16.3, ADR-0012). Optional: when unset, a key that carries a hard
+   * budget fails closed in the core. Production binds this to @manifold/budget via
+   * BudgetReserverAdapter; tests inject the in-memory FakeBudgetReserver.
+   */
+  reserveBudget?: GatewayContext["reserveBudget"];
 }
 
 /** Dev-only KEK (all-zero 32 bytes) for local runs without MANIFOLD_DATA_KEK. */
@@ -104,6 +110,7 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
     pepper,
     resolveSecret: makeSecretResolver(opts.kek ?? kekFromEnv()),
     ssrfPolicy: opts.ssrfPolicy,
+    reserveBudget: opts.reserveBudget,
   };
 }
 

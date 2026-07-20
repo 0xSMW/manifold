@@ -2,6 +2,7 @@
 // ZERO platform imports: no next, no @vercel/*, no @cloudflare/*, no node:*. All platform
 // touchpoints arrive by dependency injection through @manifold/ports (§4.2, §4.4).
 export { handleRequest, type GatewayContext } from "./handleRequest.js";
+export { enforceRequest, type EnforceArgs, type EnforceResult } from "./enforce.js";
 export { resolveProfile, normalizeHost, type ResolvedProfile } from "./resolveProfile.js";
 export { authenticate, presentedKey, type AuthResult } from "./authenticate.js";
 export { resolveRoute, routeKey } from "./resolveRoute.js";

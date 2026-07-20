@@ -33,6 +33,15 @@ export function shapeForCode(code: string): ErrorShape {
       return { status: 404, type: "invalid_request_error", param: null };
     case "ROUTE_NO_HEALTHY_TARGET":
       return { status: 503, type: "api_error", param: null };
+    // Policy denial (SPEC §11, §0.2). A denied model / a rejecting param constraint: 403, never
+    // dispatched. `model` param points OpenAI clients at the offending field for model denial.
+    case "POLICY_MODEL_DENIED":
+      return { status: 403, type: "invalid_request_error", param: "model" };
+    case "POLICY_PARAM_REJECTED":
+      return { status: 403, type: "invalid_request_error", param: null };
+    // Hard-budget reservation denied (SPEC §16.3): over cap → 402 Payment Required, never dispatched.
+    case "BUDGET_RESERVE_DENIED":
+      return { status: 402, type: "invalid_request_error", param: null };
     case "PROVIDER_TIMEOUT":
       return { status: 504, type: "api_error", param: null };
     case "PROVIDER_HTTP_5XX":
