@@ -6,7 +6,7 @@ export { resolveProfile, normalizeHost, type ResolvedProfile } from "./resolvePr
 export { authenticate, presentedKey, type AuthResult } from "./authenticate.js";
 export { resolveRoute, routeKey } from "./resolveRoute.js";
 export { selectTarget } from "./selectTarget.js";
-export { ssrfCheck, isPrivateIp, STRICT_SSRF, type SsrfPolicy, type SsrfResult } from "./ssrf.js";
+export { ssrfCheck, isPrivateIp, schemeAllowed, STRICT_SSRF, type SsrfPolicy, type SsrfResult } from "./ssrf.js";
 export { headerAllowlist, sanitizeResponseHeaders } from "./headers.js";
 export {
   errorResponse,

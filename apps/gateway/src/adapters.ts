@@ -1,10 +1,11 @@
 // apps/gateway adapters — the thin Node implementations of the platform ports (SPEC §4.4).
 // This is the ONLY layer allowed to touch node:* / platform globals; gateway-core stays pure.
-import { createHmac, createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { isIP } from "node:net";
+import { sealAesGcm as cryptoSealAesGcm, openAesGcm as cryptoOpenAesGcm } from "@manifold/crypto";
 import type {
   Clock,
   Crypto,
@@ -14,7 +15,7 @@ import type {
   Snapshot,
   SnapshotStore,
 } from "@manifold/ports";
-import { isPrivateIp, type SsrfPolicy, STRICT_SSRF } from "@manifold/gateway-core";
+import { isPrivateIp, schemeAllowed, type SsrfPolicy, STRICT_SSRF } from "@manifold/gateway-core";
 
 /** node:crypto-backed Crypto port (§14.3). */
 export class NodeCrypto implements Crypto {
@@ -24,21 +25,14 @@ export class NodeCrypto implements Crypto {
   randomId(prefix: string): string {
     return `${prefix}_${randomUUID().replace(/-/g, "")}`;
   }
+  // Delegate to the attack-tested @manifold/crypto (same iv|ct|tag layout) so the
+  // seal/open path gets its key-length assert, short-blob check and authTagLength
+  // pinning for free — no second AES implementation to keep in sync (§14.3).
   sealAesGcm(dek: Uint8Array, pt: Uint8Array): Uint8Array {
-    const iv = randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", dek, iv);
-    const ct = Buffer.concat([cipher.update(pt), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return new Uint8Array(Buffer.concat([iv, ct, tag]));
+    return new Uint8Array(cryptoSealAesGcm(dek, pt));
   }
   openAesGcm(dek: Uint8Array, sealed: Uint8Array): Uint8Array {
-    const buf = Buffer.from(sealed);
-    const iv = buf.subarray(0, 12);
-    const tag = buf.subarray(buf.length - 16);
-    const ct = buf.subarray(12, buf.length - 16);
-    const decipher = createDecipheriv("aes-256-gcm", dek, iv);
-    decipher.setAuthTag(tag);
-    return new Uint8Array(Buffer.concat([decipher.update(ct), decipher.final()]));
+    return new Uint8Array(cryptoOpenAesGcm(dek, sealed));
   }
 }
 
@@ -101,12 +95,11 @@ export class EgressFetcher implements Fetcher {
   }
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
-    const scheme = url.protocol.replace(/:$/, "");
-    if (scheme === "http") {
-      if (!this.policy.allowInsecureHttp) throw new Error("egress: scheme must be https");
-    } else if (scheme !== "https") {
-      throw new Error(`egress: scheme '${scheme}' not allowed`);
-    }
+    // Reuse gateway-core's single scheme/policy predicate so this gate can never
+    // drift from ssrfCheck's (§14.4); the post-DNS resolved-IP recheck below stays
+    // as intentional defense-in-depth against name→private-address rebinding.
+    const scheme = schemeAllowed(url, this.policy);
+    if (!scheme.ok) throw new Error(`egress: ${scheme.reason}`);
     if (!this.policy.allowPrivate) {
       const host = url.hostname.replace(/^\[|\]$/g, "");
       const address = isIP(host) ? host : (await lookup(host)).address;

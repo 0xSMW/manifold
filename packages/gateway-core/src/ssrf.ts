@@ -105,6 +105,22 @@ function isPrivateHostname(host: string): boolean {
   return false;
 }
 
+/**
+ * Pure scheme/policy predicate (§14.4): https only, unless the policy relaxes http.
+ * Shared by {@link ssrfCheck} (literal-URL check) and the runtime Fetcher so both
+ * gates enforce the same one scheme rule with no drift. Returns a bare reason (no
+ * transport prefix) so each caller can frame the failure in its own vocabulary.
+ */
+export function schemeAllowed(url: URL, policy: SsrfPolicy = STRICT_SSRF): SsrfResult {
+  const scheme = url.protocol.replace(/:$/, "");
+  if (scheme === "http") {
+    if (!policy.allowInsecureHttp) return { ok: false, reason: "scheme must be https" };
+  } else if (scheme !== "https") {
+    return { ok: false, reason: `scheme '${scheme}' not allowed` };
+  }
+  return { ok: true };
+}
+
 export function ssrfCheck(
   rawUrl: string,
   allowlist: readonly string[],
@@ -117,12 +133,8 @@ export function ssrfCheck(
     return { ok: false, reason: "malformed url" };
   }
 
-  const scheme = url.protocol.replace(/:$/, "");
-  if (scheme === "http") {
-    if (!policy.allowInsecureHttp) return { ok: false, reason: "scheme must be https" };
-  } else if (scheme !== "https") {
-    return { ok: false, reason: `scheme '${scheme}' not allowed` };
-  }
+  const scheme = schemeAllowed(url, policy);
+  if (!scheme.ok) return scheme;
 
   const host = url.hostname; // no port, no userinfo; WHATWG-normalized
 
