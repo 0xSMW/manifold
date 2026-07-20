@@ -10,12 +10,16 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 
 import {
+  DEV_KEK,
+  DEV_PEPPER,
   IV_BYTES,
   KEY_BYTES,
   TAG_BYTES,
   hmacKeyHash,
   openAesGcm,
   packBase64,
+  resolveDataKek,
+  resolveKeyPepper,
   sealAesGcm,
   timingSafeEqualHex,
   toHex,
@@ -237,4 +241,40 @@ test("base64 pack/unpack round-trips ciphertext through snapshot transport", () 
   const dek2 = unwrapDek(kek, unpackBase64(wrappedB64));
   const secret2 = openAesGcm(dek2, unpackBase64(ctB64));
   assert.deepEqual(Uint8Array.from(secret2), SECRET);
+});
+
+// review SSRF-MEDIUM: the dev pepper/KEK fallbacks are publicly known (the KEK is all-zero). A prod
+// deploy that forgets the env var must FAIL CLOSED, not silently boot with dev material (which makes
+// every wrapped DEK unwrappable and virtual-key hashes forgeable). Guarded by NODE_ENV=production or
+// MANIFOLD_REQUIRE_REAL_KEYS=1.
+test("resolveDataKek/resolveKeyPepper: dev fallback in dev, FAIL CLOSED in production", () => {
+  const savedNodeEnv = process.env.NODE_ENV;
+  const savedFlag = process.env.MANIFOLD_REQUIRE_REAL_KEYS;
+  try {
+    // Dev (not production, flag unset): unset env ⇒ dev fallbacks (unchanged behavior).
+    delete process.env.NODE_ENV;
+    delete process.env.MANIFOLD_REQUIRE_REAL_KEYS;
+    assert.deepEqual(resolveDataKek(undefined), DEV_KEK, "dev: unset KEK ⇒ all-zero DEV_KEK");
+    assert.equal(resolveKeyPepper(undefined), DEV_PEPPER, "dev: unset pepper ⇒ DEV_PEPPER");
+
+    // Production + unset ⇒ THROW (never dev material).
+    process.env.NODE_ENV = "production";
+    assert.throws(() => resolveDataKek(undefined), /required in production/, "prod: unset KEK must throw");
+    assert.throws(() => resolveKeyPepper(undefined), /required in production/, "prod: unset pepper must throw");
+    // A REAL 32-byte KEK / real pepper still resolves in production.
+    const realKek = packBase64(new Uint8Array(KEY_BYTES).fill(7));
+    assert.equal(resolveDataKek(realKek).length, KEY_BYTES, "prod: a real 32-byte KEK resolves");
+    assert.equal(resolveKeyPepper("real-pepper"), "real-pepper", "prod: a real pepper resolves");
+
+    // The explicit opt-in flag enforces it outside production too.
+    delete process.env.NODE_ENV;
+    process.env.MANIFOLD_REQUIRE_REAL_KEYS = "1";
+    assert.throws(() => resolveDataKek(undefined), /required in production/, "flag: unset KEK must throw");
+    assert.throws(() => resolveKeyPepper(undefined), /required in production/, "flag: unset pepper must throw");
+  } finally {
+    if (savedNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = savedNodeEnv;
+    if (savedFlag === undefined) delete process.env.MANIFOLD_REQUIRE_REAL_KEYS;
+    else process.env.MANIFOLD_REQUIRE_REAL_KEYS = savedFlag;
+  }
 });

@@ -204,21 +204,43 @@ export const DEV_PEPPER = "dev-pepper-not-for-production";
 export const DEV_KEK: Uint8Array = new Uint8Array(KEY_BYTES);
 
 /**
+ * The dev pepper/KEK fallbacks are publicly known (the KEK is all-zero). A production deploy that
+ * forgets MANIFOLD_KEY_PEPPER / MANIFOLD_DATA_KEK must FAIL CLOSED rather than silently boot with dev
+ * material — which would make every wrapped DEK trivially unwrappable and virtual-key hashes forgeable
+ * (review SSRF-MEDIUM). Mirrors the snapshot-verify fail-closed-in-prod contract. Set
+ * MANIFOLD_REQUIRE_REAL_KEYS=1 to enforce this outside NODE_ENV=production too.
+ */
+function requireRealKeys(): boolean {
+  return process.env.NODE_ENV === "production" || process.env.MANIFOLD_REQUIRE_REAL_KEYS === "1";
+}
+
+/**
  * Resolve the key pepper (a UTF-8 string) from its env value (MANIFOLD_KEY_PEPPER),
  * falling back to {@link DEV_PEPPER} when unset. Callers UTF-8-encode the result for
- * {@link hmacKeyHash}.
+ * {@link hmacKeyHash}. FAILS CLOSED in production when unset (never the dev pepper).
  */
 export function resolveKeyPepper(pepperEnv: string | undefined): string {
+  // Guard the UNSET case only, preserving `??` semantics: an explicit "" stays "" and is rejected
+  // loudly downstream by hmacKeyHash's empty-pepper guard.
+  if (pepperEnv === undefined && requireRealKeys()) {
+    throw new Error("MANIFOLD_KEY_PEPPER is required in production (refusing the dev pepper)");
+  }
   return pepperEnv ?? DEV_PEPPER;
 }
 
 /**
  * Resolve the 256-bit data KEK from its env value (MANIFOLD_DATA_KEK, base64 of
  * exactly 32 bytes), falling back to {@link DEV_KEK} when unset. THROWS on a
- * wrong-length key rather than deriving a weak one.
+ * wrong-length key rather than deriving a weak one, and FAILS CLOSED in production
+ * when unset (never the all-zero dev KEK).
  */
 export function resolveDataKek(kekEnv: string | undefined): Uint8Array {
-  if (!kekEnv) return DEV_KEK;
+  if (!kekEnv) {
+    if (requireRealKeys()) {
+      throw new Error("MANIFOLD_DATA_KEK is required in production (refusing the all-zero dev KEK)");
+    }
+    return DEV_KEK;
+  }
   const k = unpackBase64(kekEnv);
   if (k.length !== KEY_BYTES) {
     throw new Error("MANIFOLD_DATA_KEK must be base64 of exactly 32 bytes");
