@@ -38,6 +38,12 @@ echo "app connection identity=$CONN_SUPER"
 PRIV=$(node --input-type=module -e "import {generateSigningKeyPair} from '@manifold/config'; process.stdout.write(generateSigningKeyPair().privateKeyBase64)")
 # App connects as the NON-superuser manifold_app (NOT postgres) so RLS is enforced at runtime.
 export DATABASE_URL="postgresql://manifold_app:$APP_PW@127.0.0.1:$PGPORT/postgres"
+# Privileged connection for the bootstrap seed's GLOBAL CATALOG writes ONLY (canonical_model /
+# provider_model_offering / provider_price_revision). Migration 0002 REVOKEs those writes from
+# manifold_app on purpose (anti-forgery, §6.4) and specifies catalog seeding runs as the migration
+# owner (postgres). The app's REQUEST path never uses this — only the seed helper — so RLS stays
+# load-bearing for tenant data (the rolsuper=f + RLS-backstop assertions below still hold).
+export MANIFOLD_SEED_DB_URL="postgresql://postgres:pw@127.0.0.1:$PGPORT/postgres"
 # Gateway-shared key pepper (§14.3): the CP mints under this and the gateway authenticates under
 # the SAME env var + dev default, so a CP-minted key's stored keyed_hash == what the gateway
 # recomputes. The isolation driver asserts that byte-equality (bug #1).

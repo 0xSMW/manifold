@@ -10,13 +10,19 @@
 // handle; /config/active reads the signed bytes from the DB, not the store.
 import {
   InMemorySnapshotStore,
+  apply,
+  buildKeysSection,
   buildSnapshot,
+  computeContentHash,
+  genId,
   planApply,
   signSnapshot as signSnapshotImpl,
+  stableStringify,
+  type ConfigOperation,
   type ConfigSnapshot,
 } from "@manifold/config";
 import type { Database } from "@manifold/database";
-import { withWorkspace } from "@/lib/db";
+import { db, withWorkspace } from "@/lib/db";
 import { ManifoldError } from "@/lib/http";
 
 let store: InMemorySnapshotStore | null = null;
@@ -67,4 +73,63 @@ export function buildSignedPlan(workspaceId: string, installationId: string) {
     const built = await buildSnapshot(scoped, installationId);
     return planApply(scoped, installationId, signSnapshot(built));
   });
+}
+
+/**
+ * SPEC §8.2 H7 (scoped key publish): rebuild ONLY the snapshot `keys` section against the
+ * installation's active revision and publish it, so a freshly minted / revoked virtual key
+ * enters the active snapshot immediately — the gateway is snapshot-only auth (§7.4), so without
+ * this it returns AUTH_KEY_UNKNOWN (mint) / keeps accepting a revoked key (revoke) until the next
+ * full config apply. Route/offering/policy sections are carried over verbatim, so unrelated
+ * route/policy DRAFTS are NOT published (that is the whole point of the H7 scoped path).
+ *
+ * Structured like /config/apply: the keys-only target plan is built INSIDE `withWorkspace` (the
+ * workspace GUC) because RLS hides every workspace-scoped row (revision, profiles, keys) with no
+ * `manifold.workspace_id` set as non-superuser `manifold_app` (§6.16); the plan is then applied
+ * with the real top-level client (`apply` opens its OWN txn and sets the GUC itself — the scoped
+ * transaction handed to the builder has no `.begin`).
+ *
+ * Returns `null` (a no-op, NOT an error) when the installation has no active revision yet (nothing
+ * to rebuild keys against → the key enters on the first full apply) or when the keys section is
+ * unchanged (§8.2 idempotency).
+ */
+export async function publishKeysOnly(
+  workspaceId: string,
+  installationId: string,
+): Promise<ConfigOperation | null> {
+  const plan = await withWorkspace(workspaceId, async (sql) => {
+    const scoped = { $client: sql } as unknown as Database;
+    const rows = await sql<{ content_hash: string; snapshot: unknown }[]>`
+      SELECT content_hash, snapshot FROM gateway_config_revision
+      WHERE installation_id = ${installationId} AND workspace_id = ${workspaceId}
+        AND status = 'active' LIMIT 1`;
+    const active = rows[0];
+    if (!active) return null; // no active revision yet → nothing to rebuild keys against
+
+    const base = active.snapshot as ConfigSnapshot;
+    const profileIds = Object.values(base.profiles).map((p) => p.id);
+    const keys = await buildKeysSection(sql, profileIds);
+    // No key change → identical content → no-op (§8.2 idempotency); avoid an empty revision churn.
+    if (stableStringify(base.keys) === stableStringify(keys)) return null;
+
+    // Rebuild ONLY keys; carry route/offering/policy over unchanged. Fresh revision id + build
+    // time; contentHash/signature recomputed (meta is excluded from the content hash).
+    const next: ConfigSnapshot = {
+      ...base,
+      keys,
+      meta: {
+        ...base.meta,
+        revision: genId("cfgrev"),
+        contentHash: "",
+        builtAt: new Date().toISOString(),
+        signature: "",
+      },
+    };
+    next.meta.contentHash = computeContentHash(next);
+    return planApply(scoped, installationId, signSnapshot(next));
+  });
+
+  if (!plan) return null;
+  // Apply with the real client (its own txn sets the workspace GUC; §8.2 apply()).
+  return apply(db(), plan, snapshotStore());
 }

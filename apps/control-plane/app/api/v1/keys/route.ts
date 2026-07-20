@@ -4,6 +4,7 @@
 //     display_prefix; return the plaintext EXACTLY ONCE.
 import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
+import { publishKeysOnly } from "@/lib/snapshot";
 import { audit } from "@/lib/audit";
 import { generateSecret } from "@/lib/crypto";
 import { genId } from "@/lib/ids";
@@ -75,11 +76,30 @@ export async function POST(req: Request): Promise<Response> {
     const keyId = genId("key");
 
     const created = await withWorkspace(principal.workspaceId, async (sql) => {
-      // Profile must belong to this workspace (else cross-tenant / unknown → 404).
-      const profiles = await sql<{ id: string; mode: string }[]>`
-        SELECT id, mode FROM gateway_ingress_profile
+      // Profile must belong to this workspace (else cross-tenant / unknown → 404). Also grab its
+      // installation so we can scope-publish the key into the active snapshot after minting.
+      const profiles = await sql<{ id: string; installation_id: string }[]>`
+        SELECT id, installation_id FROM gateway_ingress_profile
         WHERE id = ${profileId} AND workspace_id = ${principal.workspaceId} LIMIT 1`;
-      if (!profiles[0]) return null;
+      if (!profiles[0]) return { error: "profile" as const };
+      const installationId = profiles[0].installation_id;
+
+      // Cross-tenant reference guard (§15.2): a caller-supplied budgetAccountId / allowedAppIds
+      // must belong to THIS workspace. An FK existence check alone would let a key link to another
+      // workspace's budget or app. The predicates are workspace-scoped (also enforced by RLS), so a
+      // ref owned by another tenant resolves to zero rows → reject before storing.
+      if (budgetAccountId) {
+        const ba = await sql<{ id: string }[]>`
+          SELECT id FROM budget_account
+          WHERE id = ${budgetAccountId} AND workspace_id = ${principal.workspaceId} LIMIT 1`;
+        if (!ba[0]) return { error: "budgetAccount" as const };
+      }
+      for (const appId of allowedAppIds) {
+        const app = await sql<{ id: string }[]>`
+          SELECT id FROM app
+          WHERE id = ${appId} AND workspace_id = ${principal.workspaceId} LIMIT 1`;
+        if (!app[0]) return { error: "app" as const };
+      }
 
       await sql`
         INSERT INTO virtual_key
@@ -97,17 +117,30 @@ export async function POST(req: Request): Promise<Response> {
         requestId,
         detail: { profileId, scopes },
       });
-      return { keyId };
+      return { keyId, installationId };
     });
 
-    if (!created) {
+    if ("error" in created) {
+      if (created.error === "profile") {
+        throw new ManifoldError({
+          status: 404,
+          code: "NOT_FOUND",
+          message: "ingress profile not found",
+          reasonCodes: [],
+        });
+      }
       throw new ManifoldError({
-        status: 404,
-        code: "NOT_FOUND",
-        message: "ingress profile not found",
+        status: 422,
+        code: "VALIDATION",
+        message: `${created.error} does not belong to this workspace`,
         reasonCodes: [],
+        details: { issues: [{ path: created.error, message: "unknown or cross-tenant reference" }] },
       });
     }
+
+    // Scope-publish the new key into the active snapshot (§8.2 H7) so the snapshot-only gateway
+    // authenticates it immediately instead of returning AUTH_KEY_UNKNOWN until a full apply.
+    await publishKeysOnly(principal.workspaceId, created.installationId);
 
     // Plaintext returned exactly once (§9.2). Never retrievable again.
     return ok(

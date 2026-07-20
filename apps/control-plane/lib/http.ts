@@ -95,14 +95,15 @@ export async function handle(
     if (err instanceof ManifoldError) {
       return errorEnvelope(err, requestId);
     }
-    const message = err instanceof Error ? err.message : String(err);
-    // Do not leak internals in the message field beyond the error string; log fully.
+    // NEVER surface the raw error to the client: err.message can leak DB/driver internals
+    // (connection strings, relation names, SQL, constraint text). Return a generic body keyed by
+    // the request id; log the FULL error server-side, correlated by that same request id.
     console.error(`[${requestId}] unhandled error:`, err);
     return errorEnvelope(
       new ManifoldError({
         status: 500,
         code: "INTERNAL",
-        message: `internal error: ${message}`,
+        message: "internal error",
         reasonCodes: [],
         retryable: true,
       }),

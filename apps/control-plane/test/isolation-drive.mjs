@@ -144,6 +144,58 @@ const applyReal = await call(tokA, "/api/v1/config/apply",
 ok(applyReal.s === 200 && applyReal.b?.outcome === "accepted",
    `#4 correct approval clears the tripwire (status ${applyReal.s}, outcome ${applyReal.b?.outcome})`);
 
+// ── BUG: MINT publishes the key into the active snapshot (§8.2 H7) ────────────────────────────
+// The gateway is snapshot-only auth (§7.4): a minted key must appear in GET /config/active
+// IMMEDIATELY, not just as a DB row, else the gateway returns AUTH_KEY_UNKNOWN until a full apply.
+// instA now HAS an active revision (from #2/#4 applies), so mint a fresh key and prove its
+// hex(keyed_hash) is present in the signed snapshot with revoked:false.
+const cfgActive = async () => j(await fetch(`${BASE}/api/v1/config/active?installationId=${instA}`,
+  { headers: { authorization: `Bearer ${tokA}` } }));
+const mk2 = await call(tokA, "/api/v1/keys", { profileId: profA, name: "k2" });
+const pt2 = mk2.b?.plaintext;
+const keyId2 = mk2.b?.keyId;
+ok(mk2.s >= 200 && mk2.s < 300 && typeof pt2 === "string", `mint k2 for publish test (status ${mk2.s})`);
+const hex2 = pt2 ? Buffer.from(hmacKeyHash(utf8(process.env.MANIFOLD_KEY_PEPPER), utf8(pt2))).toString("hex") : null;
+const afterMint = await cfgActive();
+const keysAfterMint = afterMint.b?.keys ?? {};
+ok(afterMint.s === 200 && hex2 != null && !!keysAfterMint[hex2] && keysAfterMint[hex2].revoked === false,
+   `#MINT-PUBLISH new key's hex(keyed_hash) present in /config/active, revoked:false (status ${afterMint.s}, present ${!!keysAfterMint[hex2]})`);
+
+// ── BUG: REVOKE publishes the revocation into the active snapshot ──────────────────────────────
+// After revoke, /config/active must either DROP the key or show revoked:true — else the snapshot-
+// only gateway keeps honoring the revoked key for the whole publish lag.
+const rev2 = await call(tokA, `/api/v1/keys/${keyId2}/revoke`, {});
+ok(rev2.s === 200 && rev2.b?.revoked === true, `revoke k2 (status ${rev2.s})`);
+const afterRevoke = await cfgActive();
+const revEntry = (afterRevoke.b?.keys ?? {})[hex2];
+ok(afterRevoke.s === 200 && (revEntry === undefined || revEntry.revoked === true),
+   `#REVOKE-PUBLISH key dropped or revoked:true in /config/active (status ${afterRevoke.s}, entry ${revEntry ? "revoked=" + revEntry.revoked : "dropped"})`);
+
+// ── BUG: mint MUST reject a cross-tenant budgetAccountId ──────────────────────────────────────
+// Stage a budget_account owned by workspace B (superuser insert), then mint a key in A that
+// references it. An FK-existence-only check would accept the cross-tenant link; the workspace
+// ownership check must reject (404/422).
+if (sql) {
+  const wsB = B.b?.workspaceId;
+  const baId = "ba_xtenant_" + Math.random().toString(36).slice(2);
+  await sql`INSERT INTO budget_account (id, workspace_id, scope_type, unit, "window", limit_amount, enforcement)
+            VALUES (${baId}, ${wsB}, 'workspace', 'cost_microusd', 'monthly', ${1000000}, 'advisory')`;
+  const xt = await call(tokA, "/api/v1/keys", { profileId: profA, budgetAccountId: baId });
+  ok(xt.s === 404 || xt.s === 422, `#XTENANT mint with B's budgetAccountId rejected (status ${xt.s})`);
+} else {
+  ok(false, `#XTENANT could not stage cross-tenant budget (sql=${!!sql})`);
+}
+
+// ── BUG: an induced internal error returns a GENERIC body (no raw err.message leak) ───────────
+// Force an unhandled DB error (not a ManifoldError): mint with a non-timestamp expiresAt →
+// postgres "invalid input syntax for type timestamp …". The handler must return code INTERNAL with
+// a generic message that does NOT echo the driver/SQL/relation text or the offending value.
+const leak = await call(tokA, "/api/v1/keys", { profileId: profA, expiresAt: "not-a-real-timestamp" });
+const leakBody = JSON.stringify(leak.b ?? "");
+ok(leak.s === 500 && leak.b?.error?.code === "INTERNAL"
+   && !/invalid input syntax|timestamp|postgres|relation|syntax error|not-a-real-timestamp/i.test(leakBody),
+   `#ERR-LEAK induced internal error → generic body, no raw driver text (status ${leak.s}, msg ${JSON.stringify(leak.b?.error?.message)})`);
+
 if (sql) await sql.end({ timeout: 5 });
 
 console.log(failed === 0 ? "\nALL-PASS" : `\n${failed} FAILED`);

@@ -9,6 +9,25 @@ import { getDb, type Database } from "@manifold/database";
 import { ManifoldError } from "@/lib/http";
 
 let cached: Database | null = null;
+let cachedAdmin: Database | null = null;
+
+/**
+ * drizzle-orm/postgres-js registers IDENTITY serializers for json (oid 114) and jsonb (oid 3802)
+ * on the postgres client — it expects the caller to hand it pre-stringified strings. Our raw-SQL
+ * handlers (and @manifold/config's apply/revision writes) pass JS objects/arrays via `sql.json(...)`,
+ * which the identity serializer would forward straight to the wire encoder (Buffer.byteLength) and
+ * crash on ("Received an instance of Array"). Restore JSON.stringify so `sql.json(obj|array)`
+ * encodes correctly. Safe here because we never use drizzle's query builder (which would then
+ * double-encode).
+ */
+function patchJsonSerializers(handle: Database): Database {
+  const serializers = (handle.$client as unknown as {
+    options: { serializers: Record<number, (x: unknown) => string> };
+  }).options.serializers;
+  serializers[114] = (x: unknown) => JSON.stringify(x);
+  serializers[3802] = (x: unknown) => JSON.stringify(x);
+  return handle;
+}
 
 export function db(): Database {
   if (cached) return cached;
@@ -16,21 +35,25 @@ export function db(): Database {
   if (!url) {
     throw new Error("DATABASE_URL is not set");
   }
-  const handle = getDb(url);
-  // drizzle-orm/postgres-js registers IDENTITY serializers for json (oid 114) and jsonb
-  // (oid 3802) on the postgres client — it expects the caller to hand it pre-stringified
-  // strings. Our raw-SQL handlers (and @manifold/config's apply/revision writes) pass JS
-  // objects/arrays via `sql.json(...)`, which the identity serializer would forward straight
-  // to the wire encoder (Buffer.byteLength) and crash on ("Received an instance of Array").
-  // Restore JSON.stringify so `sql.json(obj|array)` encodes correctly. Safe here because we
-  // never use drizzle's query builder (which would then double-encode).
-  const serializers = (handle.$client as unknown as {
-    options: { serializers: Record<number, (x: unknown) => string> };
-  }).options.serializers;
-  serializers[114] = (x: unknown) => JSON.stringify(x);
-  serializers[3802] = (x: unknown) => JSON.stringify(x);
-  cached = handle;
+  cached = patchJsonSerializers(getDb(url));
   return cached;
+}
+
+/**
+ * Privileged connection for the ONE operation the app role must NOT be able to do: writing the
+ * global/reference catalog tables (canonical_model, provider_model_offering, provider_price_revision).
+ * Migration 0002 REVOKEs those writes from `manifold_app` precisely so a compromised app cannot forge
+ * pricing (§6.4); its comment specifies that catalog ingestion/seeding runs "as the migration owner
+ * (postgres), never as the tenant-facing app role". The bootstrap seed helper is exactly that path, so
+ * it opens this separately-configured connection (MANIFOLD_SEED_DB_URL) for reference-data inserts only.
+ * Returns null when unset — the app's normal request path never uses this.
+ */
+export function adminDb(): Database | null {
+  if (cachedAdmin) return cachedAdmin;
+  const url = process.env.MANIFOLD_SEED_DB_URL;
+  if (!url) return null;
+  cachedAdmin = patchJsonSerializers(getDb(url));
+  return cachedAdmin;
 }
 
 /** The postgres-js tagged-template client the config package also uses (Database["$client"]). */

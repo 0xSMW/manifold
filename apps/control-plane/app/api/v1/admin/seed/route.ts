@@ -7,7 +7,7 @@
 //
 // It runs inside the Next server so the workspace packages resolve through the bundler; a plain
 // `node scripts/seed.ts` cannot import @manifold/database (its dist uses extension-less imports).
-import { withWorkspace } from "@/lib/db";
+import { withWorkspace, adminDb, type Sql } from "@/lib/db";
 import { generateSecret } from "@/lib/crypto";
 import { genId } from "@/lib/ids";
 import { sha256Canonical } from "@manifold/config";
@@ -55,6 +55,43 @@ export async function POST(req: Request): Promise<Response> {
     const wsId = genId("ws");
     const token = generateSecret("mf_tok_");
 
+    // Global reference/catalog data (RLS-excluded, §6.4): a canonical model + offering + price so a
+    // route target can reference an offering. Migration 0002 REVOKEs writes on these tables from the
+    // app role (anti-forgery: a compromised app must not rewrite pricing), specifying that catalog
+    // seeding runs "as the migration owner (postgres)". So insert them via the privileged admin
+    // connection when configured; fall back to the request connection for dev DBs where the app role
+    // is unrestricted.
+    const modelId = genId("cm");
+    const offeringId = genId("off");
+    const priceId = genId("prc");
+    const priceHash = sha256Canonical({ offeringId, input: 150000, output: 600000 });
+    const insertReferenceData = async (sql: Sql) => {
+      await sql`
+        INSERT INTO canonical_model
+          (id, canonical_slug, family, display_name, catalog_revision)
+        VALUES (${modelId}, ${"gpt-4o-mini-" + short}, 'gpt', 'GPT-4o mini', 'seed')`;
+      await sql`
+        INSERT INTO provider_model_offering
+          (id, canonical_model_id, provider, provider_model_id, endpoint_kinds,
+           adapter_revision, capabilities, catalog_revision)
+        VALUES
+          (${offeringId}, ${modelId}, 'openai', ${"gpt-4o-mini-" + short},
+           ${sql.json(["chat"] as never)}, 'openai@1', ${sql.json({} as never)}, 'seed')`;
+      await sql`
+        INSERT INTO provider_price_revision
+          (id, offering_id, input_per_mtok_microusd, output_per_mtok_microusd,
+           currency, unit, fidelity, content_hash)
+        VALUES
+          (${priceId}, ${offeringId}, ${150000}, ${600000}, 'USD', 'per_mtok',
+           'provider_verified', ${priceHash})`;
+      await sql`
+        UPDATE provider_model_offering SET active_price_revision_id = ${priceId}, updated_at = now()
+        WHERE id = ${offeringId}`;
+    };
+
+    const refDb = adminDb();
+    if (refDb) await refDb.$client.begin((tx) => insertReferenceData(tx as unknown as Sql));
+
     const result = await withWorkspace(wsId, async (sql) => {
       await sql`
         INSERT INTO workspace (id, slug, name, region)
@@ -95,37 +132,11 @@ export async function POST(req: Request): Promise<Response> {
         VALUES (${appId}, ${wsId}, 'default', 'Default App', 'active',
                 ${sql.json({ mode: "redacted" } as never)})`;
 
-      // Global reference data (RLS-excluded, §6.4): a canonical model + offering + price so a
-      // target can reference an offering.
-      const modelId = genId("cm");
-      await sql`
-        INSERT INTO canonical_model
-          (id, canonical_slug, family, display_name, catalog_revision)
-        VALUES (${modelId}, ${"gpt-4o-mini-" + short}, 'gpt', 'GPT-4o mini', 'seed')`;
+      // Dev fallback: no privileged admin connection configured → the app role is assumed
+      // unrestricted here, so seed the reference catalog on the request connection.
+      if (!refDb) await insertReferenceData(sql);
 
-      const offeringId = genId("off");
-      await sql`
-        INSERT INTO provider_model_offering
-          (id, canonical_model_id, provider, provider_model_id, endpoint_kinds,
-           adapter_revision, capabilities, catalog_revision)
-        VALUES
-          (${offeringId}, ${modelId}, 'openai', ${"gpt-4o-mini-" + short},
-           ${sql.json(["chat"] as never)}, 'openai@1', ${sql.json({} as never)}, 'seed')`;
-
-      const priceId = genId("prc");
-      const priceHash = sha256Canonical({ offeringId, input: 150000, output: 600000 });
-      await sql`
-        INSERT INTO provider_price_revision
-          (id, offering_id, input_per_mtok_microusd, output_per_mtok_microusd,
-           currency, unit, fidelity, content_hash)
-        VALUES
-          (${priceId}, ${offeringId}, ${150000}, ${600000}, 'USD', 'per_mtok',
-           'provider_verified', ${priceHash})`;
-      await sql`
-        UPDATE provider_model_offering SET active_price_revision_id = ${priceId}, updated_at = now()
-        WHERE id = ${offeringId}`;
-
-      return { memberId, tokenId, installationId, profileId, appId, offeringId, modelId };
+      return { memberId, tokenId, installationId, profileId, appId };
     });
 
     return ok(
@@ -139,7 +150,7 @@ export async function POST(req: Request): Promise<Response> {
         installationId: result.installationId,
         profileId: result.profileId,
         appId: result.appId,
-        offeringId: result.offeringId,
+        offeringId,
       },
       requestId,
       201,
