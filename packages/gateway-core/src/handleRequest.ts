@@ -117,10 +117,40 @@ function parseUsageBlock(body: unknown): ObservationUsage | undefined {
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** Encode a 48-bit millisecond timestamp as a ULID's 10-char Crockford-base32 time prefix. */
+function encodeUlidTime(ms: number): string {
+  let out = "";
+  let n = Math.floor(ms);
+  for (let i = 0; i < 10; i++) {
+    out = CROCKFORD[n % 32]! + out;
+    n = Math.floor(n / 32);
+  }
+  return out;
+}
+
+/**
+ * Mint the trace id as a REAL ULID (SPEC §6.7 B1, §16.3): its 10-char time prefix is `nowMs`, so
+ * `ulidCreatedAt` decodes it back to the request instant — giving the hard-budget reservation an
+ * accurate created_at (and the right monthly partition) instead of throwing on a `trace_<hex>` that
+ * is NOT a ULID. The 16 random chars are sourced from the crypto port (gateway-core stays pure — no
+ * @manifold/budget import); a ULID is itself a valid trace id and the reservation idempotency anchor.
+ */
+function mintTraceUlid(crypto: Crypto, nowMs: number): string {
+  const entropy = crypto.randomId("t"); // prefixed random hex; sample its chars as a random source
+  let rand = "";
+  for (let i = 0; i < 16; i++) {
+    const code = entropy.charCodeAt(entropy.length - 1 - i) || i * 31 + 7;
+    rand += CROCKFORD[code % 32]!;
+  }
+  return encodeUlidTime(nowMs) + rand;
+}
+
 export async function handleRequest(ctx: GatewayContext, request: Request): Promise<Response> {
   const { snapshot } = ctx;
-  const traceId = ctx.crypto.randomId("trace");
   const now = ctx.clock.now();
+  const traceId = mintTraceUlid(ctx.crypto, now.getTime());
   const url = new URL(request.url);
   const path = url.pathname;
 
@@ -185,28 +215,31 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     return errorResponse("ROUTE_UNKNOWN", `no route for '${path}' on this endpoint`, traceId);
   }
 
-  // 3.5 ENFORCEMENT (SPEC §11 policy + §16.3 hard budget, review bug #9). After route resolution,
-  //     BEFORE target selection / SSRF / dispatch: a denied model or an over-cap hard budget MUST
-  //     NOT reach the provider. No-op (body untouched) when the profile carries no policy and the
-  //     key has no hard budget. May consume the request body to read model/params + rewrite clamps.
+  // 4. selectTarget — ordered/weighted → ROUTE_NO_HEALTHY_TARGET. Selected BEFORE enforcement so
+  //    the hard-budget reserve can price its estimate against the ACTUAL dispatch target's offering
+  //    (§6.10) — the reservation must reflect the provider the request will really hit.
+  const target = selectTarget(route, ctx.rand);
+  if (!target) {
+    emitTerminal("ROUTE_NO_HEALTHY_TARGET", { profileId, keyId: auth.key.id, routeId: route.routeId });
+    return errorResponse("ROUTE_NO_HEALTHY_TARGET", "no healthy target for route", traceId);
+  }
+
+  // 4.5 ENFORCEMENT (SPEC §11 policy + §16.3 hard budget, review bug #9). After route + target
+  //     resolution, BEFORE SSRF / dispatch: a denied model or an over-cap hard budget MUST NOT reach
+  //     the provider. No-op (body untouched) when the profile carries no policy and the key has no
+  //     hard budget. May consume the request body to read model/params + rewrite clamps.
   const enforcement = await enforceRequest({
     snapshot,
     profile,
     key: auth.key,
     request,
     traceId,
+    target,
     reserveBudget: ctx.reserveBudget,
   });
   if (!enforcement.ok) {
-    emitTerminal(enforcement.code, { profileId, keyId: auth.key.id, routeId: route.routeId });
+    emitTerminal(enforcement.code, { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId });
     return errorResponse(enforcement.code, enforcement.message, traceId);
-  }
-
-  // 4. selectTarget — ordered/weighted → ROUTE_NO_HEALTHY_TARGET.
-  const target = selectTarget(route, ctx.rand);
-  if (!target) {
-    emitTerminal("ROUTE_NO_HEALTHY_TARGET", { profileId, keyId: auth.key.id, routeId: route.routeId });
-    return errorResponse("ROUTE_NO_HEALTHY_TARGET", "no healthy target for route", traceId);
   }
 
   // 5. Build the upstream URL and enforce SSRF (§14.4).

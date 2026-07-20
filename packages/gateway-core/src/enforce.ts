@@ -5,13 +5,15 @@
 // gateway-core stays pure: policy is the pure @manifold/gateway-policy evaluator (allowed by §4.2);
 // the hard-budget reservation goes through the injected BudgetReserver PORT (ADR-0012/§4.4) — no
 // @manifold/budget, no DB import here.
-import { evaluate, type PolicySubject } from "@manifold/gateway-policy";
+import { evaluate, type PolicyDecision, type PolicySubject } from "@manifold/gateway-policy";
 import type {
   BudgetReserver,
   Snapshot,
   SnapshotKey,
   SnapshotPolicyRevision,
+  SnapshotPrice,
   SnapshotProfile,
+  SnapshotTarget,
 } from "@manifold/ports";
 
 /**
@@ -29,23 +31,40 @@ export interface EnforceArgs {
   profile: SnapshotProfile;
   key: SnapshotKey;
   request: Request;
-  /** Trace id — the idempotency anchor for a budget reservation. */
+  /** Trace id (a ULID) — the idempotency anchor + created_at source for a budget reservation. */
   traceId: string;
+  /** The dispatch target selected for this request; its offering price drives the reserve estimate (§6.10). */
+  target: SnapshotTarget;
   /** Injected hard-budget reserver (ADR-0012). Absent ⇒ a hard budget cannot be honored → fail closed. */
   reserveBudget?: BudgetReserver["reserve"];
 }
 
-/** Build the policy subject from the authenticated key's facets (SPEC §6.6). Absent facets are
- *  omitted so they never match a scoped entitlement (deny-first: silence is not consent). */
-function subjectFromKey(key: SnapshotKey): PolicySubject {
-  const subject: PolicySubject = {};
-  const scope = key.scopes[0];
-  if (scope !== undefined) subject.keyScope = scope;
-  const app = key.allowedAppIds[0];
-  if (app !== undefined) subject.app = app;
-  if (key.team) subject.team = key.team;
-  if (key.costCenter) subject.costCenter = key.costCenter;
-  return subject;
+/**
+ * Every policy subject the authenticated key carries (SPEC §6.6): the cartesian product of its
+ * scopes × allowed apps, each also stamped with the key's team + cost-center facets. A key with
+ * several scopes/apps is enforced under ALL of them (deny-first) — an explicit deny on ANY scope or
+ * app blocks the request. The pre-fix code fed only `scopes[0]`/`allowedAppIds[0]` to the evaluator,
+ * so a deny on any non-first scope/app slipped through (under-enforcement). Absent facets are
+ * omitted so they never match a scoped entitlement (silence is not consent).
+ */
+function subjectsFromKey(key: SnapshotKey): PolicySubject[] {
+  const base: PolicySubject = {};
+  if (key.team) base.team = key.team;
+  if (key.costCenter) base.costCenter = key.costCenter;
+  // Empty scopes/apps ⇒ a single base subject (identical to the old single-facet behavior) so a
+  // key with no scope/app facets is still evaluated once against `all`-subject entitlements.
+  const scopes: (string | undefined)[] = key.scopes.length > 0 ? key.scopes : [undefined];
+  const apps: (string | undefined)[] = key.allowedAppIds.length > 0 ? key.allowedAppIds : [undefined];
+  const subjects: PolicySubject[] = [];
+  for (const scope of scopes) {
+    for (const app of apps) {
+      const subject: PolicySubject = { ...base };
+      if (scope !== undefined) subject.keyScope = scope;
+      if (app !== undefined) subject.app = app;
+      subjects.push(subject);
+    }
+  }
+  return subjects;
 }
 
 /** Collect the finite numeric top-level params (max_tokens, temperature, top_p, …) the policy
@@ -58,19 +77,52 @@ function numericParams(obj: Record<string, unknown>): Record<string, number> {
   return out;
 }
 
+/** µ$ per 1,000,000 tokens — the §6.10 price denominator. */
+const MICRO_PER_MTOK = 1_000_000n;
+
 /**
- * Pre-dispatch cost estimate in µ$ (SPEC §6.10). PLACEHOLDER: the real estimator multiplies
- * input-token estimate + max_output by the offering's per-token price; on this skeleton path we
- * proxy it with the requested output ceiling so the reserve guard has a monotone, non-zero number.
- * The BudgetReserver adapter is free to recompute a precise estimate.
+ * Parse a §6.10 per-mtok price (a DECIMAL µ$ string, per `SnapshotPrice`) to a non-negative bigint,
+ * truncating any fractional µ$. Absent / empty / unparseable ⇒ 0 (that token class is unpriced).
  */
-function estimateMicroUsd(params: Record<string, number>): bigint {
-  const maxOut = params.max_tokens ?? params.max_output_tokens ?? 0;
-  return BigInt(Math.max(1, Math.ceil(maxOut)));
+function priceMtok(v: string | null | undefined): bigint {
+  if (!v) return 0n;
+  const digits = (v.trim().split(".")[0] ?? "").replace(/[^0-9]/g, "");
+  if (digits === "") return 0n;
+  const n = BigInt(digits);
+  return n > 0n ? n : 0n;
+}
+
+/** Rough input-token estimate from the buffered request body (~4 chars/token): a monotone,
+ *  non-zero proxy for prompt size until a real tokenizer lands on this path. */
+function estimateInputTokens(rawBody: string): bigint {
+  return BigInt(Math.ceil(rawBody.length / 4));
+}
+
+/**
+ * Pre-dispatch reservation estimate in µ$ (SPEC §6.10). Now that the offering price rides in the
+ * snapshot, compute the REAL estimate `input_est·input_price + max_out·output_price` from the
+ * dispatch target's price. Absent a price (unknown fidelity) we fall back to the requested output
+ * ceiling as a bare token-count proxy so the reserve guard still has a monotone, non-zero number
+ * (never 0, which would make the hard-budget guard a no-op). The value is floored at 1 µ$.
+ */
+function reservedEstimateMicroUsd(
+  rawBody: string,
+  params: Record<string, number>,
+  price: SnapshotPrice | undefined,
+): bigint {
+  const maxOut = BigInt(Math.max(0, Math.ceil(params.max_tokens ?? params.max_output_tokens ?? 0)));
+  const inputPrice = priceMtok(price?.inputPerMtokMicroUsd);
+  const outputPrice = priceMtok(price?.outputPerMtokMicroUsd);
+  if (inputPrice === 0n && outputPrice === 0n) {
+    return maxOut > 0n ? maxOut : 1n; // no price → token-count proxy, floored at 1 µ$
+  }
+  const inputEst = estimateInputTokens(rawBody);
+  const est = (inputEst * inputPrice) / MICRO_PER_MTOK + (maxOut * outputPrice) / MICRO_PER_MTOK;
+  return est > 0n ? est : 1n;
 }
 
 export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> {
-  const { snapshot, profile, key, request, traceId, reserveBudget } = args;
+  const { snapshot, profile, key, request, traceId, target, reserveBudget } = args;
 
   const policy: SnapshotPolicyRevision | undefined = profile.policyRevision
     ? snapshot.policies?.[profile.policyRevision]
@@ -104,18 +156,31 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
   // hard budget actually reserved below.
   let reservationId: string | undefined;
 
-  // ── Policy (deny-first) ──────────────────────────────────────────────────
+  // ── Policy (deny-first across EVERY subject the key carries) ──────────────
   if (policy) {
-    const decision = evaluate({ subject: subjectFromKey(key), canonicalModelId: model, params }, policy);
-    if (decision.outcome === "deny") {
+    // Evaluate the request under each of the key's subjects (scope × app × team × cost-center).
+    // Deny-first: the FIRST subject that denies (an explicit model deny or a rejecting constraint)
+    // blocks the whole request — so a deny on ANY scope/app is honored, not just scopes[0]. Request
+    // constraints are subject-independent, so any allowing subject's clamps are representative.
+    let denied: PolicyDecision | undefined;
+    let clampDecision: PolicyDecision | undefined;
+    for (const subject of subjectsFromKey(key)) {
+      const decision = evaluate({ subject, canonicalModelId: model, params }, policy);
+      if (decision.outcome === "deny") {
+        denied = decision;
+        break;
+      }
+      if (decision.outcome === "clamp") clampDecision = decision;
+    }
+    if (denied) {
       // Carry the evaluator's own code (POLICY_MODEL_DENIED, or POLICY_PARAM_REJECTED for a
       // rejecting constraint) so the status map and terminal event report the real reason.
-      const code = decision.reasonCodes[0] ?? "POLICY_MODEL_DENIED";
+      const code = denied.reasonCodes[0] ?? "POLICY_MODEL_DENIED";
       return { ok: false, code, message: `request denied by policy (${code})` };
     }
-    if (decision.outcome === "clamp" && decision.clamps && parsed) {
+    if (clampDecision?.clamps && parsed) {
       // Rewrite the clamped params back into the forwarded body — the provider sees the safe values.
-      for (const [param, value] of Object.entries(decision.clamps)) parsed[param] = value;
+      for (const [param, value] of Object.entries(clampDecision.clamps)) parsed[param] = value;
       forwardBody = JSON.stringify(parsed);
     }
   }
@@ -127,10 +192,11 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
       // an unmetered request that could blow the cap.
       return { ok: false, code: "BUDGET_RESERVE_DENIED", message: "budget reserver unavailable" };
     }
+    const price = snapshot.offerings?.[target.offeringId]?.price;
     const reservation = await reserveBudget({
       budgetAccountId: budgetAccountId!,
       requestId: traceId,
-      estMicroUsd: estimateMicroUsd(params),
+      estMicroUsd: reservedEstimateMicroUsd(rawBody, params, price),
     });
     if (!reservation.ok) {
       return { ok: false, code: "BUDGET_RESERVE_DENIED", message: "budget cap exceeded" };

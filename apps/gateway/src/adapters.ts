@@ -120,13 +120,20 @@ export class BudgetReserverAdapter implements BudgetReserver {
 
 const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/** Is `s` a syntactically valid 26-char Crockford-base32 ULID? */
+/**
+ * Is `s` a syntactically valid 26-char Crockford-base32 ULID whose 48-bit timestamp does not
+ * overflow? A ULID's 10-char time prefix (50 bits) carries a 48-bit millisecond timestamp, so its
+ * FIRST char is always `0`–`7`; a 26-char Crockford lookalike starting `8`–`Z` decodes to an
+ * impossible (overflowed) millisecond. Rejecting it here means such a lookalike is re-synthesized
+ * with a real `now` timestamp rather than passed through to set a garbage reservation created_at.
+ */
 function isUlid(s: string): boolean {
   if (s.length !== 26) return false;
-  for (const ch of s.toUpperCase()) {
+  const upper = s.toUpperCase();
+  for (const ch of upper) {
     if (!CROCKFORD.includes(ch)) return false;
   }
-  return true;
+  return upper[0]! <= "7"; // time prefix must not overflow the 48-bit timestamp
 }
 
 /** Encode a 48-bit millisecond timestamp as a ULID's 10-char time prefix. */
@@ -221,15 +228,6 @@ export function makeDbBudgetReserver(url: string, now?: () => Date): BudgetReser
   return new BudgetReserverAdapter(makeDbBudgetReserveFn({ sql, now }));
 }
 
-/**
- * Is a resolved IP literal loopback / link-local / RFC-1918 / unique-local? (§14.4)
- * Delegates to gateway-core's single classifier so the literal-URL check and the
- * resolved-address check share one correct implementation (no duplicate blind spots).
- */
-export function isPrivateAddress(ip: string): boolean {
-  return isPrivateIp(ip);
-}
-
 /** Redirect hops we follow before giving up (same order of magnitude as browser/undici defaults). */
 const MAX_REDIRECTS = 10;
 
@@ -265,13 +263,13 @@ export class EgressFetcher implements Fetcher {
     if (this.policy.allowPrivate) return;
     const host = url.hostname.replace(/^\[|\]$/g, "");
     if (isIP(host)) {
-      if (isPrivateAddress(host)) throw new Error(`egress: blocked private address ${host}`);
+      if (isPrivateIp(host)) throw new Error(`egress: blocked private address ${host}`);
       return;
     }
     // Resolve ALL families and reject if ANY resolved address is private (dual-stack blind spot).
     const resolved = await lookup(host, { all: true });
     for (const { address } of resolved) {
-      if (isPrivateAddress(address)) {
+      if (isPrivateIp(address)) {
         throw new Error(`egress: blocked private address ${address} (resolved from ${host})`);
       }
     }
