@@ -312,6 +312,10 @@ export interface BudgetReserveInput {
   requestId: string;
   /** Pre-dispatch cost estimate in µ$ (§6.10). */
   estMicroUsd: bigint;
+  /** Pre-dispatch token estimate so a `unit=tokens` hard budget can guard on reserved_tokens
+   *  BEFORE dispatch (§16.3); absent ⇒ the token guard sees 0 (µ$ budgets ignore these). */
+  estimatedInputTokens?: bigint;
+  maxOutputTokens?: bigint;
 }
 
 export type BudgetReserveResult =

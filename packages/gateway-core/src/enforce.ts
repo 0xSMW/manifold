@@ -275,10 +275,18 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
         message: "hard cost budget over an offering with no known price",
       };
     }
+    // Token estimate so a unit=tokens hard budget guards on reserved_tokens BEFORE dispatch (#3): the
+    // requested output ceiling + the ~4-chars/token input proxy. µ$ budgets ignore these; token
+    // budgets (exempt from the price check above) rely on them to deny an over-cap request pre-dispatch.
+    const maxOutputTokens = BigInt(
+      Math.max(0, Math.ceil(params.max_tokens ?? params.max_output_tokens ?? 0)),
+    );
     const reservation = await reserveBudget({
       budgetAccountId: budgetAccountId!,
       requestId: traceId,
       estMicroUsd: reservedEstimateMicroUsd(rawBody, params, price),
+      estimatedInputTokens: estimateInputTokens(rawBody),
+      maxOutputTokens,
     });
     if (!reservation.ok) {
       return { ok: false, code: "BUDGET_RESERVE_DENIED", message: "budget cap exceeded" };

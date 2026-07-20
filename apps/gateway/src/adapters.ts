@@ -213,6 +213,9 @@ export function makeDbBudgetReserveFn(
         workspaceId: acct.workspace_id,
         windowStart: bucketStart(acct.window, at),
         shard: 0,
+        // Thread the token estimate so a unit=tokens hard budget enforces pre-dispatch (#3).
+        estimatedInputTokens: input.estimatedInputTokens,
+        maxOutputTokens: input.maxOutputTokens,
       });
       return result.ok
         ? { ok: true, reservationId: result.reservationId }

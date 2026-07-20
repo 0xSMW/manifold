@@ -41,6 +41,13 @@ const crypto = new FakeCrypto();
 const pepper = new TextEncoder().encode("budget-e2e-pepper");
 const VALID_KEY = "sk-budget-e2e-key";
 const keyHashHex = await keyedHashHex(crypto, pepper, VALID_KEY);
+// A second key bound to a unit=TOKENS hard budget (review #3: token budgets enforce pre-dispatch).
+const TOKEN_KEY = "sk-budget-e2e-token-key";
+const tokenKeyHashHex = await keyedHashHex(crypto, pepper, TOKEN_KEY);
+const TOKEN_BUDGET_ACCOUNT = "ba_be2e_tok";
+// A small HARD cap of 100 TOKENS. estTokens = input_est(~10) + max_tokens, so max_tokens=10 fits (~20)
+// and max_tokens=1000 blows it (~1010) — enforced on reserved_tokens BEFORE dispatch.
+const TOKEN_LIMIT = 100;
 
 const INSTALLATION = "inst_be2e";
 const PROFILE = "prof_be2e";
@@ -122,6 +129,15 @@ before(async () => {
     INSERT INTO virtual_key
       (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, budget_account_id) VALUES
       ('vk_be2e','ws_be2e','${PROFILE}','sk-be2e','\\x${keyHashHex}','[]','[]','${BUDGET_ACCOUNT}');
+
+    -- A unit=TOKENS hard budget (100 tokens) + a key bound to it (review #3: pre-dispatch token guard).
+    INSERT INTO budget_account
+      (id, workspace_id, scope_type, scope_id, unit, "window", limit_amount, enforcement,
+       pricing_catalog_revision_id) VALUES
+      ('${TOKEN_BUDGET_ACCOUNT}','ws_be2e','key','vk_be2e_tok','tokens','total',${TOKEN_LIMIT},'hard','pcr_be2e');
+    INSERT INTO virtual_key
+      (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, budget_account_id) VALUES
+      ('vk_be2e_tok','ws_be2e','${PROFILE}','sk-tok','\\x${tokenKeyHashHex}','[]','[]','${TOKEN_BUDGET_ACCOUNT}');
   `);
 
   // THE REAL RESERVER: @manifold/budget.reserve against the SAME Postgres container (NO fake).
@@ -158,10 +174,10 @@ function makeCtx(snapshot: Snapshot, fetcher: Fetcher): GatewayContext {
   };
 }
 
-function req(body: unknown): Request {
+function req(body: unknown, key: string = VALID_KEY): Request {
   return new Request(`http://${HOST}/v1/chat/completions`, {
     method: "POST",
-    headers: { host: HOST, authorization: `Bearer ${VALID_KEY}` },
+    headers: { host: HOST, authorization: `Bearer ${key}` },
     body: JSON.stringify(body),
   });
 }
@@ -224,4 +240,31 @@ test("over-cap request ⇒ 402 BUDGET_RESERVE_DENIED and upstream call count 0 (
   assert.equal(body.error.code, "BUDGET_RESERVE_DENIED", "the reserve-denied reason reaches the client");
   assert.equal(fetcher.count, 0, "a denied request must NEVER reach the provider");
   assert.equal(await reservationCount(), before, "no reservation row is created for a denied request");
+});
+
+// review #3: a unit=TOKENS hard budget must enforce on reserved_tokens BEFORE dispatch. Pre-fix the
+// gateway passed no token estimate, so estTokens=0, the token guard never tripped, and a token cap was
+// unenforced. Now enforce threads estimatedInputTokens+maxOutputTokens through the reserver.
+test("(#3) TOKEN-unit hard budget: over-token-cap request ⇒ 402, upstream count 0 (denied pre-dispatch)", async () => {
+  const snap = await buildSnapshot(db, INSTALLATION);
+  const fetcher = new CountingFetcher();
+  const ctx = makeCtx(snap, fetcher);
+
+  // estTokens = input_est(~10) + max_tokens(1000) = ~1010 ≫ 100-token cap ⇒ the DB reserve denies.
+  const res = await handleRequest(ctx, req({ model: "be2e-model", max_tokens: 1000 }, TOKEN_KEY));
+  assert.equal(res.status, 402, "an over-token-cap hard budget returns 402");
+  const body = (await res.json()) as { error: { code: string } };
+  assert.equal(body.error.code, "BUDGET_RESERVE_DENIED", "reserve-denied reason reaches the client");
+  assert.equal(fetcher.count, 0, "the provider was NEVER dispatched to for an over-token-cap request");
+});
+
+test("(#3) TOKEN-unit hard budget: under-token-cap request ⇒ dispatched (upstream count 1)", async () => {
+  const snap = await buildSnapshot(db, INSTALLATION);
+  const fetcher = new CountingFetcher();
+  const ctx = makeCtx(snap, fetcher);
+
+  // estTokens = input_est(~10) + max_tokens(10) = ~20 ≤ 100-token cap ⇒ reserve admits, dispatches.
+  const res = await handleRequest(ctx, req({ model: "be2e-model", max_tokens: 10 }, TOKEN_KEY));
+  assert.equal(res.status, 200, "an under-token-cap request dispatches");
+  assert.equal(fetcher.count, 1, "the under-token-cap request WAS dispatched exactly once");
 });
