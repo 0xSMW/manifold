@@ -7,7 +7,15 @@ import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { genId } from "@/lib/ids";
-import { handle, jsonBody, ok, requireString, ManifoldError } from "@/lib/http";
+import {
+  handle,
+  jsonBody,
+  ok,
+  requireString,
+  optionalString,
+  optionalNumber,
+  ManifoldError,
+} from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -55,8 +63,7 @@ export async function POST(req: Request): Promise<Response> {
     const body = await jsonBody(req);
     const installationId = requireString(body, "installationId");
     const publicName = requireString(body, "publicName");
-    const endpointKind =
-      typeof body.endpointKind === "string" ? body.endpointKind : "chat";
+    const endpointKind = optionalString(body, "endpointKind") ?? "chat";
     if (!ENDPOINT_KINDS.has(endpointKind)) {
       throw new ManifoldError({
         status: 422,
@@ -69,11 +76,10 @@ export async function POST(req: Request): Promise<Response> {
     const providerCredentialId = requireString(target, "providerCredentialId");
     const offeringId = requireString(target, "offeringId");
     const mode = body.mode === "weighted" ? "weighted" : "ordered";
-    const weight = typeof target.weight === "number" ? target.weight : 1;
-    const priority = typeof target.priority === "number" ? target.priority : 0;
-    const targetBaseUrl =
-      typeof target.baseUrl === "string" ? target.baseUrl : null;
-    const region = typeof target.region === "string" ? target.region : null;
+    const weight = optionalNumber(target, "weight", 1);
+    const priority = optionalNumber(target, "priority", 0);
+    const targetBaseUrl = optionalString(target, "baseUrl");
+    const region = optionalString(target, "region");
 
     const retryPolicy = { attempts: 1, backoffMs: 0 };
     const timeoutPolicy = { overall_ms: 60000 };

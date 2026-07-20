@@ -4,11 +4,18 @@
 // moved → CONFIG_PRECONDITION_FAILED), holds destructive changes without approval
 // (CONFIG_TRIPWIRE_HELD), then applies in one txn: inserts the new active
 // gateway_config_revision (source of truth) and publishes to the store. Returns the new revision.
-import { buildSnapshot, planApply, apply } from "@manifold/config";
+import { apply } from "@manifold/config";
 import { authorize } from "@/lib/auth";
-import { db, withWorkspace } from "@/lib/db";
-import { signSnapshot, snapshotStore } from "@/lib/snapshot";
-import { handle, jsonBody, ok, requireString, ManifoldError } from "@/lib/http";
+import { db, requireInstallation } from "@/lib/db";
+import { buildSignedPlan, snapshotStore } from "@/lib/snapshot";
+import {
+  handle,
+  jsonBody,
+  ok,
+  requireString,
+  optionalStringArray,
+  ManifoldError,
+} from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,28 +26,12 @@ export async function POST(req: Request): Promise<Response> {
     const body = await jsonBody(req);
     const installationId = requireString(body, "installationId");
     const expectedPlanHash = requireString(body, "planHash");
-    const approvals = Array.isArray(body.approvals)
-      ? (body.approvals as unknown[]).map(String)
-      : [];
+    const approvals = optionalStringArray(body, "approvals");
 
     // Installation must belong to this workspace.
-    const inst = await withWorkspace(principal.workspaceId, (sql) =>
-      sql<{ id: string }[]>`
-        SELECT id FROM gateway_installation
-        WHERE id = ${installationId} AND workspace_id = ${principal.workspaceId} LIMIT 1`,
-    );
-    if (!inst[0]) {
-      throw new ManifoldError({
-        status: 404,
-        code: "NOT_FOUND",
-        message: "installation not found",
-        reasonCodes: [],
-      });
-    }
+    await requireInstallation(principal.workspaceId, installationId);
 
-    const built = await buildSnapshot(db(), installationId);
-    const signed = signSnapshot(built);
-    const plan = await planApply(db(), installationId, signed);
+    const plan = await buildSignedPlan(installationId);
 
     // Optimistic-concurrency precondition on the plan the caller planned against (§16.2).
     if (plan.planHash !== expectedPlanHash) {

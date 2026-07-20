@@ -7,7 +7,15 @@ import { withWorkspace } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { generateSecret } from "@/lib/crypto";
 import { genId } from "@/lib/ids";
-import { handle, jsonBody, ok, requireString, ManifoldError } from "@/lib/http";
+import {
+  handle,
+  jsonBody,
+  ok,
+  requireString,
+  optionalString,
+  optionalStringArray,
+  ManifoldError,
+} from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,15 +66,10 @@ export async function POST(req: Request): Promise<Response> {
     const principal = await authorize(req, "keys:write");
     const body = await jsonBody(req);
     const profileId = requireString(body, "profileId");
-    const scopes = Array.isArray(body.scopes)
-      ? (body.scopes as unknown[]).map(String)
-      : [];
-    const allowedAppIds = Array.isArray(body.allowedAppIds)
-      ? (body.allowedAppIds as unknown[]).map(String)
-      : [];
-    const budgetAccountId =
-      typeof body.budgetAccountId === "string" ? body.budgetAccountId : null;
-    const expiresAt = typeof body.expiresAt === "string" ? body.expiresAt : null;
+    const scopes = optionalStringArray(body, "scopes");
+    const allowedAppIds = optionalStringArray(body, "allowedAppIds");
+    const budgetAccountId = optionalString(body, "budgetAccountId");
+    const expiresAt = optionalString(body, "expiresAt");
 
     const secret = generateSecret("sk-mf-");
     const keyId = genId("key");

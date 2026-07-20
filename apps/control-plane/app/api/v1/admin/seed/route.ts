@@ -11,7 +11,7 @@ import { withWorkspace } from "@/lib/db";
 import { generateSecret } from "@/lib/crypto";
 import { genId } from "@/lib/ids";
 import { sha256Canonical } from "@manifold/config";
-import { handle, jsonBody, ok, ManifoldError } from "@/lib/http";
+import { handle, jsonBody, ok, optionalString, ManifoldError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -45,10 +45,10 @@ export async function POST(req: Request): Promise<Response> {
     }
 
     const body = await jsonBody(req).catch(() => ({}) as Record<string, unknown>);
-    const slug = typeof body.slug === "string" ? body.slug : `ws-${Date.now().toString(36)}`;
-    const name = typeof body.name === "string" ? body.name : "Seed Workspace";
-    const email = typeof body.email === "string" ? body.email : "owner@example.com";
-    const region = typeof body.region === "string" ? body.region : "us-east-1";
+    const slug = optionalString(body, "slug") ?? `ws-${Date.now().toString(36)}`;
+    const name = optionalString(body, "name") ?? "Seed Workspace";
+    const email = optionalString(body, "email") ?? "owner@example.com";
+    const region = optionalString(body, "region") ?? "us-east-1";
     const short = Math.random().toString(36).slice(2, 8);
     const hostname = `${slug}-${short}.gateway.local`;
 

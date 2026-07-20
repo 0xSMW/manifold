@@ -3,7 +3,8 @@
 // keyed_hash = HMAC-SHA256(pepper, plaintext). The pepper is a control-plane/gateway
 // secret (MANIFOLD_TOKEN_PEPPER). Lookup is by hash only; plaintext is never stored — a
 // virtual key / api_token is a keyed hash + display prefix (SPEC §5.5).
-import { createHmac, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
+import { hmacKeyHash } from "@manifold/crypto";
 
 function pepper(): string {
   const p = process.env.MANIFOLD_TOKEN_PEPPER;
@@ -15,9 +16,19 @@ function pepper(): string {
   return p;
 }
 
-/** keyed_hash = HMAC-SHA256(pepper, plaintext) → 32-byte Buffer (stored as bytea). */
+/**
+ * keyed_hash = HMAC-SHA256(pepper, plaintext) → 32-byte Buffer (stored as bytea).
+ *
+ * Delegates to @manifold/crypto's `hmacKeyHash`, which owns the attack-tested primitive.
+ * That helper takes bytes for both pepper and plaintext, whereas the control-plane pepper is a
+ * string secret (MANIFOLD_TOKEN_PEPPER); we encode it as UTF-8 — exactly what `createHmac`'s
+ * string-key path did — so the resulting hash bytes are byte-for-byte identical (token auth and
+ * the stored keyed_hash stay compatible). Wrapped in Buffer.from for the bytea encoder.
+ */
 export function keyedHash(plaintext: string): Buffer {
-  return createHmac("sha256", pepper()).update(plaintext, "utf8").digest();
+  return Buffer.from(
+    hmacKeyHash(Buffer.from(pepper(), "utf8"), Buffer.from(plaintext, "utf8")),
+  );
 }
 
 export interface GeneratedSecret {

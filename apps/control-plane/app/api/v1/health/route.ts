@@ -2,12 +2,16 @@
 // and reports db: ok | unreachable (never a fabricated "ok"). Public (no auth) so external
 // monitors and the Deployments panel can probe it.
 import { rawSql } from "@/lib/db";
+import { baseHeaders, newRequestId } from "@/lib/http";
 import { SCHEMA_VERSION } from "@manifold/contracts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<Response> {
+  // Public (no auth), so it does not run through `handle`; but it still carries the kit's
+  // correlation/schema headers (X-Request-Id, X-Manifold-Schema) like every other response.
+  const requestId = newRequestId();
   let db: "ok" | "unreachable" = "unreachable";
   if (process.env.DATABASE_URL) {
     try {
@@ -34,10 +38,6 @@ export async function GET(): Promise<Response> {
 
   return new Response(JSON.stringify(body), {
     status: db === "ok" ? 200 : 503,
-    headers: {
-      "content-type": "application/json",
-      "X-Manifold-Schema": SCHEMA_VERSION,
-      "cache-control": "no-store",
-    },
+    headers: { ...baseHeaders(requestId), "content-type": "application/json" },
   });
 }

@@ -10,9 +10,12 @@
 // handle; /config/active reads the signed bytes from the DB, not the store.
 import {
   InMemorySnapshotStore,
+  buildSnapshot,
+  planApply,
   signSnapshot as signSnapshotImpl,
   type ConfigSnapshot,
 } from "@manifold/config";
+import { db } from "@/lib/db";
 import { ManifoldError } from "@/lib/http";
 
 let store: InMemorySnapshotStore | null = null;
@@ -41,5 +44,17 @@ export function signSnapshot(snapshot: ConfigSnapshot): ConfigSnapshot {
     snapshot,
     signingKey(),
     process.env.MANIFOLD_SNAPSHOT_SIGNING_KEY_ID,
+  );
+}
+
+/**
+ * The deterministic plan pipeline shared by /config/plan and /config/apply:
+ * buildSnapshot → signSnapshot → planApply. Extracting it guarantees both routes hash the
+ * SAME bytes, so planHash cannot diverge between plan-time and apply-time (§8.2, §16.2). The
+ * target content hash excludes build time, so a re-plan at apply reproduces the caller's plan.
+ */
+export function buildSignedPlan(installationId: string) {
+  return buildSnapshot(db(), installationId).then((built) =>
+    planApply(db(), installationId, signSnapshot(built)),
   );
 }

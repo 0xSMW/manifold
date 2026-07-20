@@ -6,6 +6,7 @@
 // so RLS (§6.16) scopes every statement; handlers ALSO filter by workspace_id explicitly
 // (defense in depth, §15.2 layer 1).
 import { getDb, type Database } from "@manifold/database";
+import { ManifoldError } from "@/lib/http";
 
 let cached: Database | null = null;
 
@@ -54,4 +55,28 @@ export async function withWorkspace<T>(
     await tx`SELECT set_config('manifold.workspace_id', ${workspaceId}, true)`;
     return fn(tx as unknown as Sql);
   }) as Promise<T>;
+}
+
+/**
+ * Assert `installationId` exists AND belongs to `workspaceId`, else throw 404 NOT_FOUND. The
+ * config plan and apply routes share this ownership gate verbatim (same SQL, same 404), so it
+ * lives here to stay a single source of truth (§15.2 tenant isolation).
+ */
+export async function requireInstallation(
+  workspaceId: string,
+  installationId: string,
+): Promise<void> {
+  const rows = await withWorkspace(workspaceId, (sql) =>
+    sql<{ id: string }[]>`
+      SELECT id FROM gateway_installation
+      WHERE id = ${installationId} AND workspace_id = ${workspaceId} LIMIT 1`,
+  );
+  if (!rows[0]) {
+    throw new ManifoldError({
+      status: 404,
+      code: "NOT_FOUND",
+      message: "installation not found",
+      reasonCodes: [],
+    });
+  }
 }

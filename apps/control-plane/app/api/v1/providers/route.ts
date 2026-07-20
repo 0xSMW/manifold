@@ -8,7 +8,14 @@ import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { genId } from "@/lib/ids";
-import { handle, jsonBody, ok, requireString } from "@/lib/http";
+import {
+  handle,
+  jsonBody,
+  ok,
+  requireString,
+  optionalString,
+  optionalStringArray,
+} from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -57,10 +64,8 @@ export async function POST(req: Request): Promise<Response> {
     const body = await jsonBody(req);
     const provider = requireString(body, "provider");
     const label = requireString(body, "label");
-    const baseUrl = typeof body.baseUrl === "string" ? body.baseUrl : null;
-    const allowedHosts = Array.isArray(body.allowedHosts)
-      ? (body.allowedHosts as unknown[]).map(String)
-      : [];
+    const baseUrl = optionalString(body, "baseUrl");
+    const allowedHosts = optionalStringArray(body, "allowedHosts");
 
     const result = await withWorkspace(principal.workspaceId, async (sql) => {
       const dekId = genId("dek");

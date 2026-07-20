@@ -10,8 +10,7 @@
 // that workspace).
 import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
-import { handle, ManifoldError } from "@/lib/http";
-import { SCHEMA_VERSION } from "@manifold/contracts";
+import { baseHeaders, handle, ManifoldError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -52,12 +51,7 @@ export async function GET(req: Request): Promise<Response> {
     // Return the signed snapshot verbatim (the exact bytes a loader verifies, §7.4).
     return new Response(JSON.stringify(active.snapshot), {
       status: 200,
-      headers: {
-        "content-type": "application/json",
-        "X-Request-Id": requestId,
-        "X-Manifold-Schema": SCHEMA_VERSION,
-        "cache-control": "no-store",
-      },
+      headers: { ...baseHeaders(requestId), "content-type": "application/json" },
     });
   });
 }

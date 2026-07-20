@@ -46,7 +46,12 @@ export function newRequestId(): string {
   return `req_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
-function baseHeaders(requestId: string): Record<string, string> {
+/**
+ * The standard control-plane response headers (§10.1): request-id correlation, schema pin, and
+ * no-store. Exported so routes that must build a raw `Response` (verbatim snapshot bytes,
+ * public health) carry the SAME headers as `ok`/`errorEnvelope` instead of drifting.
+ */
+export function baseHeaders(requestId: string): Record<string, string> {
   return {
     "X-Request-Id": requestId,
     "X-Manifold-Schema": SCHEMA_VERSION,
@@ -146,4 +151,37 @@ export function requireString(
     });
   }
   return v;
+}
+
+// ── Optional-field coercions ────────────────────────────────────────────────
+// Small helpers that replace the hand-rolled `typeof x === "..." ? x : default`
+// ternaries scattered across the mutate routes (the `zod` dep was carried but unused).
+// They coerce a permissive JSON body without throwing: absent/mistyped → the fallback.
+
+/** Optional string field: return it when it's a string, else `null`. */
+export function optionalString(
+  body: Record<string, unknown>,
+  field: string,
+): string | null {
+  const v = body[field];
+  return typeof v === "string" ? v : null;
+}
+
+/** Optional array field: coerce each element via `String`, else `[]`. */
+export function optionalStringArray(
+  body: Record<string, unknown>,
+  field: string,
+): string[] {
+  const v = body[field];
+  return Array.isArray(v) ? v.map(String) : [];
+}
+
+/** Optional number field: return it when it's a number, else `fallback`. */
+export function optionalNumber(
+  body: Record<string, unknown>,
+  field: string,
+  fallback: number,
+): number {
+  const v = body[field];
+  return typeof v === "number" ? v : fallback;
 }
