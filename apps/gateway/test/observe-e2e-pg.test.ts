@@ -179,7 +179,7 @@ function req(body: unknown): Request {
 const EXPECTED_TOKENS: TokenCounts = {
   inputTokens: INPUT_TOKENS,
   outputTokens: OUTPUT_TOKENS,
-  cachedTokens: 0n,
+  cacheReadTokens: 0n,
   reasoningTokens: 0n,
   cacheWriteTokens: 0n,
   audioInputTokens: 0n,

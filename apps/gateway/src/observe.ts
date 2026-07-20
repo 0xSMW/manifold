@@ -85,12 +85,12 @@ async function insertUsageRecord(
   await sql`
     INSERT INTO usage_record (
       id, workspace_id, observation_id, trace_id,
-      input_tokens, output_tokens, cached_tokens, reasoning_tokens,
+      input_tokens, output_tokens, cache_read_tokens, reasoning_tokens,
       cache_write_tokens, audio_input_tokens, audio_output_tokens,
       fidelity, occurred_at
     ) VALUES (
       ${ulid()}, ${u.workspaceId}, ${observationId}, ${u.traceId},
-      ${p(t.inputTokens)}, ${p(t.outputTokens)}, ${p(t.cachedTokens)}, ${p(t.reasoningTokens)},
+      ${p(t.inputTokens)}, ${p(t.outputTokens)}, ${p(t.cacheReadTokens)}, ${p(t.reasoningTokens)},
       ${p(t.cacheWriteTokens)}, ${p(t.audioInputTokens)}, ${p(t.audioOutputTokens)},
       ${u.fidelity}, ${occurredAt}
     )
