@@ -16,6 +16,7 @@ import type {
   SnapshotStore,
 } from "@manifold/ports";
 import { isPrivateIp, schemeAllowed, type SsrfPolicy, STRICT_SSRF } from "@manifold/gateway-core";
+import { assertSnapshotTrusted } from "./snapshotVerify.ts";
 
 /** node:crypto-backed Crypto port (§14.3). */
 export class NodeCrypto implements Crypto {
@@ -59,13 +60,16 @@ export class JsonlIngestSink implements IngestSink {
 
 /**
  * SnapshotStore that loads a signed snapshot blob from a local JSON file.
- * TODO(§7.3): verify meta.signature (ed25519) + recompute contentHash before serving; the real
- * store fails closed to the last-good snapshot on a bad signature.
+ * §7.3: the snapshot is VERIFIED on load — recompute the canonical contentHash and ed25519-verify
+ * meta.signature against the pinned public key (env MANIFOLD_SNAPSHOT_PUBLIC_KEY, base64). A forged
+ * snapshot (rewritten routes/keys/baseUrl/ciphertext) is rejected (throw → fail closed). When no
+ * key is pinned, an unsigned snapshot is allowed with a loud warning (DEV escape hatch).
  */
 export class SnapshotFileStore implements SnapshotStore {
   private readonly snapshot: Snapshot;
-  constructor(path: string) {
+  constructor(path: string, publicKeyBase64?: string) {
     this.snapshot = JSON.parse(readFileSync(path, "utf8")) as Snapshot;
+    assertSnapshotTrusted(this.snapshot, publicKeyBase64);
   }
   async loadActive(_installationId: string): Promise<Snapshot> {
     return this.snapshot;

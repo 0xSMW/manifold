@@ -61,14 +61,25 @@ export function decryptTargetSecret(
 /**
  * Secret resolver: decrypts the credential envelope (real path). Falls back to an env var ONLY
  * for a legacy demo target that carries no ciphertext (e.g. the local Anthropic example).
+ *
+ * FAIL CLOSED (§14.3): when there is neither a decryptable envelope NOR a non-empty env secret,
+ * this THROWS instead of returning "". Returning an empty string would let handleRequest dispatch
+ * `Authorization: Bearer <empty>` / `x-api-key: ''` upstream (a fail-OPEN credential). The throw is
+ * mapped by handleRequest to 502 CREDENTIAL_UNAVAILABLE — never dispatched, never leaked.
  */
 export function makeSecretResolver(kek: Uint8Array): (target: SnapshotTarget) => Promise<string> {
   return async (target) => {
     if (target.credentialCiphertext && target.wrappedDek) {
       return decryptTargetSecret(target, kek);
     }
-    if (target.secretEnv) return process.env[target.secretEnv] ?? "";
-    return "";
+    if (target.secretEnv) {
+      const fromEnv = process.env[target.secretEnv];
+      if (fromEnv) return fromEnv; // only a non-empty env secret is a real credential
+    }
+    throw new Error(
+      `no provider credential available for offering ${target.offeringId}: ` +
+        "no credentialCiphertext/wrappedDek to decrypt and no non-empty secretEnv",
+    );
   };
 }
 

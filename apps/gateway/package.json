@@ -16,6 +16,7 @@
     "@manifold/crypto": "*"
   },
   "devDependencies": {
+    "@manifold/config": "0.0.0",
     "@types/node": "^22",
     "typescript": "^5.6"
   }
