@@ -1,8 +1,11 @@
 // Bearer api_token authentication + per-endpoint scope checks (SPEC §10.1, §15.3).
 //
 // The presented token is HMAC'd (§14.3) and looked up by keyed_hash. Since the tenant is not
-// known until the token resolves, the lookup runs on the raw connection (the control plane is
-// one DB per workspace under ADR-0021; in a shared dev DB the lookup role bypasses RLS). The
+// known until the token resolves, the lookup is inherently cross-tenant and runs BEFORE any
+// `manifold.workspace_id` GUC is set. The app connects as the non-superuser `manifold_app` role,
+// which RLS (§6.16) applies to, so a direct SELECT on api_token with the GUC unset returns 0 rows.
+// The lookup therefore goes through the SECURITY DEFINER function `auth_lookup_token` (migration
+// 0002), the ONE audited carve-out that may read a token row by exact hash bypassing RLS. The
 // resolved principal carries workspace_id + scopes; every subsequent query is workspace-scoped.
 import { keyedHash } from "@/lib/crypto";
 import { rawSql } from "@/lib/db";
@@ -51,9 +54,11 @@ export async function authenticate(req: Request): Promise<Principal> {
 
   const hash = keyedHash(token);
   const sql = rawSql();
+  // Cross-tenant lookup through the RLS carve-out (SECURITY DEFINER, migration 0002). A plain
+  // SELECT here would return 0 rows under the non-superuser app role with no workspace GUC set.
   const rows = await sql<ApiTokenRow[]>`
     SELECT id, workspace_id, scopes, revoked_at, expires_at
-    FROM api_token WHERE keyed_hash = ${hash} LIMIT 1`;
+    FROM auth_lookup_token(${hash})`;
   const row = rows[0];
   if (!row) throw unauthenticated("AUTH_KEY_UNKNOWN", "unknown api token");
   if (row.revoked_at) throw unauthenticated("AUTH_KEY_REVOKED", "api token revoked");
@@ -61,8 +66,9 @@ export async function authenticate(req: Request): Promise<Principal> {
     throw unauthenticated("AUTH_KEY_EXPIRED", "api token expired");
   }
 
-  // Best-effort last_used_at touch (fire-and-forget; not part of the request txn).
-  sql`UPDATE api_token SET last_used_at = now() WHERE id = ${row.id}`.catch(() => {});
+  // Best-effort last_used_at touch (fire-and-forget; not part of the request txn). Routed through
+  // the definer carve-out too, since a direct UPDATE would match 0 rows under RLS pre-GUC.
+  sql`SELECT auth_touch_token(${row.id})`.catch(() => {});
 
   return {
     workspaceId: row.workspace_id,
