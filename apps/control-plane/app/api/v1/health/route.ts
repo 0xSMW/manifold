@@ -1,28 +1,43 @@
-import { NextResponse } from "next/server";
+// GET /api/v1/health (SPEC §10.3, §18.4). Honest liveness: actually attempts a DB `SELECT 1`
+// and reports db: ok | unreachable (never a fabricated "ok"). Public (no auth) so external
+// monitors and the Deployments panel can probe it.
+import { rawSql } from "@/lib/db";
+import { SCHEMA_VERSION } from "@manifold/contracts";
 
-// SPEC §18.5 — liveness for the Deployments diagnostics panel and external monitors.
-// Skeleton: checks are reported "skipped" until wired (honest, not fabricated "ok").
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const SCHEMA_VERSION = "manifold.v1";
+export async function GET(): Promise<Response> {
+  let db: "ok" | "unreachable" = "unreachable";
+  if (process.env.DATABASE_URL) {
+    try {
+      await rawSql()`SELECT 1`;
+      db = "ok";
+    } catch (err) {
+      console.error("health: db probe failed:", err);
+      db = "unreachable";
+    }
+  }
 
-export async function GET() {
   const body = {
-    status: "ok" as const,
+    status: db === "ok" ? ("ok" as const) : ("down" as const),
     schema: SCHEMA_VERSION,
     time: new Date().toISOString(),
     checks: {
-      // Not yet actually probed — report skipped rather than claim health we didn't verify.
-      db: process.env.DATABASE_URL ? ("skipped" as const) : ("skipped" as const),
-      snapshot_store: process.env.EDGE_CONFIG
-        ? ("skipped" as const)
-        : ("skipped" as const),
+      db,
+      // Snapshot store liveness is not probed here (the DB is the source of truth, §8.2).
+      snapshot_store: "skipped" as const,
     },
     ingest_lag_seconds: null,
     storage_tier: null,
-    note: "skeleton: health checks not yet wired to Neon/Edge Config",
   };
-  return NextResponse.json(body, {
-    headers: { "cache-control": "no-store" },
+
+  return new Response(JSON.stringify(body), {
+    status: db === "ok" ? 200 : 503,
+    headers: {
+      "content-type": "application/json",
+      "X-Manifold-Schema": SCHEMA_VERSION,
+      "cache-control": "no-store",
+    },
   });
 }
