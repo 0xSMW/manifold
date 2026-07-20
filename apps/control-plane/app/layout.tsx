@@ -1,3 +1,5 @@
+import { Analytics } from "@vercel/analytics/next";
+
 export const metadata = {
   title: "Manifold — control plane",
   description: "OpenAI-compatible self-hostable AI gateway with logging and governance.",
@@ -20,6 +22,7 @@ export default function RootLayout({
         }}
       >
         {children}
+        <Analytics />
       </body>
     </html>
   );
