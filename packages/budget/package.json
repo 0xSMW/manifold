@@ -15,7 +15,7 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
-    "test": "node --experimental-strip-types --test test/budget-attacks.test.ts"
+    "test": "node --experimental-strip-types --test test/budget-attacks.test.ts test/rls-money.test.ts"
   },
   "dependencies": {
     "@manifold/contracts": "*",

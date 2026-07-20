@@ -83,7 +83,10 @@ interface ReservationRow {
   reserved_microusd: string;
   status: BudgetReservationState;
   created_at: Date;
-  window: string;
+  /** The EXACT counter-row coordinates reserve() bumped (§16.3), persisted on the row so
+   *  commit/rollback/sweep decrement THAT row instead of re-deriving (bucketStart, shard=0). */
+  window_start: Date;
+  shard: number;
 }
 
 /**
@@ -224,11 +227,13 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
       INSERT INTO budget_reservation (
         id, workspace_id, budget_account_id, request_id,
         estimated_input_tokens, max_output_tokens,
-        reserved_microusd, status, expires_at, created_at
+        reserved_microusd, status, expires_at, created_at,
+        window_start, shard
       ) VALUES (
         ${reservationId}, ${workspaceId}, ${budgetAccountId}, ${requestId},
         ${p(input.estimatedInputTokens ?? 0n)}, ${p(input.maxOutputTokens ?? 0n)},
-        ${p(est)}, 'reserved', ${expiresAt}, ${createdAt}
+        ${p(est)}, 'reserved', ${expiresAt}, ${createdAt},
+        ${windowStart}, ${shard}
       )
       ON CONFLICT (budget_account_id, request_id, created_at) DO NOTHING
       RETURNING id
@@ -274,15 +279,21 @@ export interface CommitResult {
  * Reconcile a reservation to its actual cost (§8.4 `reserved → committed`): release the
  * held `reserved` and add `actualMicroUsd` to `committed`, all under the window row lock.
  * Idempotent: a reservation that is no longer `reserved` is returned unchanged.
+ *
+ * `workspaceId` scopes RLS for this transaction and MUST be supplied whenever the caller
+ * connects as an RLS-subject role (the production `manifold_app` path, §6.16): it sets the
+ * tenant GUC BEFORE the reservation is locked, so the row is visible to the lock (bug #5).
+ * It is optional only for RLS-exempt callers (migrations / tests as superuser).
  */
 export async function commit(
   db: Sql,
   reservationId: string,
   actualMicroUsd: MicroUsd,
+  workspaceId?: string,
 ): Promise<CommitResult> {
   const actual = BigInt(actualMicroUsd);
   return db.begin(async (sql: TransactionSql): Promise<CommitResult> => {
-    const out = await releaseReservation(sql, reservationId, "RECONCILE", { actual });
+    const out = await releaseReservation(sql, reservationId, "RECONCILE", { actual, workspaceId });
     switch (out.kind) {
       case "released":
         return { ok: true, status: out.status, committedMicroUsd: actual };
@@ -300,10 +311,17 @@ export async function commit(
 /**
  * Roll a reservation back (§8.4 `reserved → rolled_back`): release the held `reserved`,
  * add nothing to `committed`. Idempotent on a non-`reserved` reservation.
+ *
+ * `workspaceId` scopes RLS for this transaction (see `commit`): pass it whenever the caller
+ * connects as an RLS-subject role, so the reservation is visible to its lock (bug #5).
  */
-export async function rollback(db: Sql, reservationId: string): Promise<{ ok: boolean; status: BudgetReservationState }> {
+export async function rollback(
+  db: Sql,
+  reservationId: string,
+  workspaceId?: string,
+): Promise<{ ok: boolean; status: BudgetReservationState }> {
   return db.begin(async (sql: TransactionSql): Promise<{ ok: boolean; status: BudgetReservationState }> => {
-    const out = await releaseReservation(sql, reservationId, "ROLLBACK");
+    const out = await releaseReservation(sql, reservationId, "ROLLBACK", { workspaceId });
     return { ok: out.kind === "released", status: out.status };
   });
 }
@@ -316,15 +334,17 @@ export async function rollback(db: Sql, reservationId: string): Promise<{ ok: bo
  * of reservations expired.
  */
 export async function sweepExpired(db: Sql, now: Date = new Date()): Promise<number> {
-  // Find expired holds first (short read), then release each under its window lock.
-  const expired = await db<{ id: string; created_at: Date }[]>`
-    SELECT id, created_at FROM budget_reservation
+  // Find expired holds first (short read), then release each under its window lock. Carry
+  // each row's workspace_id so the release can set the tenant GUC BEFORE locking the row
+  // (bug #5) — required whenever the sweep runs as an RLS-subject role.
+  const expired = await db<{ id: string; created_at: Date; workspace_id: string }[]>`
+    SELECT id, created_at, workspace_id FROM budget_reservation
     WHERE status = 'reserved' AND expires_at < ${now}
   `;
   let count = 0;
   for (const row of expired) {
     const done = await db.begin(async (sql: TransactionSql): Promise<boolean> => {
-      const out = await releaseReservation(sql, row.id, "EXPIRE");
+      const out = await releaseReservation(sql, row.id, "EXPIRE", { workspaceId: row.workspace_id });
       return out.kind === "released";
     });
     if (done) count++;
@@ -364,8 +384,16 @@ async function releaseReservation(
   sql: TransactionSql,
   reservationId: string,
   event: "RECONCILE" | "ROLLBACK" | "EXPIRE",
-  opts: { actual?: bigint } = {},
+  opts: { actual?: bigint; workspaceId?: string } = {},
 ): Promise<ReleaseOutcome> {
+  // Scope the tenant GUC FIRST — BEFORE the lock — so the reservation row is visible to the
+  // FOR UPDATE lock under RLS (bug #5). Without this, an RLS-subject role locks 0 rows and
+  // the release silently no-ops, permanently stranding the held `reserved`. Mirrors reserve(),
+  // which also sets the GUC before touching any RLS-protected row. RLS-exempt callers may
+  // omit it (the lock sees the row regardless); we then fall back to the row's own workspace.
+  if (opts.workspaceId !== undefined) {
+    await sql`SELECT set_config('manifold.workspace_id', ${opts.workspaceId}, true)`;
+  }
   const res = await lockReservation(sql, reservationId);
   if (!res) return { kind: "missing", status: "expired" };
   await sql`SELECT set_config('manifold.workspace_id', ${res.workspace_id}, true)`;
@@ -389,8 +417,8 @@ async function releaseReservation(
         committed_microusd = committed_microusd + ${p(actual)},
         updated_at = now()
     WHERE budget_account_id = ${res.budget_account_id}
-      AND window_start = ${bucketStart(res.window, res.created_at)}
-      AND shard = ${DEFAULT_SHARD}
+      AND window_start = ${res.window_start}
+      AND shard = ${res.shard}
   `;
   // Only commit stamps reconciled_microusd; rollback/sweep leave it as-is (COALESCE keeps
   // the existing value when `actual` was not supplied).
@@ -406,17 +434,17 @@ async function releaseReservation(
 }
 
 /**
- * Lock a reservation row FOR UPDATE by id (ULID → practically unique across partitions),
- * joining its budget's `window` policy so commit/rollback/sweep can resolve the counter row.
+ * Lock a reservation row FOR UPDATE by id (ULID → practically unique across partitions).
+ * Reads the persisted (window_start, shard) so commit/rollback/sweep decrement the EXACT
+ * counter row reserve() bumped (§16.3) — no re-derivation, no budget_account join needed.
  */
 async function lockReservation(sql: TransactionSql, reservationId: string): Promise<ReservationRow | undefined> {
   const rows = await sql<ReservationRow[]>`
-    SELECT r.id, r.workspace_id, r.budget_account_id, r.reserved_microusd,
-           r.status, r.created_at, a.window
-    FROM budget_reservation r
-    JOIN budget_account a ON a.id = r.budget_account_id
-    WHERE r.id = ${reservationId}
-    FOR UPDATE OF r
+    SELECT id, workspace_id, budget_account_id, reserved_microusd,
+           status, created_at, window_start, shard
+    FROM budget_reservation
+    WHERE id = ${reservationId}
+    FOR UPDATE
   `;
   return rows[0];
 }

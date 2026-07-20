@@ -15,7 +15,7 @@
 // quirks and does not depend on the host port at all.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import postgres from "postgres";
@@ -142,9 +142,16 @@ export async function startPg(options: StartPgOptions = {}): Promise<PgHarness> 
 
   await waitForReady();
 
-  // Apply BOTH migrations in order (0000 schema, then 0001 partitions + RLS + triggers).
-  psql(readFileSync(join(MIGRATIONS_DIR, "0000_tiresome_piledriver.sql"), "utf8"));
-  psql(readFileSync(join(MIGRATIONS_DIR, "0001_partitions.sql"), "utf8"));
+  // Apply EVERY numbered migration in lexical order (0000 schema, 0001 partitions + RLS +
+  // triggers, 0002 non-superuser app role + grants, 0003 reservation counter coords, …).
+  // Globbing keeps the harness in lock-step with the migrations dir as new ones land, so a
+  // schema change (like 0003's new columns) is exercised without editing this file.
+  const migrationFiles = readdirSync(MIGRATIONS_DIR)
+    .filter((f) => /^\d{4}_.*\.sql$/.test(f))
+    .sort();
+  for (const file of migrationFiles) {
+    psql(readFileSync(join(MIGRATIONS_DIR, file), "utf8"));
+  }
 
   const url = `postgres://postgres:postgres@127.0.0.1:${hostPort}/postgres`;
 
