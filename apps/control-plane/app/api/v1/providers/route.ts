@@ -7,7 +7,7 @@
 //     same KEK and opens the ciphertext in-proc (apps/gateway decryptTargetSecret) — plaintext is
 //     never at rest and the KEK never rides the snapshot.
 import { randomBytes } from "node:crypto";
-import { resolveDataKek, sealAesGcm, wrapDek, utf8 } from "@manifold/crypto";
+import { credentialAad, resolveDataKek, sealAesGcm, wrapDek, utf8 } from "@manifold/crypto";
 import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
 import { audit } from "@/lib/audit";
@@ -72,12 +72,15 @@ export async function POST(req: Request): Promise<Response> {
     const baseUrl = optionalString(body, "baseUrl");
     const allowedHosts = optionalStringArray(body, "allowedHosts");
 
-    // Envelope-encrypt the secret (§14.3): fresh DEK seals it (AES-256-GCM), KEK wraps the DEK.
+    // Envelope-encrypt the secret (§14.3): fresh DEK seals it (AES-256-GCM), KEK wraps the DEK. The
+    // seal binds the credential-identity AAD (credentialAad(credId)) so the ciphertext cannot be swapped
+    // with another credential's under the shared workspace DEK — the gateway opens with the SAME AAD.
     const kek = resolveDataKek(process.env.MANIFOLD_DATA_KEK);
     const kekId = process.env.MANIFOLD_DATA_KEK_ID ?? "kek_dev";
     const dek = new Uint8Array(randomBytes(32));
     const wrappedDek = Buffer.from(wrapDek(kek, dek));
-    const ciphertext = Buffer.from(sealAesGcm(dek, utf8(secret)));
+    const credId = genId("pc"); // minted BEFORE the seal so its id is the AAD binding
+    const ciphertext = Buffer.from(sealAesGcm(dek, utf8(secret), credentialAad(credId)));
 
     const result = await withWorkspace(principal.workspaceId, async (sql) => {
       const dekId = genId("dek");
@@ -86,7 +89,6 @@ export async function POST(req: Request): Promise<Response> {
         VALUES (${dekId}, ${principal.workspaceId},
                 ${wrappedDek}, ${kekId}, 'active')`;
 
-      const credId = genId("pc");
       await sql`
         INSERT INTO provider_credential
           (id, workspace_id, provider, label, encrypted_secret, dek_id, base_url,

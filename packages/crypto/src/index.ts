@@ -40,6 +40,18 @@ export const TAG_BYTES = 16;
  */
 const DEK_WRAP_AAD: Uint8Array = utf8("manifold:dek-wrap:v1");
 
+/**
+ * AAD binding a credential ciphertext to its identity (§14.3 defense-in-depth). Because a workspace's
+ * DEK is shared across all its provider credentials, a ciphertext with NO AAD is cryptographically
+ * interchangeable with any other credential's ciphertext under that DEK — swapping two `credentialCiphertext`
+ * fields would inject the wrong provider's secret. Sealing/opening with `credentialAad(credentialId)`
+ * makes a mismatched-identity open FAIL CLOSED. CP (seal) and the gateway (open) MUST pass the SAME
+ * credentialId — using this one helper keeps them in lockstep by construction.
+ */
+export function credentialAad(credentialId: string): Uint8Array {
+  return utf8("manifold:cred:v1:" + credentialId);
+}
+
 // ── Key / input validation ───────────────────────────────────────────────────
 
 function assertKey(k: Uint8Array, name: string): void {

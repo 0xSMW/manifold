@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { SnapshotTarget } from "@manifold/ports";
 import {
   DEV_PEPPER,
+  credentialAad,
   openAesGcm,
   resolveDataKek,
   resolveKeyPepper,
@@ -54,11 +55,17 @@ export interface ServerOptions {
  * rest. THROWS on a tampered ciphertext / wrong KEK — the caller (handleRequest) fails closed.
  */
 export function decryptTargetSecret(
-  target: Pick<SnapshotTarget, "credentialCiphertext" | "wrappedDek">,
+  target: Pick<SnapshotTarget, "credentialCiphertext" | "wrappedDek" | "credentialId">,
   kek: Uint8Array,
 ): string {
   const dek = unwrapDek(kek, unpackBase64(target.wrappedDek));
-  const plaintext = openAesGcm(dek, unpackBase64(target.credentialCiphertext));
+  // Open with the credential-identity AAD (§14.3): a ciphertext sealed for a DIFFERENT credentialId
+  // (a swap under the shared workspace DEK) fails the GCM tag check and throws — never a wrong secret.
+  const plaintext = openAesGcm(
+    dek,
+    unpackBase64(target.credentialCiphertext),
+    credentialAad(target.credentialId),
+  );
   return new TextDecoder().decode(plaintext);
 }
 

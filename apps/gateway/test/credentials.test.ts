@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { packBase64, sealAesGcm, unpackBase64, utf8, wrapDek } from "@manifold/crypto";
+import { credentialAad, packBase64, sealAesGcm, unpackBase64, utf8, wrapDek } from "@manifold/crypto";
 import { handleRequest, type GatewayContext } from "@manifold/gateway-core";
 import type { Snapshot, SnapshotTarget } from "@manifold/ports";
 import { FakeCrypto, FakeFetcher, FakeIngestSink, FixedClock, keyedHashHex } from "@manifold/ports/testing";
@@ -14,7 +14,8 @@ import { decryptTargetSecret, makeSecretResolver } from "../src/server.ts";
 const SECRET = "sk-ant-REAL-PROVIDER-SECRET-should-never-be-plaintext";
 const KEK = new Uint8Array(randomBytes(32));
 const DEK = new Uint8Array(randomBytes(32));
-const ciphertext = packBase64(sealAesGcm(DEK, utf8(SECRET))); // seal secret under DEK
+// Seal bound to the credential identity AAD (the target's credentialId is "cred1"), matching CP's seal.
+const ciphertext = packBase64(sealAesGcm(DEK, utf8(SECRET), credentialAad("cred1")));
 const wrappedDek = packBase64(wrapDek(KEK, DEK)); // wrap DEK under KEK
 
 function target(overrides: Partial<SnapshotTarget> = {}): SnapshotTarget {
@@ -30,6 +31,16 @@ function target(overrides: Partial<SnapshotTarget> = {}): SnapshotTarget {
 
 test("decryptTargetSecret returns the exact secret (real envelope decrypt, no env)", () => {
   assert.equal(decryptTargetSecret(target(), KEK), SECRET);
+});
+
+// AAD identity binding (§14.3): a ciphertext sealed for credential "cred1", presented on a target that
+// CLAIMS a DIFFERENT credentialId (a swap under the shared workspace DEK), must FAIL CLOSED — the GCM
+// AAD (credentialAad(credentialId)) mismatches, so open() throws rather than injecting the wrong secret.
+test("credential ciphertext is bound to its id: a swapped credentialId fails closed (no wrong secret)", () => {
+  // Same ciphertext + same DEK, but the target now claims to be "cred2" instead of "cred1".
+  assert.throws(() => decryptTargetSecret(target({ credentialId: "cred2" }), KEK));
+  // Sanity: the correctly-identified target still opens to the exact secret.
+  assert.equal(decryptTargetSecret(target({ credentialId: "cred1" }), KEK), SECRET);
 });
 
 test("wrong KEK cannot decrypt (throws, no wrong-secret)", () => {
@@ -116,7 +127,7 @@ test("end-to-end FAIL CLOSED: no credential material at all ⇒ 502, upstream NE
 // BUG (fail-OPEN credential via EMPTY decrypt): a credentialCiphertext that decrypts to an EMPTY
 // plaintext is NOT a real secret. Returning "" would let handleRequest dispatch `x-api-key: ''`
 // upstream. The resolver must THROW so handleRequest fails CLOSED (502 CREDENTIAL_UNAVAILABLE).
-const emptyCiphertext = packBase64(sealAesGcm(DEK, utf8(""))); // a VALID AES-GCM seal of ""
+const emptyCiphertext = packBase64(sealAesGcm(DEK, utf8(""), credentialAad("cred1"))); // VALID seal of ""
 
 test("makeSecretResolver THROWS when the ciphertext decrypts to an EMPTY string (fail closed)", async () => {
   await assert.rejects(
