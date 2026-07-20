@@ -38,6 +38,9 @@ export function shapeForCode(code: string): ErrorShape {
       return { status: 403, type: "invalid_request_error", param: "model" };
     case "POLICY_PARAM_REJECTED":
       return { status: 403, type: "invalid_request_error", param: null };
+    // Request body exceeds the enforcement buffering cap (review HIGH #6): 413, never dispatched.
+    case "POLICY_BODY_TOO_LARGE":
+      return { status: 413, type: "invalid_request_error", param: null };
     // Hard-budget reservation denied (SPEC §16.3): over cap → 402 Payment Required, never dispatched.
     case "BUDGET_RESERVE_DENIED":
       return { status: 402, type: "invalid_request_error", param: null };

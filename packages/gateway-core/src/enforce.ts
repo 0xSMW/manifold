@@ -98,6 +98,41 @@ function estimateInputTokens(rawBody: string): bigint {
   return BigInt(Math.ceil(rawBody.length / 4));
 }
 
+/** A completion envelope worth policing is small; anything larger cannot be a model/params body.
+ *  Cap the buffered read so an authenticated client can't OOM the shared gateway with a giant POST
+ *  (review HIGH #6). */
+const MAX_ENFORCE_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB
+
+/**
+ * Read the request body into a string, aborting past `maxBytes`. Returns `null` on overflow so the
+ * caller fails closed (413) instead of buffering unbounded memory. Unlike `request.text()`, this
+ * enforces a hard ceiling even for `Transfer-Encoding: chunked` bodies with no Content-Length.
+ */
+async function readBodyCapped(request: Request, maxBytes: number): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const buf = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    buf.set(c, off);
+    off += c.byteLength;
+  }
+  return new TextDecoder().decode(buf);
+}
+
 /**
  * Pre-dispatch reservation estimate in µ$ (SPEC §6.10). Now that the offering price rides in the
  * snapshot, compute the REAL estimate `input_est·input_price + max_out·output_price` from the
@@ -124,9 +159,20 @@ function reservedEstimateMicroUsd(
 export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> {
   const { snapshot, profile, key, request, traceId, target, reserveBudget } = args;
 
-  const policy: SnapshotPolicyRevision | undefined = profile.policyRevision
-    ? snapshot.policies?.[profile.policyRevision]
+  const policyRevisionId = profile.policyRevision;
+  const policy: SnapshotPolicyRevision | undefined = policyRevisionId
+    ? snapshot.policies?.[policyRevisionId]
     : undefined;
+  // Fail CLOSED on referential drift (review HIGH #5): the profile DECLARES a policy revision but the
+  // signed snapshot does not carry it (partial/stale build, dropped section). Enforcement cannot run,
+  // so deny — do NOT wave the request through the fast path unfiltered.
+  if (policyRevisionId && !policy) {
+    return {
+      ok: false,
+      code: "POLICY_MODEL_DENIED",
+      message: "declared policy revision missing from snapshot",
+    };
+  }
   const budgetAccountId = key.budgetAccountId;
   const budget = budgetAccountId ? snapshot.budgets?.[budgetAccountId] : undefined;
   const hardBudget = budget?.enforcement === "hard";
@@ -137,7 +183,14 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
 
   // Enforcement is active: buffer the (small) request body to read model + numeric params. Only the
   // REQUEST is buffered here; the RESPONSE is still streamed with flat memory downstream.
-  const rawBody = request.body ? await request.text() : "";
+  const rawBody = await readBodyCapped(request, MAX_ENFORCE_BODY_BYTES);
+  if (rawBody === null) {
+    return {
+      ok: false,
+      code: "POLICY_BODY_TOO_LARGE",
+      message: "request body exceeds the enforcement size limit",
+    };
+  }
   let parsed: Record<string, unknown> | null = null;
   if (rawBody) {
     try {
@@ -145,6 +198,20 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
       if (j && typeof j === "object") parsed = j as Record<string, unknown>;
     } catch {
       parsed = null; // unparseable body → empty model/params (deny-first will handle it)
+    }
+  }
+  // Fail CLOSED on a non-finite numeric param (review MED config-F7): JSON.parse turns `1e999` into
+  // Infinity; if it were merely dropped, a max_tokens ceiling would be silently bypassed and the raw
+  // value forwarded upstream. Reject before policy/reserve so the guard cannot be sidestepped.
+  if (parsed) {
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "number" && !Number.isFinite(v)) {
+        return {
+          ok: false,
+          code: "POLICY_PARAM_REJECTED",
+          message: `non-finite numeric parameter: ${k}`,
+        };
+      }
     }
   }
   const model = parsed && typeof parsed.model === "string" ? parsed.model : "";
