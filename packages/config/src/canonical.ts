@@ -7,7 +7,7 @@
 // build time, which is what makes re-apply of identical content a no-op (§8.2 idempotency).
 import { createHash } from "node:crypto";
 import { formatContentHash, type ContentHash } from "@manifold/domain";
-import type { ConfigSnapshot } from "./types.js";
+import type { Snapshot } from "@manifold/ports";
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
@@ -31,21 +31,29 @@ function sortValue(value: Json): Json {
  * derived/signature meta fields (§7.3). Meta identity fields (schema, installationId,
  * revision, builtAt, signingKeyId) are deliberately EXCLUDED too so the hash is a pure
  * function of routing/key/policy content — see the module doc.
+ *
+ * Typed over the DB-free `ports.Snapshot` (not `ConfigSnapshot`) so this single implementation is
+ * the ONE canonicalizer for both the config publisher (which passes a `ConfigSnapshot`, a structural
+ * subtype) and the gateway loader (which holds only a `ports.Snapshot`). It reads exactly the fields
+ * present on `ports.Snapshot`; the two extra §7 sections a `ConfigSnapshot` carries (offerings/policies,
+ * both also on the ports shape as optionals) are selected identically. `JSON.stringify` drops any
+ * section that is `undefined`, so a plain `ports.Snapshot` with no offerings/policies/budgets hashes
+ * identically to before.
  */
-export function canonicalBody(snapshot: ConfigSnapshot): string {
+export function canonicalBody(snapshot: Snapshot): string {
   // SECURITY (§16.3): `budgets` MUST be inside the signed content hash. It carries each account's
-  // `enforcement` (hard vs soft) — the gateway's pre-dispatch reserve gate (enforce.ts) trusts it.
-  // If budgets were excluded (as it was), a tamperer could flip `enforcement` hard→soft (or delete
+  // `enforcement` (advisory vs hard) — the gateway's pre-dispatch reserve gate (enforce.ts) trusts it.
+  // If budgets were excluded (as it was), a tamperer could flip `enforcement` hard→advisory (or delete
   // an account) under a still-valid signature to bypass a hard cap, AND a pure budget edit would
   // hash identically to the prior snapshot → plan() sees a no-op and never publishes the change.
-  // The gateway's DB-free reimplementation (apps/gateway/src/snapshotVerify.ts `canonicalBody`)
-  // MUST select the identical field set in the identical order — keep the two byte-for-byte equal.
+  // The gateway loads this canonicalizer via @manifold/config's DB-free `./signing` subpath export —
+  // there is no second implementation to keep in sync (ADR-0007/§7.3).
   const { profiles, keys, routes, offerings, policies, budgets } = snapshot;
   return stableStringify({ profiles, keys, routes, offerings, policies, budgets });
 }
 
 /** Compute `sha256:<hex>` over the canonical body (§7.3). */
-export function computeContentHash(snapshot: ConfigSnapshot): ContentHash {
+export function computeContentHash(snapshot: Snapshot): ContentHash {
   const hex = createHash("sha256").update(canonicalBody(snapshot), "utf8").digest("hex");
   return formatContentHash(hex);
 }

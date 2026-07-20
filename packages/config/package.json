@@ -10,6 +10,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./signing": {
+      "types": "./dist/snapshot-crypto.d.ts",
+      "default": "./dist/snapshot-crypto.js"
     }
   },
   "scripts": {

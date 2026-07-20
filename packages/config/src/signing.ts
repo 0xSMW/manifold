@@ -21,6 +21,7 @@ import {
   createHash,
   type KeyObject,
 } from "node:crypto";
+import type { Snapshot } from "@manifold/ports";
 import { computeContentHash } from "./canonical.js";
 import type { ConfigSnapshot } from "./types.js";
 
@@ -122,8 +123,9 @@ export function generateSigningKeyPair(): {
  * happen to share an identical body (a cross-installation replay vector). Defense-in-depth: the
  * loader recomputes this and any identity mismatch fails the signature.
  *
- * apps/gateway/src/snapshotVerify.ts reimplements this byte-for-byte (a plain JSON array so the two
- * impls cannot drift on key ordering) — keep them identical.
+ * A plain JSON array (not an object) keeps the message free of any key-ordering ambiguity. The
+ * gateway loader consumes this exact function via @manifold/config's DB-free `./signing` subpath —
+ * there is no separate reimplementation to keep in sync.
  */
 export function snapshotSigningMessage(
   contentHash: string,
@@ -176,7 +178,7 @@ export interface VerifyResult {
  * installationId/revision fails even when the body (hence contentHash) is identical.
  */
 export function verifySnapshot(
-  snapshot: ConfigSnapshot,
+  snapshot: Snapshot,
   publicKey: PublicKeyInput,
 ): VerifyResult {
   const recomputed = computeContentHash(snapshot);

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@manifold/budget": "0.0.0",
+    "@manifold/config": "0.0.0",
     "@manifold/contracts": "0.0.0",
     "@manifold/database": "0.0.0",
     "@manifold/domain": "0.0.0",
@@ -21,7 +22,6 @@
     "postgres": "^3.4.5"
   },
   "devDependencies": {
-    "@manifold/config": "0.0.0",
     "@types/node": "^22",
     "typescript": "^5.6"
   }

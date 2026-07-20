@@ -50,7 +50,7 @@ function emptySnapshotSections(snap: Partial<ConfigSnapshot> | null): {
     policies: (snap?.policies as Rec) ?? {},
     // `budgets` is part of the signed content (canonical.ts) — a budget-only edit changes the
     // content hash, so it is NOT a no-op. Diff it here too so the plan surfaces the change (a
-    // hard→soft enforcement flip / an account removal shows up in diffJson.budgets).
+    // hard→advisory enforcement flip / an account removal shows up in diffJson.budgets).
     budgets: (snap?.budgets as Rec) ?? {},
   };
 }
