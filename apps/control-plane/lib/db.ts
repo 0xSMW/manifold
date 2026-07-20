@@ -5,7 +5,7 @@
 // opens a transaction and sets `manifold.workspace_id` via `SET LOCAL` (set_config(..., true))
 // so RLS (§6.16) scopes every statement; handlers ALSO filter by workspace_id explicitly
 // (defense in depth, §15.2 layer 1).
-import { getDb, type Database } from "@manifold/database";
+import { getDb, setWorkspaceGuc, type Database } from "@manifold/database";
 import { ManifoldError } from "@/lib/http";
 
 let cached: Database | null = null;
@@ -75,7 +75,7 @@ export async function withWorkspace<T>(
 ): Promise<T> {
   const sql = db().$client;
   return sql.begin(async (tx) => {
-    await tx`SELECT set_config('manifold.workspace_id', ${workspaceId}, true)`;
+    await setWorkspaceGuc(tx, workspaceId);
     return fn(tx as unknown as Sql);
   }) as Promise<T>;
 }

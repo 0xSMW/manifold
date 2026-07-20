@@ -4,7 +4,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { SnapshotTarget } from "@manifold/ports";
-import { openAesGcm, unpackBase64, unwrapDek } from "@manifold/crypto";
+import {
+  DEV_PEPPER,
+  openAesGcm,
+  resolveDataKek,
+  resolveKeyPepper,
+  unpackBase64,
+  unwrapDek,
+} from "@manifold/crypto";
 import { handleRequest, type GatewayContext, type SsrfPolicy } from "@manifold/gateway-core";
 import {
   EgressFetcher,
@@ -15,8 +22,10 @@ import {
   SystemClock,
 } from "./adapters.ts";
 
-/** Dev-only pepper. Production supplies MANIFOLD_KEY_PEPPER (a gateway-only secret, §14.3). */
-export const DEV_PEPPER = "dev-pepper-not-for-production";
+// DEV_PEPPER / DEV_KEK and the env resolvers are owned once by @manifold/crypto so the
+// control plane (seal / mint) and this gateway (open / authenticate) resolve identical key
+// material. Re-exported here to preserve this module's public surface.
+export { DEV_PEPPER };
 
 export interface ServerOptions {
   snapshotPath?: string;
@@ -37,18 +46,6 @@ export interface ServerOptions {
    * BudgetReserverAdapter; tests inject the in-memory FakeBudgetReserver.
    */
   reserveBudget?: GatewayContext["reserveBudget"];
-}
-
-/** Dev-only KEK (all-zero 32 bytes) for local runs without MANIFOLD_DATA_KEK. */
-const DEV_KEK = new Uint8Array(32);
-
-/** Resolve the KEK from env (base64 32-byte) or fall back to the dev KEK. */
-function kekFromEnv(): Uint8Array {
-  const b64 = process.env.MANIFOLD_DATA_KEK;
-  if (!b64) return DEV_KEK;
-  const k = unpackBase64(b64);
-  if (k.length !== 32) throw new Error("MANIFOLD_DATA_KEK must be base64 of exactly 32 bytes");
-  return k;
 }
 
 /**
@@ -109,7 +106,7 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
   const snapshot = await store.loadActive(installationId);
 
   const pepper = new TextEncoder().encode(
-    opts.pepper ?? process.env.MANIFOLD_KEY_PEPPER ?? DEV_PEPPER,
+    opts.pepper ?? resolveKeyPepper(process.env.MANIFOLD_KEY_PEPPER),
   );
 
   // Hard-budget reservation (SPEC §16.3, ADR-0012): an explicit test override wins; otherwise, when
@@ -132,7 +129,7 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
     ingest: new JsonlIngestSink(opts.observationsPath ?? "./observations.log"),
     fetcher: opts.fetcher ?? new EgressFetcher(opts.ssrfPolicy),
     pepper,
-    resolveSecret: makeSecretResolver(opts.kek ?? kekFromEnv()),
+    resolveSecret: makeSecretResolver(opts.kek ?? resolveDataKek(process.env.MANIFOLD_DATA_KEK)),
     ssrfPolicy: opts.ssrfPolicy,
     reserveBudget,
   };

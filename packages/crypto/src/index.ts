@@ -186,6 +186,46 @@ export function unpackBase64(b64: string): Uint8Array {
   return new Uint8Array(Buffer.from(b64, "base64"));
 }
 
+// ── Dev-default key material & env resolvers ─────────────────────────────────
+//
+// The pepper and the data KEK are BOTH shared control-plane ↔ gateway secrets:
+//   - The control plane mints virtual keys / API tokens and stores their HMAC
+//     keyed_hash under the pepper; the gateway re-hashes a presented key under the
+//     SAME pepper to authenticate it. A mismatch makes every CP-minted key unknown.
+//   - The control plane seals a credential under a fresh DEK wrapped by the KEK; the
+//     gateway unwraps with the SAME KEK to decrypt in-proc. A mismatch fails decrypt.
+// Because both sides must resolve identical material, the dev defaults and the env
+// resolvers are owned here, once, and imported by both apps (SPEC §14.3).
+
+/** Dev-only pepper. Production supplies MANIFOLD_KEY_PEPPER (a rotatable secret, §14.3). */
+export const DEV_PEPPER = "dev-pepper-not-for-production";
+
+/** Dev-only KEK (all-zero 32 bytes) for local runs without MANIFOLD_DATA_KEK. */
+export const DEV_KEK: Uint8Array = new Uint8Array(KEY_BYTES);
+
+/**
+ * Resolve the key pepper (a UTF-8 string) from its env value (MANIFOLD_KEY_PEPPER),
+ * falling back to {@link DEV_PEPPER} when unset. Callers UTF-8-encode the result for
+ * {@link hmacKeyHash}.
+ */
+export function resolveKeyPepper(pepperEnv: string | undefined): string {
+  return pepperEnv ?? DEV_PEPPER;
+}
+
+/**
+ * Resolve the 256-bit data KEK from its env value (MANIFOLD_DATA_KEK, base64 of
+ * exactly 32 bytes), falling back to {@link DEV_KEK} when unset. THROWS on a
+ * wrong-length key rather than deriving a weak one.
+ */
+export function resolveDataKek(kekEnv: string | undefined): Uint8Array {
+  if (!kekEnv) return DEV_KEK;
+  const k = unpackBase64(kekEnv);
+  if (k.length !== KEY_BYTES) {
+    throw new Error("MANIFOLD_DATA_KEK must be base64 of exactly 32 bytes");
+  }
+  return k;
+}
+
 // ── Small utilities ──────────────────────────────────────────────────────────
 
 /** Encode a hex string from raw bytes (e.g. to store an HMAC hash). */

@@ -7,19 +7,17 @@
 // MANIFOLD_KEY_PEPPER (apps/gateway/src/server.ts, DEV_PEPPER = "dev-pepper-not-for-production");
 // we mirror both here exactly. Lookup is by hash only; plaintext is never stored (SPEC §5.5).
 import { randomBytes } from "node:crypto";
-import { hmacKeyHash } from "@manifold/crypto";
+import { DEV_PEPPER, hmacKeyHash, resolveKeyPepper } from "@manifold/crypto";
 
-/** Dev-only pepper — MUST match the gateway's DEV_PEPPER (apps/gateway/src/server.ts). */
-export const DEV_PEPPER = "dev-pepper-not-for-production";
+// DEV_PEPPER and the pepper resolver are owned once by @manifold/crypto so this control plane
+// (which stores keyed_hash) and the gateway (which re-hashes to authenticate) resolve the SAME
+// pepper — a mismatch makes every CP-minted key AUTH_KEY_UNKNOWN. Re-exported to preserve surface.
+export { DEV_PEPPER };
 
 function pepper(): string {
-  const p = process.env.MANIFOLD_KEY_PEPPER;
-  if (!p) {
-    // Deterministic dev default so the seed route, key minting, and the gateway all agree in a
-    // dev DB. Production MUST set MANIFOLD_KEY_PEPPER (the gateway-shared secret, rotatable §14.3).
-    return DEV_PEPPER;
-  }
-  return p;
+  // Deterministic dev default so the seed route, key minting, and the gateway all agree in a dev
+  // DB. Production MUST set MANIFOLD_KEY_PEPPER (the gateway-shared secret, rotatable §14.3).
+  return resolveKeyPepper(process.env.MANIFOLD_KEY_PEPPER);
 }
 
 /**

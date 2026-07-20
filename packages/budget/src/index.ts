@@ -11,7 +11,7 @@
 // the driver import boundary lives there, SPEC §4.2), @manifold/domain (money math +
 // the reservation state machine), and @manifold/contracts (the reason-code registry).
 // It NEVER imports drizzle-orm / postgres directly.
-import type { Sql, TransactionSql } from "@manifold/database";
+import { setWorkspaceGuc, type Sql, type TransactionSql } from "@manifold/database";
 import { REASON_CODES } from "@manifold/contracts";
 import {
   costMicroUsd,
@@ -167,7 +167,7 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
   return db.begin(async (sql: TransactionSql): Promise<ReserveResult> => {
     // Tenant scope for RLS (§6.16); harmless (and correct) whether or not the caller
     // connects as an RLS-exempt role. Set BEFORE any budget_account/budget_window_state read.
-    await sql`SELECT set_config('manifold.workspace_id', ${workspaceId}, true)`;
+    await setWorkspaceGuc(sql, workspaceId);
 
     // 1. Load the budget chain leaf→root (§16.3 M13). Non-hierarchical budgets → length 1.
     //    A reserve must fit EVERY ancestor's cap, not just the leaf's.
@@ -460,7 +460,7 @@ export async function sweepExpiredForWorkspace(
   // GUC via set_config(..., true) is transaction-local, so the discovery SELECT must share the
   // transaction that sets it — hence the db.begin wrapper around the read.
   const expired = await db.begin(async (sql: TransactionSql) => {
-    await sql`SELECT set_config('manifold.workspace_id', ${workspaceId}, true)`;
+    await setWorkspaceGuc(sql, workspaceId);
     return sql<{ id: string; created_at: Date; workspace_id: string }[]>`
       SELECT id, created_at, workspace_id FROM budget_reservation
       WHERE workspace_id = ${workspaceId} AND status = 'reserved' AND expires_at < ${now}
@@ -530,11 +530,11 @@ async function releaseReservation(
   // which also sets the GUC before touching any RLS-protected row. RLS-exempt callers may
   // omit it (the lock sees the row regardless); we then fall back to the row's own workspace.
   if (opts.workspaceId !== undefined) {
-    await sql`SELECT set_config('manifold.workspace_id', ${opts.workspaceId}, true)`;
+    await setWorkspaceGuc(sql, opts.workspaceId);
   }
   const res = await lockReservation(sql, reservationId);
   if (!res) return { kind: "missing", status: "expired" };
-  await sql`SELECT set_config('manifold.workspace_id', ${res.workspace_id}, true)`;
+  await setWorkspaceGuc(sql, res.workspace_id);
 
   const actual = opts.actual ?? 0n;
   const actualTokens = opts.actualTokens ?? 0n;

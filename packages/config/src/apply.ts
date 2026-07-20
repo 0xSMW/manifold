@@ -7,7 +7,7 @@
 //  keyOnlyPublish(db, ..., store)  — SPEC §8.2 H7: rebuild only the keys section against the
 //                                  active route/policy revision and publish (expedited path).
 import { ReasonCode } from "@manifold/contracts";
-import type { Database } from "@manifold/database";
+import { setWorkspaceGuc, type Database } from "@manifold/database";
 import { assembleSnapshot, buildKeysSection, genId, stampMeta } from "./build.js";
 import { computeContentHash, stableStringify } from "./canonical.js";
 import * as q from "./db.js";
@@ -21,14 +21,6 @@ import type {
   Plan,
   SnapshotPublishStore,
 } from "./types.js";
-
-// P2-3 (held rename): @manifold/database exposes no `setWorkspaceGuc` helper today, so we keep the
-// local `set_config(..., true)` (transaction-scoped GUC). Do NOT create the helper here — it is a
-// cross-package concern (database owns the GUC surface). Swap this to the shared helper if/when it
-// lands in @manifold/database.
-async function setWorkspace(sql: PgSql, workspaceId: string): Promise<void> {
-  await sql`SELECT set_config('manifold.workspace_id', ${workspaceId}, true)`;
-}
 
 function revisionIdSets(snap: ConfigSnapshot): {
   routeIds: string[];
@@ -121,7 +113,7 @@ export async function apply(
   // bug). The store is a cache of committed DB truth, so publish MUST happen only AFTER commit.
   const committed = (await sql.begin(async (txRaw) => {
     const tx = txRaw as unknown as PgSql;
-    await setWorkspace(tx, plan.workspaceId);
+    await setWorkspaceGuc(tx, plan.workspaceId);
     const active = await q.readActiveRevision(tx, plan.installationId);
     const activeHash = active?.content_hash ?? null;
 
@@ -252,7 +244,7 @@ export async function rollback(
     const tx = txRaw as unknown as PgSql;
     const target = await q.readRevisionById(tx, revisionId);
     if (!target) throw new Error(`revision not found: ${revisionId}`);
-    await setWorkspace(tx, target.workspace_id);
+    await setWorkspaceGuc(tx, target.workspace_id);
     const active = await q.readActiveRevision(tx, target.installation_id);
 
     if (active && active.id !== target.id) {
