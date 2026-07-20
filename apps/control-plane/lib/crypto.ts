@@ -1,17 +1,23 @@
 // Keyed hashing + secret generation for api_tokens and virtual keys (SPEC §14.3).
 //
-// keyed_hash = HMAC-SHA256(pepper, plaintext). The pepper is a control-plane/gateway
-// secret (MANIFOLD_TOKEN_PEPPER). Lookup is by hash only; plaintext is never stored — a
-// virtual key / api_token is a keyed hash + display prefix (SPEC §5.5).
+// keyed_hash = HMAC-SHA256(pepper, plaintext). The pepper is a SHARED control-plane/gateway
+// secret: the control plane mints keys and stores their keyed_hash; the gateway authenticates a
+// presented key by recomputing that same hash. They MUST use the same env var and the same dev
+// default, or every CP-minted key is AUTH_KEY_UNKNOWN at the gateway. The gateway reads
+// MANIFOLD_KEY_PEPPER (apps/gateway/src/server.ts, DEV_PEPPER = "dev-pepper-not-for-production");
+// we mirror both here exactly. Lookup is by hash only; plaintext is never stored (SPEC §5.5).
 import { randomBytes } from "node:crypto";
 import { hmacKeyHash } from "@manifold/crypto";
 
+/** Dev-only pepper — MUST match the gateway's DEV_PEPPER (apps/gateway/src/server.ts). */
+export const DEV_PEPPER = "dev-pepper-not-for-production";
+
 function pepper(): string {
-  const p = process.env.MANIFOLD_TOKEN_PEPPER;
+  const p = process.env.MANIFOLD_KEY_PEPPER;
   if (!p) {
-    // Deterministic dev default so the seed route and auth agree in a dev DB. Production
-    // MUST set MANIFOLD_TOKEN_PEPPER (rotatable, versioned per §14.3).
-    return "manifold-dev-pepper-do-not-use-in-prod";
+    // Deterministic dev default so the seed route, key minting, and the gateway all agree in a
+    // dev DB. Production MUST set MANIFOLD_KEY_PEPPER (the gateway-shared secret, rotatable §14.3).
+    return DEV_PEPPER;
   }
   return p;
 }

@@ -19,7 +19,7 @@ export async function POST(req: Request): Promise<Response> {
     const installationId = requireString(body, "installationId");
     await requireInstallation(principal.workspaceId, installationId);
 
-    const plan = await buildSignedPlan(installationId);
+    const plan = await buildSignedPlan(principal.workspaceId, installationId);
 
     return ok(
       {

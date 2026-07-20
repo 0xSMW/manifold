@@ -15,7 +15,8 @@ import {
   signSnapshot as signSnapshotImpl,
   type ConfigSnapshot,
 } from "@manifold/config";
-import { db } from "@/lib/db";
+import type { Database } from "@manifold/database";
+import { withWorkspace } from "@/lib/db";
 import { ManifoldError } from "@/lib/http";
 
 let store: InMemorySnapshotStore | null = null;
@@ -52,9 +53,18 @@ export function signSnapshot(snapshot: ConfigSnapshot): ConfigSnapshot {
  * buildSnapshot → signSnapshot → planApply. Extracting it guarantees both routes hash the
  * SAME bytes, so planHash cannot diverge between plan-time and apply-time (§8.2, §16.2). The
  * target content hash excludes build time, so a re-plan at apply reproduces the caller's plan.
+ *
+ * CRITICAL (§6.16/§15.2): the app connects as the non-superuser `manifold_app` role, so RLS is
+ * live. buildSnapshot/planApply read installation/profiles/routes/keys/credentials, which are all
+ * workspace-scoped — with no `manifold.workspace_id` GUC set they return ZERO rows (empty snapshot
+ * / "installation not found"). We therefore run the whole pipeline inside `withWorkspace`, which
+ * opens a txn and sets the GUC, and hand buildSnapshot/planApply that GUC-scoped connection.
  */
-export function buildSignedPlan(installationId: string) {
-  return buildSnapshot(db(), installationId).then((built) =>
-    planApply(db(), installationId, signSnapshot(built)),
-  );
+export function buildSignedPlan(workspaceId: string, installationId: string) {
+  return withWorkspace(workspaceId, async (sql) => {
+    // buildSnapshot/planApply only touch `db.$client`; give them the GUC-scoped tx as that client.
+    const scoped = { $client: sql } as unknown as Database;
+    const built = await buildSnapshot(scoped, installationId);
+    return planApply(scoped, installationId, signSnapshot(built));
+  });
 }

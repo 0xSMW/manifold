@@ -31,7 +31,7 @@ export async function POST(req: Request): Promise<Response> {
     // Installation must belong to this workspace.
     await requireInstallation(principal.workspaceId, installationId);
 
-    const plan = await buildSignedPlan(installationId);
+    const plan = await buildSignedPlan(principal.workspaceId, installationId);
 
     // Optimistic-concurrency precondition on the plan the caller planned against (§16.2).
     if (plan.planHash !== expectedPlanHash) {
@@ -46,15 +46,19 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    // Destructive changes require approval (§8.2 tripwires).
-    if (plan.tripwireItems.length > 0 && approvals.length === 0) {
+    // Destructive changes require approval (§8.2 tripwires). Each tripwire item must be EXPLICITLY
+    // approved by its ref — a non-empty-but-unrelated approvals array (e.g. ["dummy"]) must NOT
+    // clear the hold. Hold unless EVERY tripwire item's ref appears in `approvals`.
+    const approvedRefs = new Set(approvals);
+    const unapprovedTripwires = plan.tripwireItems.filter((it) => !approvedRefs.has(it.ref));
+    if (unapprovedTripwires.length > 0) {
       throw new ManifoldError({
         status: 422,
         code: "CONFIG_TRIPWIRE_HELD",
         message: "destructive changes require approval",
         reasonCodes: ["CONFIG_TRIPWIRE_HELD"],
-        remediation: "re-apply with `approvals` covering the listed tripwire items",
-        details: { items: plan.tripwireItems as unknown as Record<string, unknown>[] },
+        remediation: "re-apply with `approvals` listing the `ref` of each tripwire item shown",
+        details: { items: unapprovedTripwires as unknown as Record<string, unknown>[] },
       });
     }
 

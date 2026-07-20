@@ -38,11 +38,21 @@ echo "app connection identity=$CONN_SUPER"
 PRIV=$(node --input-type=module -e "import {generateSigningKeyPair} from '@manifold/config'; process.stdout.write(generateSigningKeyPair().privateKeyBase64)")
 # App connects as the NON-superuser manifold_app (NOT postgres) so RLS is enforced at runtime.
 export DATABASE_URL="postgresql://manifold_app:$APP_PW@127.0.0.1:$PGPORT/postgres"
-export MANIFOLD_TOKEN_PEPPER="dGVzdC1wZXBwZXItMzJieXRlcy0wMDAwMDAwMDAw"
+# Gateway-shared key pepper (§14.3): the CP mints under this and the gateway authenticates under
+# the SAME env var + dev default, so a CP-minted key's stored keyed_hash == what the gateway
+# recomputes. The isolation driver asserts that byte-equality (bug #1).
+export MANIFOLD_KEY_PEPPER="dGVzdC1wZXBwZXItMzJieXRlcy0wMDAwMDAwMDAw"
+# Platform KEK (base64 of exactly 32 bytes) that wraps per-credential DEKs (§14.3). Non-zero so it
+# exercises the env path (distinct from the all-zero DEV_KEK). The driver decrypts with the same.
+export MANIFOLD_DATA_KEK="$(node -e "process.stdout.write(Buffer.alloc(32,7).toString('base64'))")"
 export MANIFOLD_SNAPSHOT_SIGNING_KEY="$PRIV" MANIFOLD_SNAPSHOT_SIGNING_KEY_ID="k1" MANIFOLD_SEED_SECRET="seed-secret-xyz"
 ( cd apps/control-plane && exec npx next start -p $PORT >/tmp/cp_run_server.log 2>&1 & echo $! >/tmp/cp_run.pid )
 curl -sS --retry-connrefused --retry 40 --retry-delay 1 --max-time 5 "http://127.0.0.1:$PORT/api/v1/health" >/dev/null 2>&1
-BASE="http://127.0.0.1:$PORT" MANIFOLD_SEED_SECRET="$MANIFOLD_SEED_SECRET" node "$HERE/isolation-drive.mjs"; RC=$?
+# PGSUPER: superuser connection the driver uses to read stored keyed_hash / credential ciphertext
+# (RLS-bypassing, verification-only) and to stage the route-delete tripwire for bug #4.
+BASE="http://127.0.0.1:$PORT" MANIFOLD_SEED_SECRET="$MANIFOLD_SEED_SECRET" \
+  PGSUPER="postgresql://postgres:pw@127.0.0.1:$PGPORT/postgres" \
+  node "$HERE/isolation-drive.mjs"; RC=$?
 
 # --- Adversarial RLS-backstop assertion: prove RLS is now load-bearing. -----------------------
 # The HTTP driver above seeded ≥2 workspaces, so api_token/virtual_key rows EXIST in the DB.
