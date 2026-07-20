@@ -4,18 +4,15 @@
 // `rolled_back`, `expired`.
 import { invalidTransition, ok, type Transition } from "./types.js";
 
-export type BudgetReservationState =
-  | "reserved"
-  | "committed"
-  | "rolled_back"
-  | "expired";
-
-export const BUDGET_RESERVATION_STATES: readonly BudgetReservationState[] = [
+export const BUDGET_RESERVATION_STATES = [
   "reserved",
   "committed",
   "rolled_back",
   "expired",
-];
+] as const;
+
+/** Union of every state, derived from the single-source states list above. */
+export type BudgetReservationState = (typeof BUDGET_RESERVATION_STATES)[number];
 
 export const BUDGET_RESERVATION_TERMINAL_STATES: readonly BudgetReservationState[] = [
   "committed",

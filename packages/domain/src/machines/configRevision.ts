@@ -5,17 +5,7 @@
 // `superseded`, `rejected`, `rolled_back`.
 import { invalidTransition, ok, type Transition } from "./types.js";
 
-export type ConfigRevisionState =
-  | "draft"
-  | "planned"
-  | "tripwire_held"
-  | "applying"
-  | "active"
-  | "rejected"
-  | "superseded"
-  | "rolled_back";
-
-export const CONFIG_REVISION_STATES: readonly ConfigRevisionState[] = [
+export const CONFIG_REVISION_STATES = [
   "draft",
   "planned",
   "tripwire_held",
@@ -24,7 +14,10 @@ export const CONFIG_REVISION_STATES: readonly ConfigRevisionState[] = [
   "rejected",
   "superseded",
   "rolled_back",
-];
+] as const;
+
+/** Union of every state, derived from the single-source states list above. */
+export type ConfigRevisionState = (typeof CONFIG_REVISION_STATES)[number];
 
 export const CONFIG_REVISION_TERMINAL_STATES: readonly ConfigRevisionState[] = [
   "rejected",

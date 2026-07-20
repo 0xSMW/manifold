@@ -5,20 +5,16 @@
 // being terminal (no outgoing transitions).
 import { invalidTransition, ok, type Transition } from "./types.js";
 
-export type CliDeviceAuthState =
-  | "pending"
-  | "approved"
-  | "issued"
-  | "denied"
-  | "expired";
-
-export const CLI_DEVICE_AUTH_STATES: readonly CliDeviceAuthState[] = [
+export const CLI_DEVICE_AUTH_STATES = [
   "pending",
   "approved",
   "issued",
   "denied",
   "expired",
-];
+] as const;
+
+/** Union of every state, derived from the single-source states list above. */
+export type CliDeviceAuthState = (typeof CLI_DEVICE_AUTH_STATES)[number];
 
 export const CLI_DEVICE_AUTH_TERMINAL_STATES: readonly CliDeviceAuthState[] = [
   "issued",

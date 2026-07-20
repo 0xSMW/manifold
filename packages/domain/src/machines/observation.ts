@@ -4,20 +4,16 @@
 // (§13 compaction lifecycle sheds detail while preserving durable truth).
 import { invalidTransition, ok, type Transition } from "./types.js";
 
-export type ObservationState =
-  | "event_appended"
-  | "reduced"
-  | "projected"
-  | "compacted"
-  | "deleted";
-
-export const OBSERVATION_STATES: readonly ObservationState[] = [
+export const OBSERVATION_STATES = [
   "event_appended",
   "reduced",
   "projected",
   "compacted",
   "deleted",
-];
+] as const;
+
+/** Union of every state, derived from the single-source states list above. */
+export type ObservationState = (typeof OBSERVATION_STATES)[number];
 
 export const OBSERVATION_TERMINAL_STATES: readonly ObservationState[] = [
   "compacted",

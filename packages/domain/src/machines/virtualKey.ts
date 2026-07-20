@@ -7,14 +7,15 @@
 // grace window elapses (or immediately, on explicit revoke).
 import { invalidTransition, ok, type Transition } from "./types.js";
 
-export type VirtualKeyState = "active" | "rotating" | "revoked" | "expired";
-
-export const VIRTUAL_KEY_STATES: readonly VirtualKeyState[] = [
+export const VIRTUAL_KEY_STATES = [
   "active",
   "rotating",
   "revoked",
   "expired",
-];
+] as const;
+
+/** Union of every state, derived from the single-source states list above. */
+export type VirtualKeyState = (typeof VIRTUAL_KEY_STATES)[number];
 
 export const VIRTUAL_KEY_TERMINAL_STATES: readonly VirtualKeyState[] = [
   "revoked",

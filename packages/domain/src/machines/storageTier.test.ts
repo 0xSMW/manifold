@@ -6,6 +6,7 @@ import {
   tierForUsedPct,
   transitionStorageTier,
 } from "./storageTier.js";
+import { expectInvalid, expectOk } from "./transitionTestKit.js";
 
 test("tierForUsedPct maps usage to the SPEC §13.3 tier boundaries", () => {
   assert.equal(tierForUsedPct(0), "normal");
@@ -21,34 +22,20 @@ test("tierForUsedPct maps usage to the SPEC §13.3 tier boundaries", () => {
 });
 
 test("every legal transition succeeds, including jumping tiers directly (recovers downward)", () => {
-  assert.deepEqual(
-    transitionStorageTier("normal", { type: "MEASURE", usedPct: 92 }),
-    { ok: true, state: "high" },
-  );
-  assert.deepEqual(
-    transitionStorageTier("emergency", { type: "MEASURE", usedPct: 10 }),
-    { ok: true, state: "normal" },
-  );
-  assert.deepEqual(
-    transitionStorageTier("critical", { type: "MEASURE", usedPct: 95 }),
-    { ok: true, state: "critical" },
-  );
+  expectOk(transitionStorageTier, "normal", { type: "MEASURE", usedPct: 92 }, "high");
+  expectOk(transitionStorageTier, "emergency", { type: "MEASURE", usedPct: 10 }, "normal");
+  expectOk(transitionStorageTier, "critical", { type: "MEASURE", usedPct: 95 }, "critical");
   // There is no terminal state — this machine cycles for the life of the installation.
   assert.deepEqual(STORAGE_TIER_TERMINAL_STATES.length, 0);
 });
 
 test("a sampling of illegal transitions returns INVALID_TRANSITION", () => {
-  assert.deepEqual(
+  expectInvalid(
+    transitionStorageTier,
+    "normal",
     // @ts-expect-error exercising a malformed event at runtime
-    transitionStorageTier("normal", { type: "COMPACT" }),
-    { ok: false, code: "INVALID_TRANSITION" },
+    { type: "COMPACT" },
   );
-  assert.deepEqual(
-    transitionStorageTier("normal", { type: "MEASURE", usedPct: -5 }),
-    { ok: false, code: "INVALID_TRANSITION" },
-  );
-  assert.deepEqual(
-    transitionStorageTier("normal", { type: "MEASURE", usedPct: Number.NaN }),
-    { ok: false, code: "INVALID_TRANSITION" },
-  );
+  expectInvalid(transitionStorageTier, "normal", { type: "MEASURE", usedPct: -5 });
+  expectInvalid(transitionStorageTier, "normal", { type: "MEASURE", usedPct: Number.NaN });
 });

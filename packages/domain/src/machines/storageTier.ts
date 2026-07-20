@@ -10,20 +10,16 @@
 // illegal transition.
 import { invalidTransition, ok, type Transition } from "./types.js";
 
-export type StorageTierState =
-  | "normal"
-  | "warning"
-  | "high"
-  | "critical"
-  | "emergency";
-
-export const STORAGE_TIER_STATES: readonly StorageTierState[] = [
+export const STORAGE_TIER_STATES = [
   "normal",
   "warning",
   "high",
   "critical",
   "emergency",
-];
+] as const;
+
+/** Union of every state, derived from the single-source states list above. */
+export type StorageTierState = (typeof STORAGE_TIER_STATES)[number];
 
 /** No terminal state — the tier recovers downward as footprint is reclaimed (SPEC §5.4). */
 export const STORAGE_TIER_TERMINAL_STATES: readonly StorageTierState[] = [];

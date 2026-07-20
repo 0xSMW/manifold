@@ -5,20 +5,16 @@
 // from `valid`/`invalid` (immediate revoke) as well as via `rotating` (planned rotation).
 import { invalidTransition, ok, type Transition } from "./types.js";
 
-export type ProviderCredentialState =
-  | "unvalidated"
-  | "valid"
-  | "invalid"
-  | "rotating"
-  | "revoked";
-
-export const PROVIDER_CREDENTIAL_STATES: readonly ProviderCredentialState[] = [
+export const PROVIDER_CREDENTIAL_STATES = [
   "unvalidated",
   "valid",
   "invalid",
   "rotating",
   "revoked",
-];
+] as const;
+
+/** Union of every state, derived from the single-source states list above. */
+export type ProviderCredentialState = (typeof PROVIDER_CREDENTIAL_STATES)[number];
 
 export const PROVIDER_CREDENTIAL_TERMINAL_STATES: readonly ProviderCredentialState[] = [
   "revoked",

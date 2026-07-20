@@ -6,18 +6,7 @@
 // Terminal: `reconciled`, `rejected`.
 import { invalidTransition, ok, type Transition } from "./types.js";
 
-export type GatewayRequestState =
-  | "received"
-  | "profiled"
-  | "authenticated"
-  | "authorized"
-  | "reserved"
-  | "dispatching"
-  | "streaming"
-  | "reconciled"
-  | "rejected";
-
-export const GATEWAY_REQUEST_STATES: readonly GatewayRequestState[] = [
+export const GATEWAY_REQUEST_STATES = [
   "received",
   "profiled",
   "authenticated",
@@ -27,7 +16,10 @@ export const GATEWAY_REQUEST_STATES: readonly GatewayRequestState[] = [
   "streaming",
   "reconciled",
   "rejected",
-];
+] as const;
+
+/** Union of every state, derived from the single-source states list above. */
+export type GatewayRequestState = (typeof GATEWAY_REQUEST_STATES)[number];
 
 export const GATEWAY_REQUEST_TERMINAL_STATES: readonly GatewayRequestState[] = [
   "reconciled",
