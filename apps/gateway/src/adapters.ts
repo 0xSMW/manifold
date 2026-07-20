@@ -1,6 +1,6 @@
 // apps/gateway adapters — the thin Node implementations of the platform ports (SPEC §4.4).
 // This is the ONLY layer allowed to touch node:* / platform globals; gateway-core stays pure.
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
@@ -19,6 +19,12 @@ import type {
   SnapshotStore,
 } from "@manifold/ports";
 import { isPrivateIp, schemeAllowed, type SsrfPolicy, STRICT_SSRF } from "@manifold/gateway-core";
+import { bucketStart, reserve as budgetReserve } from "@manifold/budget";
+// `@manifold/database` is the sole owner of the postgres driver (§4.2); we take only its `Sql`
+// TYPE from it (erased at build). The concrete reservation client is opened with the driver here in
+// the adapter layer — the one place allowed to touch platform/driver globals.
+import type { Sql } from "@manifold/database";
+import postgres from "postgres";
 import { assertSnapshotTrusted } from "./snapshotVerify.ts";
 
 /** node:crypto-backed Crypto port (§14.3). */
@@ -100,6 +106,119 @@ export class BudgetReserverAdapter implements BudgetReserver {
   reserve(input: BudgetReserveInput): Promise<BudgetReserveResult> {
     return this.reserveFn(input);
   }
+}
+
+// ── Real Postgres-backed reservation (ADR-0012 / §16.3): the gateway's enterprise DB touch ──────
+//
+// This is the concrete `reserveFn` that `BudgetReserverAdapter` wraps in production: the single
+// strong-consistency reserve transaction from `@manifold/budget`, run against the reservation
+// Postgres. The port (`BudgetReserveInput`) hands us only { budgetAccountId, requestId(=traceId),
+// estMicroUsd }; `@manifold/budget.reserve` additionally needs the account's `workspaceId` (to scope
+// the RLS GUC before it locks any row) and a fixed-window bucket. We read the (workspace_id, window)
+// off the budget_account once, derive `windowStart = bucketStart(account.window, now)`, and call
+// reserve. gateway-core never imports @manifold/budget or a driver — this adapter is the seam.
+
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** Is `s` a syntactically valid 26-char Crockford-base32 ULID? */
+function isUlid(s: string): boolean {
+  if (s.length !== 26) return false;
+  for (const ch of s.toUpperCase()) {
+    if (!CROCKFORD.includes(ch)) return false;
+  }
+  return true;
+}
+
+/** Encode a 48-bit millisecond timestamp as a ULID's 10-char time prefix. */
+function encodeUlidTime(ms: number): string {
+  let out = "";
+  let n = Math.floor(ms);
+  for (let i = 0; i < 10; i++) {
+    out = CROCKFORD[n % 32]! + out;
+    n = Math.floor(n / 32);
+  }
+  return out;
+}
+
+/**
+ * The ULID `request_id` the reservation transaction uses. `@manifold/budget.reserve` derives
+ * `created_at` (and thus the monthly partition + the `(budget_account_id, request_id, created_at)`
+ * idempotency key) from this ULID's timestamp, so it MUST be a ULID.
+ *
+ * When the gateway trace-id already IS a ULID (the production intent, per budget/ulid.ts) we pass it
+ * straight through — full idempotency + trace linkage. Otherwise (today's `trace_<hex>` ids) we
+ * synthesize a ULID whose TIME is `now` — so `created_at ≈ now` and the reserve's own
+ * `bucketStart(window, created_at)` lands in the SAME window we reserved against — and whose 16
+ * random chars are a deterministic function of the trace-id, so the reservation still ties back to
+ * the trace and same-millisecond retries of one trace collapse to a single reservation.
+ */
+export function reservationRequestId(traceId: string, now: Date): string {
+  if (isUlid(traceId)) return traceId.toUpperCase();
+  const digest = createHash("sha256").update(traceId).digest();
+  let rand = "";
+  for (let i = 0; i < 16; i++) rand += CROCKFORD[digest[i]! % 32]!;
+  return encodeUlidTime(now.getTime()) + rand;
+}
+
+interface BudgetAccountMetaRow {
+  workspace_id: string;
+  window: string;
+}
+
+export interface DbBudgetReserverOptions {
+  /** Postgres reservation client (postgres-js). */
+  sql: Sql;
+  /** Wall clock; the reservation window + created_at anchor. Defaults to `Date`. */
+  now?: () => Date;
+}
+
+/**
+ * Build the production `reserveFn` bound to a Postgres reservation connection. Returns a
+ * `BudgetReserveResult` the gateway core understands; every failure mode (unknown account, over
+ * cap, driver error) fails CLOSED as `BUDGET_RESERVE_DENIED` so an unmetered request is never
+ * dispatched (§16.3 deny-first).
+ */
+export function makeDbBudgetReserveFn(
+  opts: DbBudgetReserverOptions,
+): (input: BudgetReserveInput) => Promise<BudgetReserveResult> {
+  const { sql } = opts;
+  const now = opts.now ?? (() => new Date());
+  return async (input: BudgetReserveInput): Promise<BudgetReserveResult> => {
+    const rows = await sql<BudgetAccountMetaRow[]>`
+      SELECT workspace_id, "window"
+      FROM budget_account
+      WHERE id = ${input.budgetAccountId}
+      LIMIT 1
+    `;
+    const acct = rows[0];
+    // A hard budget whose account we cannot resolve is not honorable → fail closed.
+    if (!acct) return { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+
+    const at = now();
+    const result = await budgetReserve(sql, {
+      budgetAccountId: input.budgetAccountId,
+      requestId: reservationRequestId(input.requestId, at),
+      estMicroUsd: input.estMicroUsd,
+      workspaceId: acct.workspace_id,
+      windowStart: bucketStart(acct.window, at),
+      shard: 0,
+    });
+    return result.ok
+      ? { ok: true, reservationId: result.reservationId }
+      : { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+  };
+}
+
+/**
+ * Convenience factory: a `BudgetReserverAdapter` reserving against the Postgres connection named by
+ * `url` (the gateway's reservation DB, from MANIFOLD_BUDGET_DB_URL / DATABASE_URL). Wired into
+ * `buildContext` so the running gateway honors DB hard budgets; tests inject the in-memory
+ * FakeBudgetReserver instead.
+ */
+export function makeDbBudgetReserver(url: string, now?: () => Date): BudgetReserverAdapter {
+  // §2.4/§4.2: one connection per serverless invocation against the pooler.
+  const sql = postgres(url, { max: 1 }) as unknown as Sql;
+  return new BudgetReserverAdapter(makeDbBudgetReserveFn({ sql, now }));
 }
 
 /**

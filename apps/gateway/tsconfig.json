@@ -5,7 +5,6 @@
     "composite": false,
     "declaration": false,
     "allowImportingTsExtensions": true,
-    "rootDir": ".",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],

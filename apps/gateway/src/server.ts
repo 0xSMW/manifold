@@ -9,6 +9,7 @@ import { handleRequest, type GatewayContext, type SsrfPolicy } from "@manifold/g
 import {
   EgressFetcher,
   JsonlIngestSink,
+  makeDbBudgetReserver,
   NodeCrypto,
   SnapshotFileStore,
   SystemClock,
@@ -111,6 +112,18 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
     opts.pepper ?? process.env.MANIFOLD_KEY_PEPPER ?? DEV_PEPPER,
   );
 
+  // Hard-budget reservation (SPEC §16.3, ADR-0012): an explicit test override wins; otherwise, when
+  // a reservation DB is configured (MANIFOLD_BUDGET_DB_URL / DATABASE_URL), bind the REAL
+  // @manifold/budget.reserve transaction so the running gateway denies a DB hard-budget over-cap.
+  // With neither, `reserveBudget` stays undefined and a key carrying a hard budget fails closed in
+  // the core (never dispatched unmetered).
+  const budgetDbUrl = process.env.MANIFOLD_BUDGET_DB_URL ?? process.env.DATABASE_URL;
+  let reserveBudget = opts.reserveBudget;
+  if (!reserveBudget && budgetDbUrl) {
+    const reserver = makeDbBudgetReserver(budgetDbUrl);
+    reserveBudget = (input) => reserver.reserve(input);
+  }
+
   return {
     installationId,
     snapshot,
@@ -121,7 +134,7 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
     pepper,
     resolveSecret: makeSecretResolver(opts.kek ?? kekFromEnv()),
     ssrfPolicy: opts.ssrfPolicy,
-    reserveBudget: opts.reserveBudget,
+    reserveBudget,
   };
 }
 

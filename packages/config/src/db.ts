@@ -115,6 +115,17 @@ export interface DataHandlingRow {
   redaction: unknown;
   allowed_regions: unknown;
 }
+export interface BudgetAccountRow {
+  id: string;
+  /** DB enforcement class: 'advisory' | 'hard' (schema budget_enforcement_chk). */
+  enforcement: string;
+  /** 'cost_microusd' | 'tokens' (schema budget_unit_chk). */
+  unit: string;
+  /** 'daily' | 'weekly' | 'monthly' | 'rolling_30d' | 'total' (schema budget_window_chk). */
+  window: string;
+  /** Cap as a decimal string (µ$ or tokens per `unit`); bigint column serialized by postgres-js. */
+  limit_amount: string;
+}
 export interface ConfigRevisionRow {
   id: string;
   installation_id: string;
@@ -243,6 +254,22 @@ export async function readDataHandling(
   return sql<DataHandlingRow[]>`
     SELECT policy_revision_id, capture_mode, redaction, allowed_regions
     FROM data_handling_constraint WHERE policy_revision_id = ${policyRevisionId}`;
+}
+
+/**
+ * Read the budget_account rows referenced by an installation's keys (§16.3). Only the accounts a
+ * key actually points at ship in the snapshot — a hard account with no key never gates anything.
+ * `"window"` is quoted (reserved word). `limit_amount::text` pins the bigint as an exact decimal.
+ */
+export async function readBudgetAccounts(
+  sql: PgSql,
+  ids: string[],
+): Promise<BudgetAccountRow[]> {
+  if (ids.length === 0) return [];
+  return sql<BudgetAccountRow[]>`
+    SELECT id, enforcement, unit, "window", limit_amount::text AS limit_amount
+    FROM budget_account
+    WHERE id IN ${sql(ids)} AND disabled_at IS NULL`;
 }
 
 export async function readActiveRevision(

@@ -9,6 +9,7 @@ import type {
   PolicyOnViolation,
   PolicySubjectKind,
   Snapshot,
+  SnapshotBudgetAccount,
   SnapshotKey,
   SnapshotMeta,
   SnapshotRoute,
@@ -317,6 +318,30 @@ export async function assembleSnapshot(
     };
   }
 
+  // 5. budgets: budget_account id → SnapshotBudgetAccount (§16.3). Only the accounts referenced by
+  //    a key ship — that is exactly what `SnapshotKey.budgetAccountId` indexes in enforce.ts, so a
+  //    DB `hard` cap reaches the gateway's reserve gate (operator DB → emission → deny). DB
+  //    enforcement 'hard' maps to snapshot 'hard' (reserves pre-dispatch); anything else ('advisory')
+  //    maps to 'soft' (observe-only, never reserved). unit/window/limit ride along so the reservation
+  //    adapter can derive the fixed-window bucket without a second read.
+  const budgetAccountIds = [
+    ...new Set(
+      Object.values(keys)
+        .map((k) => k.budgetAccountId)
+        .filter((id): id is string => id != null),
+    ),
+  ];
+  const budgets: Record<string, SnapshotBudgetAccount> = {};
+  for (const b of await q.readBudgetAccounts(sql, budgetAccountIds)) {
+    budgets[b.id] = {
+      id: b.id,
+      enforcement: b.enforcement === "hard" ? "hard" : "soft",
+      unit: b.unit === "tokens" ? "tokens" : "cost_microusd",
+      window: b.window as SnapshotBudgetAccount["window"],
+      limit: b.limit_amount,
+    };
+  }
+
   const snapshot: ConfigSnapshot = {
     meta: stampMeta({ schema: "manifold.snapshot.v1", installationId, signingKeyId: "" }),
     profiles,
@@ -324,6 +349,7 @@ export async function assembleSnapshot(
     routes,
     offerings,
     policies,
+    budgets,
   };
   snapshot.meta.contentHash = computeContentHash(snapshot);
   return snapshot;

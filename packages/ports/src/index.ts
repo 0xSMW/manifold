@@ -90,6 +90,15 @@ export interface SnapshotBudgetAccount {
   id: string;
   /** `hard` ⇒ strong-consistency reserve before dispatch (§16.3); `soft` ⇒ observe-only. */
   enforcement: "hard" | "soft";
+  /**
+   * §7 self-describing budget metadata, emitted by config so the gateway's reservation adapter can
+   * derive the fixed-window bucket without a second lookup (enforce.ts itself reads only
+   * `enforcement`; these are additive). `unit` selects µ$ vs token counters; `window` drives
+   * `bucketStart`; `limit` is the cap as a decimal string (µ$ or tokens, per `unit`).
+   */
+  unit?: "cost_microusd" | "tokens";
+  window?: "daily" | "weekly" | "monthly" | "rolling_30d" | "total";
+  limit?: string;
 }
 
 /**
