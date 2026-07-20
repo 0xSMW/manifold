@@ -374,7 +374,12 @@ CREATE TRIGGER gateway_config_revision_immutable  BEFORE UPDATE OR DELETE ON "ga
 --    `current_setting(..., true)` returns NULL (fail-closed) when the GUC is unset.
 --    Global reference tables (canonical_model, provider_model_offering,
 --    provider_price_revision, registry_field_evidence) and the workspace root are excluded.
---    job_ledger also admits system rows (workspace_id IS NULL).
+--    job_ledger holds tenant rows AND system rows (workspace_id IS NULL). Its policy is
+--    strictly workspace-scoped: a tenant GUC sees ONLY its own rows, NOT the system (NULL)
+--    rows. Making the NULL path tenant-visible/writable is FAIL-OPEN (any tenant could read,
+--    claim, mutate, or forge system jobs). System jobs are owned+processed by the migration
+--    owner / a BYPASSRLS worker role (the same privileged seam migrations use), never by the
+--    tenant-facing app role.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
@@ -399,9 +404,14 @@ BEGIN
 			t || '_rls', t
 		);
 	END LOOP;
-	-- job_ledger: tenant rows OR system-wide rows (workspace_id IS NULL).
+	-- job_ledger: STRICTLY tenant-scoped. System rows (workspace_id IS NULL) are deliberately
+	-- NOT reachable through this policy — the old `OR workspace_id IS NULL` disjunct was
+	-- fail-open (any tenant GUC could SELECT/UPDATE/DELETE system rows and INSERT NULL-workspace
+	-- jobs). The single USING expression also governs INSERT/UPDATE WITH CHECK, so a tenant can
+	-- neither read another tenant's/a system row nor write one with a foreign or NULL workspace.
+	-- System jobs are handled by the migration owner / a BYPASSRLS worker role.
 	EXECUTE 'ALTER TABLE job_ledger ENABLE ROW LEVEL SECURITY';
 	EXECUTE 'ALTER TABLE job_ledger FORCE ROW LEVEL SECURITY';
-	EXECUTE 'CREATE POLICY job_ledger_rls ON job_ledger USING (workspace_id = current_setting(''manifold.workspace_id'', true) OR workspace_id IS NULL)';
+	EXECUTE 'CREATE POLICY job_ledger_rls ON job_ledger USING (workspace_id = current_setting(''manifold.workspace_id'', true))';
 END;
 $$;--> statement-breakpoint

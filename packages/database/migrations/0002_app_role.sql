@@ -33,13 +33,24 @@ END$$;--> statement-breakpoint
 ALTER ROLE manifold_app NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;--> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
--- 2. Grants. Schema usage + full DML on every table (RLS then scopes the rows the app may
---    actually touch) + sequence access. Reference/global tables (canonical_model, etc.) are
---    plain grants with no RLS, exactly as before. ALTER DEFAULT PRIVILEGES covers tables the
---    migration owner (postgres) creates later (e.g. new monthly partitions).
+-- 2. Grants. Schema usage + DML on tenant tables (RLS then scopes the rows the app may
+--    actually touch) + sequence access. ALTER DEFAULT PRIVILEGES covers tables the migration
+--    owner (postgres) creates later (e.g. new monthly partitions).
+--
+--    GLOBAL/REFERENCE tables are the exception: canonical_model, provider_model_offering,
+--    provider_price_revision and registry_field_evidence carry no RLS (they are cross-tenant,
+--    §6.4) and are the pricing/catalog source of truth. The app role must NOT be able to write
+--    them — otherwise a compromised gateway could forge a provider_price_revision and rewrite
+--    money. Catalog ingestion/seeding runs as the migration owner (postgres), never as the
+--    tenant-facing app role, so the app role gets SELECT-only on these tables. We grant the
+--    blanket DML (which also covers every partition + future partition) then REVOKE write on
+--    the four reference tables, leaving their SELECT intact.
 -- ---------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA public TO manifold_app;--> statement-breakpoint
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO manifold_app;--> statement-breakpoint
+REVOKE INSERT, UPDATE, DELETE ON
+	canonical_model, provider_model_offering, provider_price_revision, registry_field_evidence
+	FROM manifold_app;--> statement-breakpoint
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO manifold_app;--> statement-breakpoint
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
 	GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO manifold_app;--> statement-breakpoint

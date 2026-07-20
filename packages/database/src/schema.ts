@@ -794,6 +794,13 @@ export const budgetReservation = pgTable(
     expiresAt: ts("expires_at").notNull(),
     createdAt: ts("created_at").notNull(),
     reconciledAt: ts("reconciled_at"),
+    // Exact counter-row coordinates that reserve() bumped (added by migration
+    // 0003_reservation_counter_coords, SPEC §16.3). commit()/rollback()/sweepExpired()
+    // decrement THAT same budget_window_state row instead of re-deriving it. `window_start`
+    // is nullable only because it was added to an existing partitioned table; reserve()
+    // always writes it. `shard` mirrors budget_window_state.shard (smallint, default 0).
+    windowStart: ts("window_start"),
+    shard: smallint("shard").notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.id, t.createdAt] }),
