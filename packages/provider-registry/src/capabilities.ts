@@ -22,8 +22,8 @@ export function buildCapabilityMap(model: ModelsDevModel): CapabilityMap {
   return {
     attachment: capabilityTriState(model.attachment),
     reasoning: capabilityTriState(model.reasoning),
-    tool_call: capabilityTriState(model.tool_call),
-    structured_output: capabilityTriState(model.structured_output),
+    toolCall: capabilityTriState(model.tool_call),
+    structuredOutput: capabilityTriState(model.structured_output),
     temperature: capabilityTriState(model.temperature),
   };
 }

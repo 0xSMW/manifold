@@ -94,46 +94,46 @@ export type ModelsDevPayload = Record<string, ModelsDevProvider>;
 export interface CapabilityMap {
   attachment: TriState;
   reasoning: TriState;
-  tool_call: TriState;
-  structured_output: TriState;
+  toolCall: TriState;
+  structuredOutput: TriState;
   temperature: TriState;
 }
 
 export interface CanonicalModel {
   id: string;
-  canonical_slug: string;
+  canonicalSlug: string;
   family: string | null;
-  display_name: string;
-  modality_in: string[];
-  modality_out: string[];
-  open_weights: boolean | null;
-  knowledge_cutoff: string | null;
-  release_date: string | null;
+  displayName: string;
+  modalityIn: string[];
+  modalityOut: string[];
+  openWeights: boolean | null;
+  knowledgeCutoff: string | null;
+  releaseDate: string | null;
   source: "models.dev";
 }
 
 export interface ProviderModelOffering {
   id: string;
-  canonical_model_id: string;
+  canonicalModelId: string;
   provider: string;
-  provider_model_id: string;
-  endpoint_kinds: string[];
-  context_limit_tokens: number | null;
-  output_limit_tokens: number | null;
+  providerModelId: string;
+  endpointKinds: string[];
+  contextLimitTokens: number | null;
+  outputLimitTokens: number | null;
   capabilities: CapabilityMap;
   region: string | null;
 }
 
 export interface ProviderPriceRevision {
   id: string;
-  offering_id: string;
-  input_per_mtok_microusd: bigint | null;
-  output_per_mtok_microusd: bigint | null;
-  cache_read_per_mtok_microusd: bigint | null;
-  cache_write_per_mtok_microusd: bigint | null;
-  reasoning_per_mtok_microusd: bigint | null;
-  audio_in_per_mtok_microusd: bigint | null;
-  audio_out_per_mtok_microusd: bigint | null;
+  offeringId: string;
+  inputPerMtokMicrousd: bigint | null;
+  outputPerMtokMicrousd: bigint | null;
+  cacheReadPerMtokMicrousd: bigint | null;
+  cacheWritePerMtokMicrousd: bigint | null;
+  reasoningPerMtokMicrousd: bigint | null;
+  audioInPerMtokMicrousd: bigint | null;
+  audioOutPerMtokMicrousd: bigint | null;
   currency: "USD";
   unit: "per_mtok";
   fidelity: Fidelity;

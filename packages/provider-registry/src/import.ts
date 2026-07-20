@@ -45,13 +45,13 @@ function canonicalSlugFor(
 
 type PriceFields = Pick<
   ProviderPriceRevision,
-  | "input_per_mtok_microusd"
-  | "output_per_mtok_microusd"
-  | "cache_read_per_mtok_microusd"
-  | "cache_write_per_mtok_microusd"
-  | "reasoning_per_mtok_microusd"
-  | "audio_in_per_mtok_microusd"
-  | "audio_out_per_mtok_microusd"
+  | "inputPerMtokMicrousd"
+  | "outputPerMtokMicrousd"
+  | "cacheReadPerMtokMicrousd"
+  | "cacheWritePerMtokMicrousd"
+  | "reasoningPerMtokMicrousd"
+  | "audioInPerMtokMicrousd"
+  | "audioOutPerMtokMicrousd"
 >;
 
 function microOrNull(value: number | string | null | undefined): bigint | null {
@@ -61,13 +61,13 @@ function microOrNull(value: number | string | null | undefined): bigint | null {
 /** SPEC §11.6 mapping: each `cost.*` USD/1M field → its µ$/1M column. */
 function priceFieldsFromCost(cost: ModelsDevCost | undefined): PriceFields {
   return {
-    input_per_mtok_microusd: microOrNull(cost?.input),
-    output_per_mtok_microusd: microOrNull(cost?.output),
-    cache_read_per_mtok_microusd: microOrNull(cost?.cache_read),
-    cache_write_per_mtok_microusd: microOrNull(cost?.cache_write),
-    reasoning_per_mtok_microusd: microOrNull(cost?.reasoning),
-    audio_in_per_mtok_microusd: microOrNull(cost?.audio_input),
-    audio_out_per_mtok_microusd: microOrNull(cost?.audio_output),
+    inputPerMtokMicrousd: microOrNull(cost?.input),
+    outputPerMtokMicrousd: microOrNull(cost?.output),
+    cacheReadPerMtokMicrousd: microOrNull(cost?.cache_read),
+    cacheWritePerMtokMicrousd: microOrNull(cost?.cache_write),
+    reasoningPerMtokMicrousd: microOrNull(cost?.reasoning),
+    audioInPerMtokMicrousd: microOrNull(cost?.audio_input),
+    audioOutPerMtokMicrousd: microOrNull(cost?.audio_output),
   };
 }
 
@@ -99,14 +99,14 @@ export function importFromModelsDev(
       if (!canonicalById.has(canonicalId)) {
         canonicalById.set(canonicalId, {
           id: canonicalId,
-          canonical_slug: slug,
+          canonicalSlug: slug,
           family: model.family ?? null,
-          display_name: model.name,
-          modality_in: model.modalities?.input ?? ["text"],
-          modality_out: model.modalities?.output ?? ["text"],
-          open_weights: model.open_weights ?? null,
-          knowledge_cutoff: model.knowledge ?? null,
-          release_date: model.release_date ?? null,
+          displayName: model.name,
+          modalityIn: model.modalities?.input ?? ["text"],
+          modalityOut: model.modalities?.output ?? ["text"],
+          openWeights: model.open_weights ?? null,
+          knowledgeCutoff: model.knowledge ?? null,
+          releaseDate: model.release_date ?? null,
           source: "models.dev",
         });
       }
@@ -114,15 +114,15 @@ export function importFromModelsDev(
       const offeringId = `off_${providerId}_${model.id}`;
       offerings.push({
         id: offeringId,
-        canonical_model_id: canonicalId,
+        canonicalModelId: canonicalId,
         provider: providerId,
-        provider_model_id: model.id,
+        providerModelId: model.id,
         // models.dev does not report endpoint kinds directly; left empty
         // for the adapter layer to populate from its own capability matrix
         // (SPEC §21.6), not guessed here.
-        endpoint_kinds: [],
-        context_limit_tokens: model.limit?.context ?? null,
-        output_limit_tokens: model.limit?.output ?? null,
+        endpointKinds: [],
+        contextLimitTokens: model.limit?.context ?? null,
+        outputLimitTokens: model.limit?.output ?? null,
         capabilities: buildCapabilityMap(model),
         region: null,
       });
@@ -137,7 +137,7 @@ export function importFromModelsDev(
       const hasCost = Object.values(priceFields).some((value) => value !== null);
       priceRevisions.push({
         id: `prc_${offeringId}`,
-        offering_id: offeringId,
+        offeringId: offeringId,
         ...priceFields,
         currency: "USD",
         unit: "per_mtok",

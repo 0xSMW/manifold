@@ -124,53 +124,53 @@ test("importFromModelsDev: row counts match the fixture", () => {
 
 test("importFromModelsDev: canonical dedup keeps one row per models.dev model id", () => {
   const catalog = importFromModelsDev(fixture);
-  const slugs = catalog.canonicalModels.map((m) => m.canonical_slug).sort();
+  const slugs = catalog.canonicalModels.map((m) => m.canonicalSlug).sort();
   assert.deepEqual(slugs, ["claude-sonnet-4-5", "mystery-mini"]);
 });
 
 test("importFromModelsDev: anthropic offering prices convert exactly (ADR-0008)", () => {
   const catalog = importFromModelsDev(fixture);
   const anthropicOffering = catalog.offerings.find(
-    (o) => o.provider === "anthropic" && o.provider_model_id === "claude-sonnet-4-5",
+    (o) => o.provider === "anthropic" && o.providerModelId === "claude-sonnet-4-5",
   );
   assert.ok(anthropicOffering, "expected the anthropic offering to exist");
 
   const revision = catalog.priceRevisions.find(
-    (r) => r.offering_id === anthropicOffering!.id,
+    (r) => r.offeringId === anthropicOffering!.id,
   );
   assert.ok(revision, "expected a price revision for the anthropic offering");
 
-  assert.equal(revision!.input_per_mtok_microusd, 3_000_000n);
-  assert.equal(revision!.output_per_mtok_microusd, 15_000_000n);
-  assert.equal(revision!.cache_read_per_mtok_microusd, 300_000n);
-  assert.equal(revision!.cache_write_per_mtok_microusd, 3_750_000n);
+  assert.equal(revision!.inputPerMtokMicrousd, 3_000_000n);
+  assert.equal(revision!.outputPerMtokMicrousd, 15_000_000n);
+  assert.equal(revision!.cacheReadPerMtokMicrousd, 300_000n);
+  assert.equal(revision!.cacheWritePerMtokMicrousd, 3_750_000n);
 });
 
 test("importFromModelsDev: absent structured_output on the anthropic model -> unknown, not false", () => {
   const catalog = importFromModelsDev(fixture);
   const anthropicOffering = catalog.offerings.find(
-    (o) => o.provider === "anthropic" && o.provider_model_id === "claude-sonnet-4-5",
+    (o) => o.provider === "anthropic" && o.providerModelId === "claude-sonnet-4-5",
   );
   assert.ok(anthropicOffering);
-  assert.equal(anthropicOffering!.capabilities.structured_output, "unknown");
+  assert.equal(anthropicOffering!.capabilities.structuredOutput, "unknown");
   // Every other anthropic capability WAS reported and must not collapse to unknown.
   assert.equal(anthropicOffering!.capabilities.attachment, "supported");
   assert.equal(anthropicOffering!.capabilities.reasoning, "supported");
-  assert.equal(anthropicOffering!.capabilities.tool_call, "supported");
+  assert.equal(anthropicOffering!.capabilities.toolCall, "supported");
   assert.equal(anthropicOffering!.capabilities.temperature, "supported");
 });
 
 test("importFromModelsDev: anthropic (first-party) price revision is provider_verified", () => {
   const catalog = importFromModelsDev(fixture);
   const anthropicOffering = catalog.offerings.find((o) => o.provider === "anthropic");
-  const revision = catalog.priceRevisions.find((r) => r.offering_id === anthropicOffering!.id);
+  const revision = catalog.priceRevisions.find((r) => r.offeringId === anthropicOffering!.id);
   assert.equal(revision!.fidelity, "provider_verified");
 });
 
 test("importFromModelsDev: openrouter (aggregator) price revision is aggregator", () => {
   const catalog = importFromModelsDev(fixture);
   const openrouterOffering = catalog.offerings.find((o) => o.provider === "openrouter");
-  const revision = catalog.priceRevisions.find((r) => r.offering_id === openrouterOffering!.id);
+  const revision = catalog.priceRevisions.find((r) => r.offeringId === openrouterOffering!.id);
   assert.equal(revision!.fidelity, "aggregator");
 });
 
@@ -178,14 +178,14 @@ test("importFromModelsDev: missing cost block fails closed to unknown fidelity a
   const catalog = importFromModelsDev(fixture);
   const mysteryOffering = catalog.offerings.find((o) => o.provider === "mystery-labs");
   assert.ok(mysteryOffering);
-  const revision = catalog.priceRevisions.find((r) => r.offering_id === mysteryOffering!.id);
+  const revision = catalog.priceRevisions.find((r) => r.offeringId === mysteryOffering!.id);
   assert.ok(revision);
   assert.equal(revision!.fidelity, "unknown");
-  assert.equal(revision!.input_per_mtok_microusd, null);
-  assert.equal(revision!.output_per_mtok_microusd, null);
+  assert.equal(revision!.inputPerMtokMicrousd, null);
+  assert.equal(revision!.outputPerMtokMicrousd, null);
   // Its one reported capability is a real false, and must stay unsupported,
   // not be confused with the unknowns around it.
-  assert.equal(mysteryOffering!.capabilities.tool_call, "unsupported");
+  assert.equal(mysteryOffering!.capabilities.toolCall, "unsupported");
   assert.equal(mysteryOffering!.capabilities.attachment, "unknown");
 });
 
@@ -208,8 +208,8 @@ test("importFromModelsDev: empty cost block {} fails closed to unknown fidelity 
   const revision = catalog.priceRevisions[0];
   assert.ok(revision);
   assert.equal(revision!.fidelity, "unknown");
-  assert.equal(revision!.input_per_mtok_microusd, null);
-  assert.equal(revision!.output_per_mtok_microusd, null);
+  assert.equal(revision!.inputPerMtokMicrousd, null);
+  assert.equal(revision!.outputPerMtokMicrousd, null);
 });
 
 test("importFromModelsDev: cost block with all-null fields fails closed to unknown fidelity and null prices", () => {
@@ -233,8 +233,8 @@ test("importFromModelsDev: cost block with all-null fields fails closed to unkno
   const revision = catalog.priceRevisions[0];
   assert.ok(revision);
   assert.equal(revision!.fidelity, "unknown");
-  assert.equal(revision!.input_per_mtok_microusd, null);
-  assert.equal(revision!.output_per_mtok_microusd, null);
+  assert.equal(revision!.inputPerMtokMicrousd, null);
+  assert.equal(revision!.outputPerMtokMicrousd, null);
 });
 
 test("importFromModelsDev: catalog is stamped with the wire schema version", () => {
