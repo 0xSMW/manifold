@@ -1,0 +1,27 @@
+{
+  "name": "@manifold/observability",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pure observation reduction + projection (SPEC §8.3, §6.8, §6.9, §16.6, ADR-0011). Deterministic reduce(events)->Observation and project(obs)->{usage,cost}. Depends only on @manifold/contracts + @manifold/domain — no platform, no drizzle, no react.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "test": "node --test $(find dist -name '*.test.js')"
+  },
+  "dependencies": {
+    "@manifold/contracts": "*",
+    "@manifold/domain": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
