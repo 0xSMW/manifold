@@ -1,0 +1,29 @@
+{
+  "name": "@manifold/config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Snapshot builder + publisher (SPEC §7.5, §8.2). Builds the signed, content-addressed hot-path snapshot and drives the plan/apply/rollback config lifecycle. Depends on domain, contracts, database, ports (SPEC §4.1/§4.2).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@manifold/contracts": "0.0.0",
+    "@manifold/database": "0.0.0",
+    "@manifold/domain": "0.0.0",
+    "@manifold/ports": "0.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3"
+  }
+}
