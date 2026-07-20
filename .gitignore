@@ -1,0 +1,7 @@
+.DS_Store
+.fuse_hidden*
+node_modules/
+.next/
+dist/
+.vercel/
+*.log

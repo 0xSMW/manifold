@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-profile="enterprise_egress">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manifold Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Geist:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root, [data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#000000; --hover:#ffffff12; --border:#ffffff17; --border-strong:#ffffff24; --border-hover:#ffffff3d;
+  --fg:#ededed; --fg-muted:#a0a0a0; --fg-faint:#8f8f8f; --chip-bg:#ffffff12; --code-bg:#ffffff12; --code-border:#ffffff17;
+  --focus:#47a8ff; --down-border:#e2162a;
+  --up:#00ac3a; --up-text:#00ca50; --up-bg:#002608;
+  --verifying:#ffae00; --verifying-text:#ff9300; --verifying-bg:#2a1700;
+  --down:#f13242; --down-text:#ff565f; --down-bg:#330a11;
+  --error-solid:#e2162a; --neutral-state:#878787;
+  --card-shadow:0 1px 2px rgb(0 0 0 / 16%);
+  --popover-shadow:0 1px 1px rgb(0 0 0 / 2%),0 4px 8px -4px rgb(0 0 0 / 4%),0 16px 24px -8px rgb(0 0 0 / 6%);
+  --modal-shadow:0 1px 1px rgb(0 0 0 / 2%),0 8px 16px -4px rgb(0 0 0 / 4%),0 24px 32px -8px rgb(0 0 0 / 6%);
+}
+[data-theme="light"]{
+  color-scheme:light;
+  --bg:#ffffff; --hover:#0000000d; --border:#ebebeb; --border-strong:#eaeaea; --border-hover:#c9c9c9;
+  --fg:#171717; --fg-muted:#4d4d4d; --fg-faint:#8f8f8f; --chip-bg:#f2f2f2; --code-bg:#fafafa; --code-border:#eaeaea;
+  --focus:#006bff; --down-border:#ffd7d6;
+  --up:#28a948; --up-text:#107d32; --up-bg:#ecfdec;
+  --verifying:#ffae00; --verifying-text:#aa4d00; --verifying-bg:#fff6de;
+  --down:#fc0035; --down-text:#d8001b; --down-bg:#ffeeef;
+  --error-solid:#ea001d; --neutral-state:#a8a8a8;
+  --card-shadow:0 2px 2px rgb(0 0 0 / 4%);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font-family:Geist,Arial,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.mono{font-family:'Geist Mono',ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.muted{color:var(--fg-muted)} .faint{color:var(--fg-faint)}
+.up{color:var(--up-text)} .amber{color:var(--verifying-text)} .down{color:var(--down-text)}
+.upper{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-muted)}
+.k{font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint);border:1px solid var(--border-strong);border-radius:5px;padding:2px 6px}
+a{color:var(--fg-muted);text-decoration:none} a:hover{color:var(--fg)}
+@keyframes ds-pulse{0%{opacity:.55;transform:scale(1)}75%,100%{opacity:0;transform:scale(3)}}
+
+/* Shell */
+.topbar{height:56px;display:flex;align-items:center;gap:16px;padding:0 18px;position:sticky;top:0;z-index:50;
+  border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--bg) 85%,transparent);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+.brand{display:flex;align-items:center;gap:9px;font-weight:600;font-size:15px;letter-spacing:-.02em;white-space:nowrap}
+.brand .d{width:9px;height:9px;border-radius:999px;background:var(--fg)}
+.wsw{display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;color:var(--fg-muted);cursor:pointer}
+.wsw:hover{border-color:var(--border-hover);color:var(--fg)}
+.spacer{margin-left:auto}
+.profile-sel{position:relative}
+select.sel{height:32px;padding:0 30px 0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--bg);color:var(--fg);font-size:13px;appearance:none;cursor:pointer;font-family:inherit}
+.profile-sel svg{position:absolute;right:10px;top:9px;pointer-events:none}
+.pubbtn{display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--bg);color:var(--fg);font-size:13px;font-weight:500;cursor:pointer}
+.pubbtn:hover{border-color:var(--border-hover)}
+.pubbtn .cnt{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--fg);color:var(--bg);font-family:'Geist Mono',monospace;font-size:11px;font-weight:600}
+.seg{display:inline-flex;padding:3px;border:1px solid var(--border-strong);border-radius:8px;gap:2px}
+.seg button{padding:4px 10px;border-radius:6px;border:0;background:transparent;color:var(--fg-muted);font-size:12px;font-weight:500;cursor:pointer;font-family:inherit}
+.seg button.on{background:var(--hover);color:var(--fg)}
+.avatar{width:28px;height:28px;border-radius:999px;background:var(--chip-bg);border:1px solid var(--border-strong);display:grid;place-items:center;font-size:12px;color:var(--fg-muted)}
+
+.shell{display:grid;grid-template-columns:236px 1fr;align-items:start}
+.rail{position:sticky;top:56px;height:calc(100vh - 56px);overflow:auto;border-right:1px solid var(--border);padding:14px 12px;scrollbar-width:none}
+.rail::-webkit-scrollbar{display:none}
+.rail-label{display:flex;align-items:center;gap:7px;font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-faint);padding:14px 10px 6px}
+.rail-label .d{width:6px;height:6px;border-radius:999px;background:var(--fg-faint)}
+.nav-item{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;color:var(--fg-muted);font-size:13px;cursor:pointer;user-select:none}
+.nav-item:hover{background:var(--hover);color:var(--fg)}
+.nav-item.active{background:var(--hover);color:var(--fg);font-weight:500}
+.nav-item .ico{width:15px;height:15px;flex:0 0 auto;opacity:.85}
+.nav-sep{height:1px;background:var(--border);margin:12px 8px}
+body[data-profile="public_app"] .governance{display:none}
+
+.main{padding:24px 30px 80px;max-width:1200px}
+.screen{display:none} .screen.active{display:block}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.h20{font-size:20px;line-height:26px;font-weight:600;letter-spacing:-.02em}
+.sub{color:var(--fg-muted);font-size:14px;margin-top:6px;max-width:640px}
+.h14{font-size:14px;font-weight:600;letter-spacing:-.01em}
+
+/* Controls */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 12px;border-radius:6px;border:1px solid transparent;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;white-space:nowrap}
+.btn.primary{background:var(--fg);color:var(--bg)} .btn.primary:hover{opacity:.9}
+.btn.secondary{background:var(--bg);color:var(--fg);border-color:var(--border-strong)} .btn.secondary:hover{border-color:var(--border-hover)}
+.btn.tertiary{background:transparent;color:var(--fg)} .btn.tertiary:hover{background:var(--hover)}
+.btn.danger-outline{background:var(--bg);color:var(--down-text);border-color:var(--down-border)} .btn.danger-outline:hover{border-color:var(--down-text)}
+.btn.danger{background:var(--error-solid);color:#fff}
+.btn.sm{height:30px;padding:0 9px;font-size:12px}
+.input,.select{width:100%;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--bg);color:var(--fg);font-size:13px;font-family:inherit}
+.input.mono{font-family:'Geist Mono',monospace;font-size:13px}
+.input:focus,.select:focus{outline:none;border-color:var(--border-hover)}
+.field{display:grid;gap:7px} .field label{font-size:13px;font-weight:500}
+.chip{display:inline-flex;align-items:center;height:22px;padding:0 8px;border-radius:999px;background:var(--chip-bg);color:var(--fg-muted);font-size:11px}
+.chip.mono{font-family:'Geist Mono',monospace}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:500;white-space:nowrap}
+.badge.up{background:var(--up-bg);color:var(--up-text)} .badge.amber{background:var(--verifying-bg);color:var(--verifying-text)}
+.badge.down{background:var(--down-bg);color:var(--down-text)} .badge.idle{background:var(--chip-bg);color:var(--fg-muted)}
+.dot{width:8px;height:8px;border-radius:999px;display:inline-block;flex:0 0 auto}
+.dot.up{background:var(--up)} .dot.amber{background:var(--verifying)} .dot.down{background:var(--down)} .dot.idle{background:var(--neutral-state)}
+.dot.live{position:relative}
+.dot.live::after{content:"";position:absolute;inset:0;border-radius:999px;background:inherit;animation:ds-pulse 2s ease-out infinite}
+
+/* Surfaces */
+.card{border:1px solid var(--border-strong);border-radius:12px;background:var(--bg);box-shadow:var(--card-shadow);padding:22px}
+.grid{display:grid;gap:14px}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px}
+.search{position:relative;flex:1}
+.search input{width:100%;height:36px;padding:0 12px 0 34px;border-radius:6px;border:1px solid var(--border-strong);background:var(--bg);color:var(--fg);font-size:13px}
+.search svg{position:absolute;left:11px;top:10px}
+.banner{display:flex;gap:10px;align-items:center;padding:11px 14px;border-radius:12px;font-size:13px;line-height:1.5}
+.banner.amber{background:var(--verifying-bg);color:var(--verifying-text);border:1px solid color-mix(in srgb,var(--verifying) 30%,transparent)}
+.banner.down{background:var(--down-bg);color:var(--down-text);border:1px solid color-mix(in srgb,var(--down) 34%,transparent)}
+.note{color:var(--fg-faint);font-size:12px;line-height:1.5}
+
+/* KPIs */
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--card-shadow)}
+.kpi{background:var(--bg);padding:15px 16px}
+.kpi .label{font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)}
+.kpi .val{font-family:'Geist Mono',monospace;font-variant-numeric:tabular-nums;font-size:23px;line-height:30px;font-weight:600;letter-spacing:-.01em;margin-top:6px}
+
+/* Table */
+.tablewrap{border:1px solid var(--border-strong);border-radius:12px;overflow-x:auto;box-shadow:var(--card-shadow);scrollbar-width:thin}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead th{text-align:left;height:40px;padding:0 16px;font-size:12px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-muted);border-bottom:1px solid var(--border);white-space:nowrap}
+tbody td{height:54px;padding:0 16px;border-bottom:1px solid var(--border);white-space:nowrap}
+tbody tr:last-child td{border-bottom:0}
+tbody tr:hover{background:var(--hover)}
+tr.rowlink{cursor:pointer}
+tr.down-row{box-shadow:inset 3px 0 0 var(--down)}
+.tnum{text-align:right;font-family:'Geist Mono',monospace}
+.cellsub{font-family:'Geist Mono',monospace;font-size:12px;color:var(--fg-faint);margin-top:2px}
+
+/* Timeline bars */
+.tl{display:flex;gap:2px;height:22px;width:150px}
+.tl span{flex:1;min-width:2px;border-radius:1.5px}
+
+/* Overview extras */
+.ov-grid{display:grid;grid-template-columns:1.7fr 1fr;gap:14px;margin-top:14px}
+.health{display:flex;flex-direction:column;gap:2px}
+.health .row{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border);font-size:13px}
+.health .row:last-child{border-bottom:0}
+.spark{height:44px;width:100%}
+
+/* Cards grid */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+.pcard{border:1px solid var(--border-strong);border-radius:12px;background:var(--bg);box-shadow:var(--card-shadow);padding:18px}
+.pcard .top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.pcard .name{font-weight:600}
+.pcard .meta{display:flex;gap:16px;margin-top:14px;color:var(--fg-muted);font-size:12px}
+
+/* Overlays */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:none}
+.overlay.open{display:block}
+.sheet{position:fixed;top:0;right:0;height:100vh;width:480px;max-width:92vw;background:var(--bg);border-left:1px solid var(--border-strong);box-shadow:var(--modal-shadow);z-index:101;transform:translateX(100%);transition:transform .28s cubic-bezier(.175,.885,.32,1.1);display:flex;flex-direction:column}
+.sheet.wide{width:600px}
+.sheet.open{transform:none}
+.sheet .head{display:flex;align-items:center;justify-content:space-between;padding:20px 22px;border-bottom:1px solid var(--border)}
+.sheet .head .t{font-size:16px;font-weight:600;letter-spacing:-.02em}
+.sheet .body{padding:20px 22px;overflow:auto;display:grid;gap:16px}
+.sheet .foot{margin-top:auto;display:flex;justify-content:flex-end;gap:8px;padding:16px 22px;border-top:1px solid var(--border)}
+.x{cursor:pointer;color:var(--fg-faint);font-size:18px;line-height:1;border:0;background:transparent}
+.modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-48%);width:520px;max-width:92vw;background:var(--bg);border:1px solid var(--border-strong);border-radius:12px;box-shadow:var(--modal-shadow);z-index:101;display:none;overflow:hidden}
+.modal.open{display:block}
+.modal .head{padding:20px 22px 0} .modal .body{padding:16px 22px} .modal .foot{display:flex;justify-content:flex-end;gap:8px;padding:16px 22px;border-top:1px solid var(--border)}
+.keybox{display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--code-bg);font-family:'Geist Mono',monospace;font-size:13px;color:var(--fg);word-break:break-all}
+
+/* Waterfall */
+.wf{display:grid;gap:2px}
+.wf-row{display:grid;grid-template-columns:150px 1fr 66px;gap:12px;align-items:center;height:34px;font-size:13px}
+.wf-track{position:relative;height:14px;background:var(--hover);border-radius:3px}
+.wf-bar{position:absolute;top:0;height:14px;border-radius:3px}
+.wf-lab{display:flex;align-items:center;gap:8px;color:var(--fg-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* Tree / budgets */
+.tree-row{display:grid;grid-template-columns:1.4fr 90px 1fr 96px 120px;gap:14px;align-items:center;padding:13px 4px;border-bottom:1px solid var(--border);font-size:13px}
+.tree-row:last-child{border-bottom:0}
+.indent{padding-left:22px;color:var(--fg-muted)}
+.bar{height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden}
+.bar > i{display:block;height:100%}
+
+/* Diff */
+.diffwrap{border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--card-shadow)}
+.diff-line{display:flex;gap:12px;align-items:center;font-family:'Geist Mono',monospace;font-size:12px;padding:8px 16px;border-bottom:1px solid var(--border)}
+.diff-line:last-child{border-bottom:0}
+.diff-line .g{width:14px;text-align:center;font-weight:600}
+.diff-add{color:var(--up-text)} .diff-add .g{color:var(--up-text)}
+.diff-del{color:var(--down-text)} .diff-del .g{color:var(--down-text)}
+.diff-mod{color:var(--verifying-text)} .diff-mod .g{color:var(--verifying-text)}
+.matrix{border:1px solid var(--border-strong);border-radius:12px;overflow:hidden}
+.matrix .mrow{display:grid;grid-template-columns:1.4fr repeat(4,1fr);gap:0;border-bottom:1px solid var(--border)}
+.matrix .mrow:last-child{border-bottom:0}
+.matrix .mcell{padding:11px 14px;font-size:13px;border-left:1px solid var(--border)}
+.matrix .mcell:first-child{border-left:0;color:var(--fg-muted)}
+.mono-sm{font-family:'Geist Mono',monospace;font-size:12px}
+.evt{display:grid;grid-template-columns:16px 1fr auto;gap:12px;align-items:start;padding:11px 0;border-bottom:1px solid var(--border)}
+.evt:last-child{border-bottom:0}
+.footer{margin-top:36px;padding-top:18px;border-top:1px solid var(--border);color:var(--fg-faint);font-size:12px;display:flex;gap:8px;align-items:center}
+
+/* User menu */
+.usermenu-wrap{position:relative}
+.avatar{width:30px;height:30px;border-radius:999px;background:var(--chip-bg);border:1px solid var(--border-strong);display:grid;place-items:center;color:var(--fg-muted);cursor:pointer;padding:0}
+.avatar:hover{border-color:var(--border-hover);color:var(--fg)}
+.menu{position:absolute;top:42px;right:0;width:250px;background:var(--bg);border:1px solid var(--border-strong);border-radius:12px;box-shadow:var(--popover-shadow);z-index:90;padding:6px;display:none}
+.menu.open{display:block}
+.menu .mhead{display:flex;gap:10px;align-items:center;padding:8px 8px 12px;margin-bottom:6px;border-bottom:1px solid var(--border)}
+.menu .mhead .av{width:34px;height:34px;border-radius:999px;background:var(--chip-bg);border:1px solid var(--border-strong);display:grid;place-items:center;color:var(--fg-muted);flex:0 0 auto}
+.menu .mseg{display:flex;gap:2px;padding:3px;border:1px solid var(--border-strong);border-radius:8px;margin:4px 4px 6px}
+.menu .mseg button{flex:1;padding:5px 0;border:0;border-radius:6px;background:transparent;color:var(--fg-muted);font-size:12px;font-weight:500;cursor:pointer;font-family:inherit}
+.menu .mseg button.on{background:var(--hover);color:var(--fg)}
+.menu .mi{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;font-size:13px;color:var(--fg);cursor:pointer}
+.menu .mi:hover{background:var(--hover)}
+.menu .mi .ico{width:15px;height:15px;flex:0 0 auto;color:var(--fg-muted)}
+.menu .mi .r{margin-left:auto;font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)}
+.menu .mi.danger{color:var(--down-text)}
+.menu .mi.danger:hover{background:var(--down-bg)}
+.menu .mi.danger .ico{color:var(--down-text)}
+.menu .msep{height:1px;background:var(--border);margin:6px 4px}
+
+/* Command palette */
+.palette{width:600px;max-width:94vw;top:11%;transform:translate(-50%,0)}
+.cmd-search{display:flex;align-items:center;gap:10px;padding:15px 16px;border-bottom:1px solid var(--border)}
+.cmd-search input{flex:1;border:0;background:transparent;color:var(--fg);font-size:15px;font-family:inherit;outline:none}
+.cmd-search input::placeholder{color:var(--fg-faint)}
+.cmd-body{max-height:50vh;overflow:auto;padding:8px;scrollbar-width:thin}
+.cmd-group{padding:9px 10px 4px;font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--fg-faint)}
+.cmd-item{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:6px;font-size:13px;color:var(--fg);cursor:pointer}
+.cmd-item .ico{width:15px;height:15px;flex:0 0 auto;color:var(--fg-muted)}
+.cmd-item .lab{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cmd-item .meta{margin-left:auto;font-size:12px;color:var(--fg-faint);display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.cmd-item:hover,.cmd-item.active{background:var(--hover)}
+.cmd-item.active .ico{color:var(--fg)}
+.cmd-empty{display:none;padding:28px 12px;text-align:center;color:var(--fg-faint);font-size:13px}
+.cmd-foot{display:flex;align-items:center;gap:16px;padding:10px 14px;border-top:1px solid var(--border);color:var(--fg-faint);font-size:12px}
+.cmd-foot .kk{font-family:'Geist Mono',monospace;font-size:11px;border:1px solid var(--border-strong);border-radius:4px;padding:1px 5px;color:var(--fg-muted);margin-right:4px}
+</style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div class="topbar">
+  <div class="brand"><span class="d"></span>Manifold</div>
+  <div class="wsw">smw-prod <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="m4 6 4 4 4-4"/></svg></div>
+  <div class="profile-sel">
+    <select class="sel" id="profileSel" onchange="setProfile(this.value)" aria-label="Ingress profile">
+      <option value="enterprise_egress">profile: enterprise_egress</option>
+      <option value="public_app">profile: public_app</option>
+      <option value="all">profile: all</option>
+    </select>
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4" stroke-linecap="round"><path d="m4 6 4 4 4-4"/></svg>
+  </div>
+  <div class="spacer"></div>
+  <button class="pubbtn" onclick="go('publish')" title="Unpublished changes">
+    <span style="color:var(--fg-muted)">◆</span> Publish <span class="cnt">3</span>
+  </button>
+  <span class="k" onclick="openPalette()" style="cursor:pointer">⌘K</span>
+  <div class="usermenu-wrap" id="userWrap">
+    <button class="avatar" aria-label="Account" title="stephen@smw.ai" onclick="toggleUserMenu(event)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.3" r="2.7"/><path d="M3.2 13c.4-2.6 2.3-4 4.8-4s4.4 1.4 4.8 4" stroke-linecap="round"/></svg></button>
+    <div class="menu" id="userMenu" role="menu">
+      <div class="mhead">
+        <span class="av"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.3" r="2.7"/><path d="M3.2 13c.4-2.6 2.3-4 4.8-4s4.4 1.4 4.8 4" stroke-linecap="round"/></svg></span>
+        <div style="min-width:0">
+          <div style="font-weight:500;font-size:13px">Stephen Walker</div>
+          <div class="mono faint" style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">stephen@smw.ai</div>
+        </div>
+      </div>
+      <div class="mseg" role="group" aria-label="Theme"><button id="mDark" class="on" onclick="setTheme('dark')">Dark</button><button id="mLight" onclick="setTheme('light')">Light</button></div>
+      <div class="mi" onclick="go('settings')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4"/></svg>Account settings</div>
+      <div class="mi" onclick="go('settings')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="2.5" y="2.5" width="7" height="11"/><path d="M9.5 6H13.5V13.5H2.5"/><path d="M4.5 5h3M4.5 7.5h3M4.5 10h3" stroke-linecap="round"/></svg>Workspace<span class="r mono">smw-prod</span></div>
+      <div class="mi" onclick="openPalette()"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3H4a1 1 0 0 0-1 1v1M11 3h1a1 1 0 0 1 1 1v1M5 13H4a1 1 0 0 1-1-1v-1M11 13h1a1 1 0 0 0 1-1v-1"/></svg>Command menu<span class="r">⌘K</span></div>
+      <div class="mi" onclick="go('audit')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2h6l3 3v9H4z"/><path d="M6.5 8.5 8 10l3-3"/></svg>Audit log</div>
+      <div class="msep"></div>
+      <div class="mi" onclick="closeUserMenu()"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M3 3.5A1.5 1.5 0 0 1 4.5 2H13v10H4.5A1.5 1.5 0 0 0 3 13.5z"/><path d="M3 13.5A1.5 1.5 0 0 1 4.5 12H13"/></svg>Docs<span class="r">↗</span></div>
+      <div class="mi danger" onclick="closeUserMenu()"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v1.5A1.5 1.5 0 0 1 8.5 14h-4A1.5 1.5 0 0 1 3 12.5v-9A1.5 1.5 0 0 1 4.5 2h4A1.5 1.5 0 0 1 10 3.5V5"/><path d="M7 8h7M12 6l2 2-2 2"/></svg>Sign out</div>
+    </div>
+  </div>
+</div>
+
+<div class="shell">
+  <!-- Left rail -->
+  <nav class="rail">
+    <div class="rail-label"><span class="d"></span>Gateway</div>
+    <div class="nav-item active" data-screen="overview" onclick="go('overview')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>Overview</div>
+    <div class="nav-item" data-screen="routes" onclick="go('routes')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 4h8M2 8h12M2 12h6"/></svg>Routes</div>
+    <div class="nav-item" data-screen="providers" onclick="go('providers')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="4" rx="1"/><rect x="2" y="9" width="12" height="4" rx="1"/></svg>Providers</div>
+    <div class="nav-item" data-screen="keys" onclick="go('keys')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="3.2"/><path d="m8.3 8.3 4 4M11 11l1.5-1.5" stroke-linecap="round"/></svg>Keys</div>
+    <div class="nav-item" data-screen="logs" onclick="go('logs')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 3v10M3 5h9M3 8.5h11M3 12h7"/></svg>Logs</div>
+    <div class="nav-item" data-screen="models" onclick="go('models')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11M2.5 8h11" stroke-width="1"/></svg>Models</div>
+
+    <div class="rail-label governance"><span class="d"></span>Governance</div>
+    <div class="nav-item governance" data-screen="policies" onclick="go('policies')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 2 3 4v3.5C3 10.5 5 12.6 8 14c3-1.4 5-3.5 5-6.5V4L8 2Z"/></svg>Policies</div>
+    <div class="nav-item governance" data-screen="budgets" onclick="go('budgets')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v6M6.3 6.6c0-.9.8-1.4 1.7-1.4s1.7.4 1.7 1.3c0 1.8-3.4 1-3.4 2.9 0 .9.8 1.4 1.7 1.4s1.7-.5 1.7-1.4" stroke-linecap="round"/></svg>Budgets</div>
+    <div class="nav-item governance" data-screen="audit" onclick="go('audit')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 2h6l3 3v9H4z"/><path d="M6.5 8.5 8 10l3-3"/></svg>Audit</div>
+
+    <div class="nav-sep"></div>
+    <div class="nav-item" data-screen="deployments" onclick="go('deployments')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 1.8 2.2 8 8 14.2 13.8 8 8 1.8Z"/></svg>Deployments</div>
+    <div class="nav-item" data-screen="settings" onclick="go('settings')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/></svg>Settings</div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+
+    <!-- OVERVIEW -->
+    <section class="screen active" id="overview">
+      <div class="page-head">
+        <div><div class="h20">Overview</div><div class="sub">Health, traffic, and spend across the gateway <span id="ovProfileNote" class="faint mono" style="font-size:12px"></span></div></div>
+        <div class="seg"><button class="">1h</button><button class="on">24h</button><button class="">7d</button><button class="">30d</button></div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi"><div class="label">Requests</div><div class="val">1.28M</div></div>
+        <div class="kpi"><div class="label">Tokens</div><div class="val">3.94B</div></div>
+        <div class="kpi"><div class="label">Spend</div><div class="val">$4,182</div></div>
+        <div class="kpi"><div class="label">P50</div><div class="val">312<span style="font-size:14px"> ms</span></div></div>
+        <div class="kpi"><div class="label">P95</div><div class="val">1,240<span style="font-size:14px"> ms</span></div></div>
+        <div class="kpi"><div class="label">Errors</div><div class="val down">0.42%</div></div>
+      </div>
+
+      <div class="ov-grid">
+        <div class="card">
+          <div style="display:flex;align-items:baseline;justify-content:space-between"><div class="h14">Requests by provider</div><span class="mono faint" style="font-size:11px">stacked · 24h</span></div>
+          <svg viewBox="0 0 600 170" width="100%" height="170" preserveAspectRatio="none" style="display:block;margin-top:14px">
+            <defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--fg)" stop-opacity="0.10"/><stop offset="1" stop-color="var(--fg)" stop-opacity="0"/></linearGradient></defs>
+            <line x1="0" y1="42" x2="600" y2="42" stroke="var(--border)"/><line x1="0" y1="85" x2="600" y2="85" stroke="var(--border)"/><line x1="0" y1="128" x2="600" y2="128" stroke="var(--border)"/>
+            <path d="M0 120 L50 112 L100 118 L150 92 L200 100 L250 66 L300 80 L350 54 L400 70 L450 40 L500 58 L550 44 L600 60 L600 170 L0 170 Z" fill="url(#fill)"/>
+            <path d="M0 120 L50 112 L100 118 L150 92 L200 100 L250 66 L300 80 L350 54 L400 70 L450 40 L500 58 L550 44 L600 60" fill="none" stroke="var(--fg)" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+            <circle cx="350" cy="54" r="3" fill="var(--down)"/><circle cx="250" cy="66" r="3" fill="var(--down)"/>
+          </svg>
+          <div style="display:flex;justify-content:space-between;margin-top:6px" class="mono faint"><span style="font-size:11px">−24h</span><span style="font-size:11px">now</span></div>
+        </div>
+        <div class="card">
+          <div class="h14">Provider health</div>
+          <div class="health" style="margin-top:10px">
+            <div class="row"><span class="dot up"></span><span>OpenAI</span><span class="mono faint spacer" style="margin-left:auto">318 ms</span></div>
+            <div class="row"><span class="dot up"></span><span>Anthropic</span><span class="mono faint" style="margin-left:auto">402 ms</span></div>
+            <div class="row"><span class="dot amber live"></span><span>Azure OpenAI</span><span class="mono amber" style="margin-left:auto">failover</span></div>
+            <div class="row"><span class="dot idle"></span><span>Google Vertex</span><span class="mono faint" style="margin-left:auto">idle</span></div>
+          </div>
+          <div class="h14" style="margin-top:18px">Fallback rate</div>
+          <svg class="spark" viewBox="0 0 300 44" preserveAspectRatio="none" style="margin-top:8px"><path d="M0 34 L40 30 L80 32 L120 22 L160 26 L200 14 L240 20 L300 10" fill="none" stroke="var(--fg)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
+          <div class="mono faint" style="font-size:11px;margin-top:2px">1.9% of requests failed over</div>
+        </div>
+      </div>
+
+      <div class="budget-burn card" style="margin-top:14px" id="ovBudget">
+        <div style="display:flex;align-items:baseline;justify-content:space-between"><div class="h14">Budget burn by cost center</div><a onclick="go('budgets')" style="cursor:pointer;font-size:13px">View budgets →</a></div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:16px">
+          <div><div class="muted" style="font-size:13px">cc-platform</div><div class="bar" style="margin-top:8px"><i style="width:61%;background:var(--up)"></i></div><div class="mono faint" style="font-size:11px;margin-top:6px">$3,050 / $5,000 · hard</div></div>
+          <div><div class="muted" style="font-size:13px">cc-research</div><div class="bar" style="margin-top:8px"><i style="width:88%;background:var(--verifying)"></i></div><div class="mono amber" style="font-size:11px;margin-top:6px">$2,640 / $3,000 · advisory</div></div>
+          <div><div class="muted" style="font-size:13px">cc-support</div><div class="bar" style="margin-top:8px"><i style="width:104%;background:var(--down)"></i></div><div class="mono down" style="font-size:11px;margin-top:6px">$1,560 / $1,500 · hard · denying</div></div>
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin:22px 0 12px"><div class="h14">Recent traces</div><a onclick="go('logs')" style="cursor:pointer;font-size:13px">Open logs →</a></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Time</th><th>Trace</th><th>Model</th><th>Provider</th><th>Status</th><th class="tnum">Latency</th><th class="tnum">Cost</th><th>Key</th></tr></thead>
+          <tbody>
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:22:07</td><td class="mono">tr_9f2c1a</td><td>gpt-4o</td><td>openai</td><td><span class="badge up"><span class="dot up"></span>200</span></td><td class="tnum">412 ms</td><td class="tnum">$0.0184</td><td class="mono faint">mf_live_a1</td></tr>
+            <tr class="rowlink down-row" onclick="openTrace()"><td class="mono muted">14:21:58</td><td class="mono">tr_77b0e4</td><td>gpt-4o</td><td>azure→openai</td><td><span class="badge down"><span class="dot down live"></span>504</span></td><td class="tnum down">timeout</td><td class="tnum faint">n/a</td><td class="mono faint">mf_live_a1</td></tr>
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:21:41</td><td class="mono">tr_5c02aa</td><td>claude-3-5-sonnet</td><td>anthropic</td><td><span class="badge up"><span class="dot up"></span>200</span></td><td class="tnum">889 ms</td><td class="tnum">$0.0421</td><td class="mono faint">mf_live_7x</td></tr>
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:21:20</td><td class="mono">tr_1d9f30</td><td>text-embedding-3</td><td>openai</td><td><span class="badge amber"><span class="dot amber"></span>clamp</span></td><td class="tnum">96 ms</td><td class="tnum amber">est. $0.0002</td><td class="mono faint">mf_pub_k9</td></tr>
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:20:55</td><td class="mono">tr_b38c12</td><td>gpt-4o-mini</td><td>openai</td><td><span class="badge up"><span class="dot up"></span>200</span></td><td class="tnum">241 ms</td><td class="tnum">$0.0009</td><td class="mono faint">mf_pub_k9</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ROUTES -->
+    <section class="screen" id="routes">
+      <div class="page-head"><div><div class="h20">Routes</div><div class="sub">Each route is a <span class="mono">model</span> string clients call, resolved to one or more provider targets</div></div></div>
+      <div class="toolbar">
+        <div class="search"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m11 11 3 3" stroke-linecap="round"/></svg><input placeholder="Search routes"></div>
+        <button class="btn primary" onclick="openSheet('routeSheet')">New Route</button>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>public_name</th><th>endpoint</th><th>mode</th><th>targets</th><th>revision</th><th class="tnum">24h</th><th>status</th></tr></thead>
+          <tbody>
+            <tr class="rowlink" onclick="openSheet('routeSheet')"><td><span class="mono">gpt-4o</span></td><td class="muted">chat.completions</td><td><span class="chip">weighted</span></td><td class="muted">openai 70 · azure 30</td><td class="mono faint">sha256:8c41…</td><td class="tnum">642k</td><td><span class="badge up"><span class="dot up"></span>active</span></td></tr>
+            <tr class="rowlink" onclick="openSheet('routeSheet')"><td><span class="mono">claude-3-5-sonnet</span></td><td class="muted">chat.completions</td><td><span class="chip">ordered</span></td><td class="muted">anthropic → bedrock</td><td class="mono faint">sha256:1a90…</td><td class="tnum">318k</td><td><span class="badge up"><span class="dot up"></span>active</span></td></tr>
+            <tr class="rowlink" onclick="openSheet('routeSheet')"><td><span class="mono">fast-chat</span></td><td class="muted">chat.completions</td><td><span class="chip">weighted</span></td><td class="muted">gpt-4o-mini 50 · haiku 50</td><td class="mono faint">sha256:33ef…</td><td class="tnum">204k</td><td><span class="badge amber"><span class="dot amber live"></span>draft</span></td></tr>
+            <tr class="rowlink" onclick="openSheet('routeSheet')"><td><span class="mono">text-embedding-3</span></td><td class="muted">embeddings</td><td><span class="chip">single</span></td><td class="muted">openai</td><td class="mono faint">sha256:7b22…</td><td class="tnum">120k</td><td><span class="badge up"><span class="dot up"></span>active</span></td></tr>
+            <tr class="rowlink" onclick="openSheet('routeSheet')"><td><span class="mono muted">o1-preview</span></td><td class="muted">responses</td><td><span class="chip">single</span></td><td class="muted">openai</td><td class="mono faint">n/a</td><td class="tnum faint">0</td><td><span class="badge idle"><span class="dot idle"></span>disabled</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="banner amber" style="margin-top:14px"><span class="dot amber"></span>1 route has unpublished changes. Review in <a onclick="go('publish')" style="cursor:pointer;color:inherit;text-decoration:underline">Publish</a>.</div>
+    </section>
+
+    <!-- PROVIDERS -->
+    <section class="screen" id="providers">
+      <div class="page-head"><div><div class="h20">Providers</div><div class="sub">Provider credentials and the model offerings each one can serve. Secrets are shown once, then stored encrypted</div></div><button class="btn primary" onclick="openSheet('providerSheet')">Add Provider</button></div>
+      <div class="cards">
+        <div class="pcard"><div class="top"><div class="name">OpenAI</div><span class="badge up"><span class="dot up"></span>valid</span></div><div class="mono faint" style="margin-top:12px">sk-proj-••••4f9a</div><div class="meta"><span>32 offerings</span><span>us-east</span><span>val. 2m ago</span></div></div>
+        <div class="pcard"><div class="top"><div class="name">Anthropic</div><span class="badge up"><span class="dot up"></span>valid</span></div><div class="mono faint" style="margin-top:12px">sk-ant-••••1c07</div><div class="meta"><span>8 offerings</span><span>us-east</span><span>val. 5m ago</span></div></div>
+        <div class="pcard"><div class="top"><div class="name">Azure OpenAI</div><span class="badge amber"><span class="dot amber live"></span>unvalidated</span></div><div class="mono faint" style="margin-top:12px">••••/deployments/gpt4o</div><div class="meta"><span>4 offerings</span><span>eastus2</span><span class="amber">validate →</span></div></div>
+        <div class="pcard"><div class="top"><div class="name">Google Vertex</div><span class="badge up"><span class="dot up"></span>valid</span></div><div class="mono faint" style="margin-top:12px">svc-••••@proj.iam</div><div class="meta"><span>11 offerings</span><span>us-central1</span><span>val. 1h ago</span></div></div>
+        <div class="pcard"><div class="top"><div class="name">AWS Bedrock</div><span class="badge down"><span class="dot down"></span>invalid</span></div><div class="mono faint" style="margin-top:12px">AKIA••••  · access denied</div><div class="meta"><span>n/a</span><span>us-west-2</span><span class="down">re-enter →</span></div></div>
+      </div>
+    </section>
+
+    <!-- KEYS -->
+    <section class="screen" id="keys">
+      <div class="page-head"><div><div class="h20">Keys</div><div class="sub">Virtual keys clients present at the gateway. Manifold stores a keyed hash, never the plaintext</div></div><button class="btn primary" onclick="openModal('keyModal')">Mint Key</button></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>prefix</th><th>profile</th><th>scopes</th><th>attribution</th><th class="tnum">rate</th><th>last used</th><th>status</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">mf_live_a1c9</td><td><span class="chip">enterprise</span></td><td class="muted">chat, embeddings</td><td class="muted">platform · cc-platform</td><td class="tnum">600/min</td><td class="mono faint">8s ago</td><td><span class="badge up"><span class="dot up"></span>active</span></td></tr>
+            <tr><td class="mono">mf_live_7x02</td><td><span class="chip">enterprise</span></td><td class="muted">chat</td><td class="muted">research · cc-research</td><td class="tnum">200/min</td><td class="mono faint">1m ago</td><td><span class="badge up"><span class="dot up"></span>active</span></td></tr>
+            <tr><td class="mono">mf_pub_k93f</td><td><span class="chip">public_app</span></td><td class="muted">fast-chat only</td><td class="muted">mobile-app</td><td class="tnum">60/min</td><td class="mono faint">3s ago</td><td><span class="badge up"><span class="dot up"></span>active</span></td></tr>
+            <tr><td class="mono muted">mf_live_ff21</td><td><span class="chip">enterprise</span></td><td class="muted">chat</td><td class="muted">ci-pipeline</td><td class="tnum">100/min</td><td class="mono faint">14d ago</td><td><span class="badge idle"><span class="dot idle"></span>revoked</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- LOGS -->
+    <section class="screen" id="logs">
+      <div class="page-head"><div><div class="h20">Logs</div><div class="sub">Every request is an immutable observation. Filter, then open any row for the full trace</div></div><button class="btn secondary" onclick="return false">Export JSONL</button></div>
+      <div class="toolbar" style="flex-wrap:wrap">
+        <div class="seg"><button class="on">All</button><button>Errors</button><button>Clamped</button></div>
+        <span class="chip mono">model: any ✕</span><span class="chip mono">provider: any ✕</span><span class="chip mono">cost center: any ✕</span>
+        <div class="search" style="min-width:220px"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m11 11 3 3" stroke-linecap="round"/></svg><input placeholder="trace id or free text"></div>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Time</th><th>Trace</th><th>Model</th><th>Provider</th><th>Status</th><th class="tnum">Latency</th><th class="tnum">Tokens</th><th class="tnum">Cost</th><th>App · Action</th></tr></thead>
+          <tbody id="logRows">
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:22:07</td><td class="mono">tr_9f2c1a</td><td>gpt-4o</td><td>openai</td><td><span class="badge up"><span class="dot up"></span>200</span></td><td class="tnum">412 ms</td><td class="tnum">1.2k/384</td><td class="tnum">$0.0184</td><td class="muted">platform · summarize</td></tr>
+            <tr class="rowlink down-row" onclick="openTrace()"><td class="mono muted">14:21:58</td><td class="mono">tr_77b0e4</td><td>gpt-4o</td><td>azure→openai</td><td><span class="badge down"><span class="dot down live"></span>504</span></td><td class="tnum down">timeout</td><td class="tnum faint">n/a</td><td class="tnum faint">n/a</td><td class="muted">platform · summarize</td></tr>
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:21:41</td><td class="mono">tr_5c02aa</td><td>claude-3-5-sonnet</td><td>anthropic</td><td><span class="badge up"><span class="dot up"></span>200</span></td><td class="tnum">889 ms</td><td class="tnum">2.0k/711</td><td class="tnum">$0.0421</td><td class="muted">research · draft</td></tr>
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:21:20</td><td class="mono">tr_1d9f30</td><td>text-embedding-3</td><td>openai</td><td><span class="badge amber"><span class="dot amber"></span>clamp</span></td><td class="tnum">96 ms</td><td class="tnum">512/0</td><td class="tnum amber">est. $0.0002</td><td class="muted">mobile · embed</td></tr>
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:20:55</td><td class="mono">tr_b38c12</td><td>gpt-4o-mini</td><td>openai</td><td><span class="badge up"><span class="dot up"></span>200</span></td><td class="tnum">241 ms</td><td class="tnum">820/240</td><td class="tnum">$0.0009</td><td class="muted">mobile · chat</td></tr>
+            <tr class="rowlink" onclick="openTrace()"><td class="mono muted">14:20:31</td><td class="mono">tr_af7712</td><td>gpt-4o</td><td>openai</td><td><span class="badge down"><span class="dot down"></span>deny</span></td><td class="tnum faint">n/a</td><td class="tnum faint">n/a</td><td class="tnum faint">n/a</td><td class="muted">support · triage</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note" style="margin-top:12px">Token chunks are never stored as events. Capture is bounded and redacted per each route's capture policy.</div>
+    </section>
+
+    <!-- MODELS -->
+    <section class="screen" id="models">
+      <div class="page-head"><div><div class="h20">Models</div><div class="sub">The provider registry: capabilities are tri-state, prices carry a source, and a model is routable only when a target exists</div></div></div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>canonical model</th><th>offering</th><th style="text-align:center">stream</th><th style="text-align:center">tools</th><th style="text-align:center">vision</th><th class="tnum">context</th><th class="tnum">price /1M in</th><th>source</th><th>routable</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">gpt-4o</td><td class="muted">openai:gpt-4o-2024-11</td><td style="text-align:center"><span class="dot up"></span></td><td style="text-align:center"><span class="dot up"></span></td><td style="text-align:center"><span class="dot up"></span></td><td class="tnum">128k</td><td class="tnum">$2.50</td><td><span class="chip">provider_verified</span></td><td><span class="badge up"><span class="dot up"></span>yes</span></td></tr>
+            <tr><td class="mono">claude-3-5-sonnet</td><td class="muted">anthropic:20241022</td><td style="text-align:center"><span class="dot up"></span></td><td style="text-align:center"><span class="dot up"></span></td><td style="text-align:center"><span class="dot up"></span></td><td class="tnum">200k</td><td class="tnum">$3.00</td><td><span class="chip">provider_verified</span></td><td><span class="badge up"><span class="dot up"></span>yes</span></td></tr>
+            <tr><td class="mono">gpt-4o (azure)</td><td class="muted">azure:eastus2/gpt4o</td><td style="text-align:center"><span class="dot up"></span></td><td style="text-align:center"><span class="dot up"></span></td><td style="text-align:center"><span class="dot amber"></span></td><td class="tnum">128k</td><td class="tnum">$2.20</td><td><span class="chip">operator_override</span></td><td><span class="badge up"><span class="dot up"></span>yes</span></td></tr>
+            <tr><td class="mono">llama-3.1-405b</td><td class="muted">vertex:llama-3.1-405b</td><td style="text-align:center"><span class="dot up"></span></td><td style="text-align:center"><span class="dot amber"></span></td><td style="text-align:center"><span class="faint">n/a</span></td><td class="tnum">128k</td><td class="tnum amber">~$2.70</td><td><span class="chip">aggregator</span></td><td><span class="badge idle"><span class="dot idle"></span>no target</span></td></tr>
+            <tr><td class="mono">mistral-large</td><td class="muted">vertex:mistral-large</td><td style="text-align:center"><span class="dot up"></span></td><td style="text-align:center"><span class="dot amber"></span></td><td style="text-align:center"><span class="faint">n/a</span></td><td class="tnum">128k</td><td class="tnum faint">unknown</td><td><span class="chip">unknown</span></td><td><span class="badge idle"><span class="dot idle"></span>no price</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="note" style="margin-top:12px">Amber tools/vision = <span class="mono">unknown</span>, not unsupported. Models with <span class="mono">unknown</span> price are visible for observability but ineligible for a hard budget.</div>
+    </section>
+
+    <!-- POLICIES -->
+    <section class="screen" id="policies">
+      <div class="page-head"><div><div class="h20">Policies</div><div class="sub">Deny-first entitlements and data-handling. Simulate a request against the draft revision before publishing it</div></div><span class="chip mono">revision sha256:4d1c… · draft</span></div>
+      <div class="grid" style="grid-template-columns:1.5fr 1fr">
+        <div>
+          <div class="h14" style="margin-bottom:10px">Model entitlements</div>
+          <div class="matrix">
+            <div class="mrow" style="background:var(--hover)"><div class="mcell upper" style="color:var(--fg-faint)">scope</div><div class="mcell upper" style="color:var(--fg-faint)">gpt-4o</div><div class="mcell upper" style="color:var(--fg-faint)">o1</div><div class="mcell upper" style="color:var(--fg-faint)">sonnet</div><div class="mcell upper" style="color:var(--fg-faint)">embed</div></div>
+            <div class="mrow"><div class="mcell">team: platform</div><div class="mcell"><span class="up">allow</span></div><div class="mcell"><span class="up">allow</span></div><div class="mcell"><span class="up">allow</span></div><div class="mcell"><span class="up">allow</span></div></div>
+            <div class="mrow"><div class="mcell">team: research</div><div class="mcell"><span class="up">allow</span></div><div class="mcell"><span class="up">allow</span></div><div class="mcell"><span class="up">allow</span></div><div class="mcell"><span class="faint">deny</span></div></div>
+            <div class="mrow"><div class="mcell">team: support</div><div class="mcell"><span class="up">allow</span></div><div class="mcell"><span class="down">deny</span></div><div class="mcell"><span class="up">allow</span></div><div class="mcell"><span class="up">allow</span></div></div>
+            <div class="mrow"><div class="mcell">public_app</div><div class="mcell"><span class="down">deny</span></div><div class="mcell"><span class="down">deny</span></div><div class="mcell"><span class="down">deny</span></div><div class="mcell"><span class="up">allow</span></div></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="h14">Simulator</div>
+          <div class="grid" style="margin-top:14px">
+            <div class="field"><label>profile</label><div class="select" style="display:flex;align-items:center">enterprise_egress</div></div>
+            <div class="field"><label>key → team</label><div class="select" style="display:flex;align-items:center">mf_live_7x02 → research</div></div>
+            <div class="field"><label>model</label><div class="select" style="display:flex;align-items:center;justify-content:space-between">text-embedding-3 <span class="faint">▾</span></div></div>
+          </div>
+          <button class="btn primary" style="width:100%;margin-top:14px">Simulate</button>
+          <div class="banner down" style="margin-top:14px"><span class="dot down"></span><div><b style="font-weight:600">deny</b> · <span class="mono">ENTITLEMENT_MODEL_NOT_ALLOWED</span><div class="mono" style="font-size:11px;margin-top:4px;opacity:.85">research is not entitled to embed</div></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BUDGETS -->
+    <section class="screen" id="budgets">
+      <div class="page-head"><div><div class="h20">Budgets</div><div class="sub">Cost centers and spend caps. Hard caps reserve against Postgres before dispatch and fail closed on unknown prices</div></div><button class="btn primary" onclick="openSheet('budgetSheet')">New Budget</button></div>
+      <div class="card" style="padding:8px 22px">
+        <div class="tree-row upper" style="color:var(--fg-faint)"><div>account</div><div>enforce</div><div>burn</div><div class="tnum">window</div><div class="tnum">spend / limit</div></div>
+        <div class="tree-row"><div>workspace: smw-prod</div><div><span class="chip">advisory</span></div><div class="bar"><i style="width:64%;background:var(--up)"></i></div><div class="tnum mono faint">monthly</div><div class="tnum mono">$7,250 / $12,000</div></div>
+        <div class="tree-row"><div class="indent">cc-platform</div><div><span class="badge idle" style="background:var(--chip-bg)">hard</span></div><div class="bar"><i style="width:61%;background:var(--up)"></i></div><div class="tnum mono faint">monthly</div><div class="tnum mono">$3,050 / $5,000</div></div>
+        <div class="tree-row"><div class="indent">cc-research</div><div><span class="chip">advisory</span></div><div class="bar"><i style="width:88%;background:var(--verifying)"></i></div><div class="tnum mono faint">monthly</div><div class="tnum mono amber">$2,640 / $3,000</div></div>
+        <div class="tree-row" style="box-shadow:inset 3px 0 0 var(--down)"><div class="indent">cc-support</div><div><span class="badge idle" style="background:var(--chip-bg)">hard</span></div><div class="bar"><i style="width:104%;background:var(--down)"></i></div><div class="tnum mono faint">monthly</div><div class="tnum mono down">$1,560 / $1,500</div></div>
+      </div>
+      <div class="banner down" style="margin-top:14px"><span class="dot down live"></span><span><b style="font-weight:600">cc-support</b> exceeded its hard cap. 214 requests denied in the last hour. <a onclick="go('logs')" style="cursor:pointer;color:inherit;text-decoration:underline">View in Logs</a> (reason <span class="mono">BUDGET_HARD_EXCEEDED</span>).</span></div>
+    </section>
+
+    <!-- AUDIT -->
+    <section class="screen" id="audit">
+      <div class="page-head"><div><div class="h20">Audit</div><div class="sub">Append-only record of policy decisions and config mutations. Every row links to its trace or revision</div></div><button class="btn secondary">Configure SIEM</button></div>
+      <div class="card">
+        <div class="evt"><span class="dot down" style="margin-top:4px"></span><div><div>Request denied · <span class="mono">BUDGET_HARD_EXCEEDED</span></div><div class="mono faint" style="font-size:12px;margin-top:3px">key mf_live_… · cc-support · trace tr_af7712</div></div><time class="mono faint">14:20:31</time></div>
+        <div class="evt"><span class="dot idle" style="margin-top:4px"></span><div><div>Config revision applied · <span class="mono">sha256:8c41…</span></div><div class="mono faint" style="font-size:12px;margin-top:3px">stephen@smw.ai · +2 routes, −1 entitlement · tripwire approved</div></div><time class="mono faint">13:58:02</time></div>
+        <div class="evt"><span class="dot idle" style="margin-top:4px"></span><div><div>Virtual key revoked · <span class="mono">mf_live_ff21</span></div><div class="mono faint" style="font-size:12px;margin-top:3px">stephen@smw.ai · before f0a1… → after 0000…</div></div><time class="mono faint">11:04:20</time></div>
+        <div class="evt"><span class="dot amber" style="margin-top:4px"></span><div><div>Request clamped · <span class="mono">MAX_OUTPUT_TOKENS</span></div><div class="mono faint" style="font-size:12px;margin-top:3px">public_app · mobile · trace tr_1d9f30</div></div><time class="mono faint">14:21:20</time></div>
+      </div>
+    </section>
+
+    <!-- DEPLOYMENTS -->
+    <section class="screen" id="deployments">
+      <div class="page-head"><div><div class="h20">Deployments</div><div class="sub">The two front doors. A profile is bound to its hostname. No header, token claim, or body field can select or upgrade it</div></div><button class="btn primary" onclick="openSheet('profileSheet')">New Profile</button></div>
+      <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))">
+        <div class="pcard"><div class="top"><div class="name">public_app</div><span class="badge up"><span class="dot up"></span>live</span></div><div class="mono faint" style="margin-top:12px">api.smw.ai</div><div class="meta" style="flex-direction:column;gap:8px"><span>auth: short-lived end-user token</span><span>exposure: public internet</span><span>config v. sha256:8c41…</span></div></div>
+        <div class="pcard"><div class="top"><div class="name">enterprise_egress</div><span class="badge up"><span class="dot up"></span>live</span></div><div class="mono faint" style="margin-top:12px">egress.internal.smw.ai</div><div class="meta" style="flex-direction:column;gap:8px"><span>auth: OIDC + workload identity</span><span>exposure: VPC only</span><span>config v. sha256:8c41…</span></div></div>
+        <div class="pcard" style="border-style:dashed;display:flex;flex-direction:column;justify-content:center;align-items:center;color:var(--fg-muted);text-align:center;min-height:150px"><div>Bind another hostname to add a front door.</div><button class="btn secondary sm" style="margin-top:12px" onclick="openSheet('profileSheet')">New Profile</button></div>
+      </div>
+    </section>
+
+    <!-- PUBLISH -->
+    <section class="screen" id="publish">
+      <div class="page-head"><div><div class="h20">Publish</div><div class="sub">Plan the Edge Config snapshot, clear the tripwire, then apply. Rollback republishes any prior revision</div></div><div class="mono faint" style="font-size:12px;text-align:right">base sha256:1a90… → target sha256:4d1c…<br>plan sha256:e7b3…</div></div>
+      <div class="banner amber" style="margin-bottom:14px"><span class="dot amber live"></span><span>Tripwire holds 1 destructive change for approval. Entitlement removal, <span class="mono">research → embed</span>.</span></div>
+      <div class="diffwrap">
+        <div class="diff-line diff-add"><span class="g">+</span><span>route</span><span class="muted" style="color:inherit">fast-chat · weighted [gpt-4o-mini 50, claude-haiku 50]</span></div>
+        <div class="diff-line diff-mod"><span class="g">~</span><span>route</span><span style="color:inherit">gpt-4o · target weights 80/20 → 70/30</span></div>
+        <div class="diff-line diff-add"><span class="g">+</span><span>budget</span><span style="color:inherit">cc-support · hard · $1,500 / monthly</span></div>
+        <div class="diff-line diff-del"><span class="g">−</span><span>entitlement</span><span style="color:inherit">research → text-embedding-3 (deny)</span></div>
+        <div class="diff-line diff-mod"><span class="g">~</span><span>price</span><span style="color:inherit">azure:gpt4o operator_override $2.40 → $2.20</span></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+        <button class="btn secondary">Discard changes</button>
+        <button class="btn danger-outline">Approve tripwire</button>
+        <button class="btn primary">Apply revision</button>
+      </div>
+      <div class="h14" style="margin:26px 0 10px">History</div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>revision</th><th>by</th><th>changes</th><th>result</th><th>when</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="mono">sha256:8c41…</td><td class="muted">stephen@smw.ai</td><td class="muted">+2 routes, −1 entitlement</td><td><span class="badge up"><span class="dot up"></span>accepted</span></td><td class="mono faint">13:58</td><td><button class="btn secondary sm">Roll back</button></td></tr>
+            <tr><td class="mono">sha256:1a90…</td><td class="muted">stephen@smw.ai</td><td class="muted">+1 provider, +3 offerings</td><td><span class="badge up"><span class="dot up"></span>accepted</span></td><td class="mono faint">Jul 18</td><td><button class="btn secondary sm">Roll back</button></td></tr>
+            <tr><td class="mono">sha256:0d55…</td><td class="muted">agent · ci</td><td class="muted">~ retry policy</td><td><span class="badge down"><span class="dot down"></span>rejected</span></td><td class="mono faint">Jul 18</td><td><span class="faint mono" style="font-size:12px">precondition</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="screen" id="settings">
+      <div class="page-head"><div><div class="h20">Settings</div><div class="sub">Workspace, teams, cost centers, machine tokens, and CLI device authorization</div></div></div>
+      <div class="cards" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr))">
+        <div class="pcard"><div class="name">Workspace</div><div class="grid" style="margin-top:14px"><div class="field"><label>Name</label><input class="input" value="smw-prod"></div><div class="field"><label>Region</label><div class="select" style="display:flex;align-items:center">us-east-1 (Neon)</div></div></div></div>
+        <div class="pcard"><div class="name">API tokens</div><div class="muted" style="font-size:13px;margin-top:6px">Scoped machine tokens for <span class="mono">mfctl</span> and agents.</div><div class="mono faint" style="margin-top:12px">mf_tok_3fk9••••</div><button class="btn secondary sm" style="margin-top:14px">Create Token</button></div>
+        <div class="pcard"><div class="name">CLI device auth</div><div class="muted" style="font-size:13px;margin-top:6px">Pair the CLI with a one-time device code.</div><div class="keybox" style="margin-top:12px;justify-content:center">WDJF-7K2Q</div><button class="btn secondary sm" style="margin-top:14px">Authorize device</button></div>
+        <div class="pcard" style="border-color:var(--down-border)"><div class="name down">Danger zone</div><div class="muted" style="font-size:13px;margin-top:6px">Delete workspace and all durable state.</div><button class="btn danger-outline sm" style="margin-top:14px">Delete Workspace</button></div>
+      </div>
+    </section>
+
+    <div class="footer"><span class="dot up"></span>Gateway healthy · 4 providers connected · region us-east-1</div>
+  </main>
+</div>
+
+<!-- Overlay + Sheets + Modals -->
+<div class="overlay" id="overlay" onclick="closeAll()"></div>
+
+<!-- Route editor sheet -->
+<aside class="sheet" id="routeSheet">
+  <div class="head"><div class="t">Edit route · <span class="mono">gpt-4o</span></div><button class="x" onclick="closeAll()">✕</button></div>
+  <div class="body">
+    <div class="field"><label>public_name</label><input class="input mono" value="gpt-4o"></div>
+    <div class="field"><label>endpoint_kind</label><div class="select" style="display:flex;align-items:center;justify-content:space-between">chat.completions <span class="faint">▾</span></div></div>
+    <div class="field"><label>mode</label><div class="seg" style="width:max-content"><button class="on">weighted</button><button>ordered</button></div></div>
+    <div>
+      <label style="font-size:13px;font-weight:500">Targets</label>
+      <div style="border:1px solid var(--border);border-radius:8px;margin-top:8px">
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border)"><span class="dot up"></span><span class="mono" style="font-size:13px">openai:gpt-4o</span><span class="chip mono" style="margin-left:auto">weight 70</span></div>
+        <div style="display:flex;align-items:center;gap:10px;padding:12px 14px"><span class="dot amber live"></span><span class="mono" style="font-size:13px">azure:eastus2/gpt4o</span><span class="chip mono" style="margin-left:auto">weight 30</span></div>
+      </div>
+      <button class="btn tertiary sm" style="margin-top:8px">+ Add target</button>
+    </div>
+    <div class="field"><label>retry / timeout</label><div class="select" style="display:flex;align-items:center">2 retries · 30s · failover on 5xx, timeout</div></div>
+    <div class="banner amber"><span class="dot amber"></span>Changes stage as a draft. They reach the gateway only after Publish.</div>
+  </div>
+  <div class="foot"><button class="btn tertiary" onclick="closeAll()">Cancel</button><button class="btn primary" onclick="closeAll()">Stage changes</button></div>
+</aside>
+
+<!-- Provider sheet -->
+<aside class="sheet" id="providerSheet">
+  <div class="head"><div class="t">Add provider</div><button class="x" onclick="closeAll()">✕</button></div>
+  <div class="body">
+    <div class="field"><label>Provider</label><div class="select" style="display:flex;align-items:center;justify-content:space-between">OpenAI <span class="faint">▾</span></div></div>
+    <div class="field"><label>API secret</label><input class="input mono" type="password" value="sk-proj-live-secret-value"></div>
+    <div class="banner amber"><span class="dot amber"></span>Shown once. Manifold stores an encrypted reference and a display prefix, never the plaintext.</div>
+    <div class="note">Validate runs a live call against the provider before the credential is saved.</div>
+  </div>
+  <div class="foot"><button class="btn tertiary" onclick="closeAll()">Cancel</button><button class="btn primary" onclick="closeAll()">Validate &amp; Save</button></div>
+</aside>
+
+<!-- Budget sheet -->
+<aside class="sheet" id="budgetSheet">
+  <div class="head"><div class="t">New budget</div><button class="x" onclick="closeAll()">✕</button></div>
+  <div class="body">
+    <div class="field"><label>Scope</label><div class="select" style="display:flex;align-items:center;justify-content:space-between">cost center · cc-support <span class="faint">▾</span></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="field"><label>Unit</label><div class="select" style="display:flex;align-items:center">cost microunits</div></div>
+      <div class="field"><label>Window</label><div class="select" style="display:flex;align-items:center">monthly</div></div>
+    </div>
+    <div class="field"><label>Limit (USD)</label><input class="input mono" value="1500"></div>
+    <div class="field"><label>Enforcement</label><div class="seg" style="width:max-content"><button>advisory</button><button class="on">hard</button></div></div>
+    <div class="banner down"><span class="dot down"></span>A hard cap needs a <span class="mono">provider_verified</span> or <span class="mono">operator_override</span> price. <span class="mono">mistral-large</span> is <span class="mono">unknown</span>. Set an override in Models or it fails closed.</div>
+  </div>
+  <div class="foot"><button class="btn tertiary" onclick="closeAll()">Cancel</button><button class="btn primary" onclick="closeAll()">Stage budget</button></div>
+</aside>
+
+<!-- Profile sheet -->
+<aside class="sheet" id="profileSheet">
+  <div class="head"><div class="t">New ingress profile</div><button class="x" onclick="closeAll()">✕</button></div>
+  <div class="body">
+    <div class="field"><label>Hostname</label><input class="input mono" value="egress.internal.smw.ai"></div>
+    <div class="field"><label>Mode</label><div class="seg" style="width:max-content"><button>public_app</button><button class="on">enterprise_egress</button></div></div>
+    <div class="field"><label>Authentication</label><div class="select" style="display:flex;align-items:center">OIDC / SAML + workload identity</div></div>
+    <div class="field"><label>Network exposure</label><div class="select" style="display:flex;align-items:center">VPC only</div></div>
+    <div class="banner amber"><span class="dot amber"></span>The profile binds to this hostname. Trust mode cannot be selected or upgraded by any request.</div>
+  </div>
+  <div class="foot"><button class="btn tertiary" onclick="closeAll()">Cancel</button><button class="btn primary" onclick="closeAll()">Stage profile</button></div>
+</aside>
+
+<!-- Trace drilldown -->
+<aside class="sheet wide" id="traceDrawer">
+  <div class="head"><div class="t">Trace · <span class="mono">tr_77b0e4</span></div><button class="x" onclick="closeAll()">✕</button></div>
+  <div class="body">
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><span class="badge down"><span class="dot down"></span>504 timeout</span><span class="chip mono">gpt-4o</span><span class="chip mono">weighted</span><span class="chip mono">platform · summarize</span></div>
+    <div>
+      <div class="upper" style="margin-bottom:10px">Span waterfall</div>
+      <div class="wf">
+        <div class="wf-row"><span class="wf-lab">accepted</span><div class="wf-track"><span class="wf-bar" style="left:0;width:2%;background:var(--fg-muted)"></span></div><span class="mono faint" style="text-align:right">2 ms</span></div>
+        <div class="wf-row"><span class="wf-lab"><span class="dot down"></span>attempt · azure</span><div class="wf-track"><span class="wf-bar" style="left:2%;width:60%;background:var(--down)"></span></div><span class="mono down" style="text-align:right">30,000 ms</span></div>
+        <div class="wf-row"><span class="wf-lab"><span class="dot up"></span>attempt · openai</span><div class="wf-track"><span class="wf-bar" style="left:62%;width:34%;background:var(--up)"></span></div><span class="mono" style="text-align:right">410 ms</span></div>
+        <div class="wf-row"><span class="wf-lab">terminal</span><div class="wf-track"><span class="wf-bar" style="left:96%;width:3%;background:var(--fg-muted)"></span></div><span class="mono faint" style="text-align:right">1 ms</span></div>
+      </div>
+      <div class="note" style="margin-top:8px">Attempt 1 (azure) timed out at 30s and failed over. Attempt 2 (openai) ran 410 ms but exceeded the request budget, returning 504.</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="card" style="padding:16px"><div class="upper">Usage &amp; cost</div><div style="margin-top:10px;font-size:13px;line-height:1.9" class="mono"><div>input <span class="muted">1,204</span></div><div>output <span class="muted">0</span></div><div>cost <span class="amber">estimated $0.0060</span></div></div></div>
+      <div class="card" style="padding:16px"><div class="upper">Policy decision</div><div style="margin-top:10px"><span class="badge amber"><span class="dot amber"></span>clamp</span></div><div class="mono faint" style="font-size:12px;margin-top:8px">MAX_OUTPUT_TOKENS<br>adapter rev a17 · price rev p09</div></div>
+    </div>
+    <div><div class="upper" style="margin-bottom:8px">Capture <span class="faint">· redacted per route policy: bounded_1k</span></div><pre class="keybox" style="display:block;white-space:pre-wrap">{ "messages": [ { "role": "user", "content": "Summarize ‹redacted 4.2kB›" } ], "max_tokens": 800 }</pre></div>
+    <a class="mono" style="font-size:12px;cursor:pointer" onclick="go('audit');closeAll()">→ linked audit event</a>
+  </div>
+</aside>
+
+<!-- Copy-once key modal -->
+<div class="modal" id="keyModal">
+  <div class="head"><div class="t" style="font-size:16px;font-weight:600">Key minted · <span class="mono">mf_live_a1c9</span></div></div>
+  <div class="body">
+    <div class="banner amber" style="margin-bottom:14px"><span class="dot amber"></span>Copy it now. This is the only time the full key is shown.</div>
+    <div class="keybox"><span id="keyval">mf_live_a1c94f2e8b7d3a06c15e9027fb44dd81</span><button class="btn secondary sm" style="margin-left:auto" onclick="copyKey()">Copy</button></div>
+    <div style="display:flex;gap:16px;margin-top:14px" class="muted"><span style="font-size:13px">profile <span class="mono">enterprise</span></span><span style="font-size:13px">scopes <span class="mono">chat, embeddings</span></span><span style="font-size:13px">rate <span class="mono">600/min</span></span></div>
+  </div>
+  <div class="foot"><button class="btn primary" onclick="closeAll()">Done, I saved it</button></div>
+</div>
+
+<!-- Command palette -->
+<div class="modal palette" id="palette" role="dialog" aria-label="Command menu">
+  <div class="cmd-search">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m11 11 3 3" stroke-linecap="round"/></svg>
+    <input id="cmdInput" placeholder="Search actions, screens, routes, keys, traces" oninput="filterCmd(this.value)" autocomplete="off" spellcheck="false">
+    <span class="k">esc</span>
+  </div>
+  <div class="cmd-body" id="cmdBody">
+    <div class="cmd-group" data-group>Actions</div>
+    <div class="cmd-item" data-label="mint virtual key new credential token" onclick="go('keys');openModal('keyModal')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="3.2"/><path d="m8.3 8.3 4 4M11 11l1.5-1.5" stroke-linecap="round"/></svg><span class="lab">Mint virtual key</span><span class="meta">Keys</span></div>
+    <div class="cmd-item" data-label="add provider credential openai anthropic azure vertex" onclick="go('providers');openSheet('providerSheet')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="4" rx="1"/><rect x="2" y="9" width="12" height="4" rx="1"/></svg><span class="lab">Add provider</span><span class="meta">Providers</span></div>
+    <div class="cmd-item" data-label="new route model target weighted ordered" onclick="go('routes');openSheet('routeSheet')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 4h8M2 8h12M2 12h6"/></svg><span class="lab">New route</span><span class="meta">Routes</span></div>
+    <div class="cmd-item" data-label="new budget cost center spend cap hard advisory" onclick="go('budgets');openSheet('budgetSheet')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v6M6.3 6.6c0-.9.8-1.4 1.7-1.4s1.7.4 1.7 1.3c0 1.8-3.4 1-3.4 2.9 0 .9.8 1.4 1.7 1.4s1.7-.5 1.7-1.4" stroke-linecap="round"/></svg><span class="lab">New budget</span><span class="meta">Budgets</span></div>
+    <div class="cmd-item" data-label="publish revision apply plan changes deploy tripwire" onclick="go('publish')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V3M5 6l3-3 3 3M3 12.5h10"/></svg><span class="lab">Publish changes</span><span class="meta"><span class="badge amber" style="padding:1px 7px 1px 6px"><span class="dot amber"></span>3</span></span></div>
+
+    <div class="cmd-group" data-group>Jump to</div>
+    <div class="cmd-item" data-label="overview home dashboard traffic spend health" onclick="go('overview')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg><span class="lab">Overview</span><span class="meta">Gateway</span></div>
+    <div class="cmd-item" data-label="routes model strings targets revisions" onclick="go('routes')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 4h8M2 8h12M2 12h6"/></svg><span class="lab">Routes</span><span class="meta">Gateway</span></div>
+    <div class="cmd-item" data-label="providers credentials offerings openai anthropic" onclick="go('providers')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="4" rx="1"/><rect x="2" y="9" width="12" height="4" rx="1"/></svg><span class="lab">Providers</span><span class="meta">Gateway</span></div>
+    <div class="cmd-item" data-label="keys virtual keys scopes rotate revoke" onclick="go('keys')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="3.2"/><path d="m8.3 8.3 4 4M11 11l1.5-1.5" stroke-linecap="round"/></svg><span class="lab">Keys</span><span class="meta">Gateway</span></div>
+    <div class="cmd-item" data-label="logs requests traces observations errors" onclick="go('logs')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 3v10M3 5h9M3 8.5h11M3 12h7"/></svg><span class="lab">Logs</span><span class="meta">Gateway</span></div>
+    <div class="cmd-item" data-label="models registry capabilities pricing routable" onclick="go('models')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 2.5v11M2.5 8h11" stroke-width="1"/></svg><span class="lab">Models</span><span class="meta">Gateway</span></div>
+    <div class="cmd-item" data-label="policies entitlements data handling simulator deny" onclick="go('policies')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 2 3 4v3.5C3 10.5 5 12.6 8 14c3-1.4 5-3.5 5-6.5V4L8 2Z"/></svg><span class="lab">Policies</span><span class="meta">Governance</span></div>
+    <div class="cmd-item" data-label="budgets cost centers caps forecasts reservations" onclick="go('budgets')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v6M6.3 6.6c0-.9.8-1.4 1.7-1.4s1.7.4 1.7 1.3c0 1.8-3.4 1-3.4 2.9 0 .9.8 1.4 1.7 1.4s1.7-.5 1.7-1.4" stroke-linecap="round"/></svg><span class="lab">Budgets</span><span class="meta">Governance</span></div>
+    <div class="cmd-item" data-label="audit policy decisions mutations timeline siem" onclick="go('audit')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2h6l3 3v9H4z"/><path d="M6.5 8.5 8 10l3-3"/></svg><span class="lab">Audit</span><span class="meta">Governance</span></div>
+    <div class="cmd-item" data-label="deployments ingress profiles hostnames front doors" onclick="go('deployments')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 1.8 2.2 8 8 14.2 13.8 8 8 1.8Z"/></svg><span class="lab">Deployments</span><span class="meta">Config</span></div>
+    <div class="cmd-item" data-label="publish config revisions plan apply rollback history" onclick="go('publish')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 10V3M5 6l3-3 3 3M3 12.5h10"/></svg><span class="lab">Publish</span><span class="meta">Config</span></div>
+    <div class="cmd-item" data-label="settings workspace teams tokens cli device auth" onclick="go('settings')"><svg class="ico" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4"/></svg><span class="lab">Settings</span><span class="meta">Config</span></div>
+
+    <div class="cmd-group" data-group>Recent traces</div>
+    <div class="cmd-item" data-label="tr_77b0e4 504 timeout error gpt-4o azure failover" onclick="go('logs');openTrace()"><span class="ico" style="display:grid;place-items:center"><span class="dot down"></span></span><span class="lab mono" style="font-size:13px">tr_77b0e4</span><span class="meta"><span class="down">504 timeout</span>14:21</span></div>
+    <div class="cmd-item" data-label="tr_9f2c1a 200 ok gpt-4o openai summarize" onclick="go('logs');openTrace()"><span class="ico" style="display:grid;place-items:center"><span class="dot up"></span></span><span class="lab mono" style="font-size:13px">tr_9f2c1a</span><span class="meta">200 · 14:22</span></div>
+    <div class="cmd-item" data-label="tr_5c02aa 200 ok claude sonnet anthropic draft" onclick="go('logs');openTrace()"><span class="ico" style="display:grid;place-items:center"><span class="dot up"></span></span><span class="lab mono" style="font-size:13px">tr_5c02aa</span><span class="meta">200 · 14:21</span></div>
+  </div>
+  <div class="cmd-empty" id="cmdEmpty">No matches</div>
+  <div class="cmd-foot">
+    <span><span class="kk">↑</span><span class="kk">↓</span>Move</span>
+    <span><span class="kk">↵</span>Open</span>
+    <span><span class="kk">esc</span>Close</span>
+    <span class="mono" style="margin-left:auto">Manifold</span>
+  </div>
+</div>
+
+<script>
+var cmdActive = 0;
+
+function setTheme(t){
+  document.documentElement.setAttribute('data-theme', t);
+  var d=document.getElementById('mDark'), l=document.getElementById('mLight');
+  if(d) d.classList.toggle('on', t==='dark');
+  if(l) l.classList.toggle('on', t==='light');
+  try{ localStorage.setItem('mf_theme', t); }catch(e){}
+}
+function setProfile(p){
+  document.documentElement.setAttribute('data-profile', p);
+  var note = document.getElementById('ovProfileNote');
+  if(note) note.textContent = p==='public_app' ? '· public_app, governance hidden' : (p==='all' ? '· all profiles' : '· enterprise_egress');
+  var ovb = document.getElementById('ovBudget');
+  if(ovb) ovb.style.display = (p==='public_app') ? 'none' : '';
+  var active = document.querySelector('.screen.active');
+  if(p==='public_app' && active && ['policies','budgets','audit'].indexOf(active.id)>-1){ go('overview'); }
+  try{ localStorage.setItem('mf_profile', p); }catch(e){}
+}
+function go(id){
+  closeUserMenu();
+  document.querySelectorAll('.screen').forEach(function(s){ s.classList.toggle('active', s.id===id); });
+  document.querySelectorAll('.nav-item[data-screen]').forEach(function(n){ n.classList.toggle('active', n.getAttribute('data-screen')===id); });
+  closeAll();
+  window.scrollTo(0,0);
+}
+function openSheet(id){ closeUserMenu(); document.getElementById('overlay').classList.add('open'); document.getElementById(id).classList.add('open'); }
+function openModal(id){ closeUserMenu(); document.getElementById('overlay').classList.add('open'); document.getElementById(id).classList.add('open'); }
+function openTrace(){ openSheet('traceDrawer'); }
+function closeAll(){
+  closeUserMenu();
+  document.getElementById('overlay').classList.remove('open');
+  document.querySelectorAll('.sheet.open, .modal.open').forEach(function(el){ el.classList.remove('open'); });
+}
+function copyKey(){
+  var v = document.getElementById('keyval').textContent;
+  try{ navigator.clipboard.writeText(v); }catch(e){}
+}
+
+/* User menu */
+function toggleUserMenu(e){ if(e){ e.stopPropagation(); } document.getElementById('userMenu').classList.toggle('open'); }
+function closeUserMenu(){ var m=document.getElementById('userMenu'); if(m) m.classList.remove('open'); }
+document.addEventListener('click', function(e){
+  var wrap=document.getElementById('userWrap');
+  if(wrap && !wrap.contains(e.target)) closeUserMenu();
+});
+
+/* Command palette */
+function openPalette(){
+  closeUserMenu();
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('palette').classList.add('open');
+  var inp=document.getElementById('cmdInput');
+  inp.value=''; filterCmd('');
+  setTimeout(function(){ inp.focus(); }, 20);
+}
+function togglePalette(){
+  var pal=document.getElementById('palette');
+  if(pal.classList.contains('open')) closeAll(); else openPalette();
+}
+function visibleCmdItems(){
+  return Array.prototype.filter.call(document.querySelectorAll('#cmdBody .cmd-item'), function(el){ return el.style.display!=='none'; });
+}
+function setActiveCmd(i){
+  var items=visibleCmdItems();
+  if(!items.length){ cmdActive=0; return; }
+  cmdActive=(i+items.length)%items.length;
+  items.forEach(function(el,idx){ el.classList.toggle('active', idx===cmdActive); });
+  items[cmdActive].scrollIntoView({block:'nearest'});
+}
+function moveCmd(d){ setActiveCmd(cmdActive+d); }
+function activateCmd(){ var items=visibleCmdItems(); if(items[cmdActive]){ items[cmdActive].click(); } }
+function filterCmd(q){
+  q=(q||'').trim().toLowerCase();
+  var body=document.getElementById('cmdBody');
+  var anyVisible=false;
+  body.querySelectorAll('.cmd-item').forEach(function(el){
+    var hay=(el.getAttribute('data-label')||'')+' '+el.textContent.toLowerCase();
+    var show=!q || hay.indexOf(q)>-1;
+    el.style.display=show?'':'none';
+    if(show){ anyVisible=true; }
+  });
+  body.querySelectorAll('.cmd-group').forEach(function(g){
+    var vis=false, n=g.nextElementSibling;
+    while(n && !n.hasAttribute('data-group')){
+      if(n.classList.contains('cmd-item') && n.style.display!=='none'){ vis=true; break; }
+      n=n.nextElementSibling;
+    }
+    g.style.display=vis?'':'none';
+  });
+  document.getElementById('cmdEmpty').style.display=anyVisible?'none':'block';
+  setActiveCmd(0);
+}
+
+document.addEventListener('keydown', function(e){
+  var pal=document.getElementById('palette');
+  var palOpen=pal && pal.classList.contains('open');
+  if(e.key==='Escape'){ closeAll(); return; }
+  if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='k'){ e.preventDefault(); togglePalette(); return; }
+  if(palOpen){
+    if(e.key==='ArrowDown'){ e.preventDefault(); moveCmd(1); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); moveCmd(-1); }
+    else if(e.key==='Enter'){ e.preventDefault(); activateCmd(); }
+  }
+});
+
+/* restore persisted prefs */
+(function(){
+  try{
+    var t = localStorage.getItem('mf_theme'); if(t) setTheme(t);
+    var p = localStorage.getItem('mf_profile'); if(p){ document.getElementById('profileSel').value = p; setProfile(p); }
+  }catch(e){}
+})();
+</script>
+</body>
+</html>
