@@ -1,0 +1,23 @@
+{
+  "name": "@manifold/provider-registry",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline models.dev registry importer (SPEC §11.6, ADR-0008, ADR-0009): transforms a models.dev api.json payload into canonical models, provider offerings, and price revisions. No network, no DB.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "test": "npm run build && node --test $(find dist -name '*.test.js')"
+  },
+  "dependencies": {
+    "@manifold/contracts": "0.0.0"
+  }
+}
