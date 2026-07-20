@@ -21,8 +21,9 @@ export const BUDGET_RESERVATION_TERMINAL_STATES: readonly BudgetReservationState
 ];
 
 export type BudgetReservationEvent =
-  /** reserved → committed: actual cost known; move reserved → committed by actual. */
-  | { type: "RECONCILE" }
+  /** reserved → committed: actual cost known; move reserved → committed by actual.
+   *  Named on the product verb `commit()` (P1-7 rename; formerly `RECONCILE`). */
+  | { type: "COMMIT" }
   /** reserved → rolled_back: request rejected pre-dispatch or aborted before any tokens. */
   | { type: "ROLLBACK" }
   /** reserved → expired: reconciler sweep past expires_at with no terminal Observation. */
@@ -35,7 +36,7 @@ export function transitionBudgetReservation(
   switch (state) {
     case "reserved":
       switch (event.type) {
-        case "RECONCILE":
+        case "COMMIT":
           return ok("committed");
         case "ROLLBACK":
           return ok("rolled_back");

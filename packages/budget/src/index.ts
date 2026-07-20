@@ -32,6 +32,13 @@ export const BUDGET_RESERVE_DENIED = "BUDGET_RESERVE_DENIED" satisfies
  *  reserve rate approaches the single-row ceiling. Unsharded budgets always use shard 0. */
 const DEFAULT_SHARD = 0;
 
+/** Epoch sentinel window_start. Used both by `total` (one row accumulates forever) and — for
+ *  `rolling_30d` — as the per-account serialization ANCHOR row (finding 5): a fixed coordinate
+ *  every rolling reserve locks regardless of which UTC-day row it bumps, so reserves that
+ *  straddle a day boundary still serialize. It sits below every trailing-window lower bound, so
+ *  it is never summed into a rolling guard. */
+const EPOCH = new Date(0);
+
 /** Default reservation TTL. Real callers pass `expires_at ≥ route.overall_ms` so a
  *  reservation never expires mid-stream (§8.4); one hour is the safe default here. */
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
@@ -178,29 +185,68 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
       shard: acct.id === leaf.id ? shard : DEFAULT_SHARD,
     }));
 
-    // 3. Upsert every counter row FIRST so a just-opened window can't race two first-requests
-    //    into an oversell (M14). ON CONFLICT DO NOTHING — never clobbers.
-    for (const c of coords) {
+    // 2b. Per-account SERIALIZATION ANCHOR — the single row every concurrent reserve for the
+    //     same logical window MUST lock, closing two oversell races the per-shard/per-day locks
+    //     alone miss:
+    //       Finding 4 (fresh-shard oversell): on a brand-new window, two reserves targeting
+    //         DISTINCT new shard rows would upsert+lock disjoint sets and, under READ COMMITTED,
+    //         each sum only its own uncommitted row and both admit the full limit. Anchoring on
+    //         shard 0 at the request's window_start forces them to serialize on ONE row.
+    //       Finding 5 (rolling_30d day-straddle oversell): the guard sums the trailing 30 daily
+    //         rows but the per-day lock covers only today's row, so two reserves either side of a
+    //         UTC-day boundary lock DIFFERENT day rows and both admit. A fixed epoch-sentinel
+    //         anchor (below every trailing lower bound, so never summed) serializes every rolling
+    //         reserve on the account.
+    //     For fixed windows the anchor coincides with the shard-0 row at the request window, so
+    //     no extra row is created; for rolling_30d it is the epoch anchor row.
+    const anchors = chain.map((acct) => ({
+      acct,
+      windowStart: acct.window === "rolling_30d" ? EPOCH : bucketStart(acct.window, createdAt),
+      shard: DEFAULT_SHARD,
+    }));
+
+    // 3. Upsert every counter row FIRST (bump rows + anchors, deduped) so a just-opened window
+    //    can't race two first-requests into an oversell (M14). ON CONFLICT DO NOTHING — never
+    //    clobbers. Anchor rows guarantee the serialization row exists to be locked in step 4.
+    const upsertRows = new Map<string, { acctId: string; windowStart: Date; shard: number }>();
+    for (const c of [...coords, ...anchors]) {
+      upsertRows.set(`${c.acct.id}|${c.windowStart.getTime()}|${c.shard}`, {
+        acctId: c.acct.id,
+        windowStart: c.windowStart,
+        shard: c.shard,
+      });
+    }
+    for (const r of upsertRows.values()) {
       await sql`
         INSERT INTO budget_window_state (workspace_id, budget_account_id, window_start, shard)
-        VALUES (${workspaceId}, ${c.acct.id}, ${c.windowStart}, ${c.shard})
+        VALUES (${workspaceId}, ${r.acctId}, ${r.windowStart}, ${r.shard})
         ON CONFLICT DO NOTHING
       `;
     }
 
     // 4. Lock the whole working set under ONE global order: accounts by id ASC (M13,
     //    deadlock-free — ULIDs are time-ordered not depth-ordered, so id order, not traversal
-    //    order), and within an account ALL shard rows by shard ASC. Locking every SIBLING shard
-    //    (not just the request's) is what makes the cross-shard headroom guard oversell-proof:
+    //    order). Within an account: the ANCHOR row first (the serialization point), then ALL
+    //    sibling shard rows at the request window by shard ASC. Locking every SIBLING shard (not
+    //    just the request's) is what makes the cross-shard headroom guard oversell-proof:
     //    concurrent reserves on different shards serialize here instead of each admitting the
-    //    full limit against its own row.
-    const lockOrder = [...coords].sort((a, b) =>
-      a.acct.id < b.acct.id ? -1 : a.acct.id > b.acct.id ? 1 : 0,
+    //    full limit against its own row. `releaseReservation` locks the SAME rows in this SAME
+    //    account-id-ASC order (finding 2), so reserve/commit/rollback/sweep never deadlock.
+    const accountsAsc = [...chain].sort((a, b) =>
+      a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
     );
-    for (const c of lockOrder) {
+    for (const acct of accountsAsc) {
+      const anchor = anchors.find((a) => a.acct.id === acct.id)!;
+      const coord = coords.find((c) => c.acct.id === acct.id)!;
+      await sql`
+        SELECT 1 FROM budget_window_state
+        WHERE budget_account_id = ${acct.id}
+          AND window_start = ${anchor.windowStart} AND shard = ${anchor.shard}
+        FOR UPDATE
+      `;
       await sql`
         SELECT shard FROM budget_window_state
-        WHERE budget_account_id = ${c.acct.id} AND window_start = ${c.windowStart}
+        WHERE budget_account_id = ${acct.id} AND window_start = ${coord.windowStart}
         ORDER BY shard
         FOR UPDATE
       `;
@@ -335,7 +381,7 @@ export async function commit(
   const rawTokens = actualTokens ?? 0n;
   const actualToks = rawTokens < 0n ? 0n : rawTokens;
   return db.begin(async (sql: TransactionSql): Promise<CommitResult> => {
-    const out = await releaseReservation(sql, reservationId, "RECONCILE", {
+    const out = await releaseReservation(sql, reservationId, "COMMIT", {
       actual,
       actualTokens: actualToks,
       workspaceId,
@@ -378,15 +424,57 @@ export async function rollback(
  * terminal cost arrives LATER for a swept reservation, `commit()` reconciles it expired →
  * committed so the real spend is still counted, never zeroed (H1). Returns the count of
  * reservations expired.
+ *
+ * FINDING 3 — this ALL-WORKSPACES sweep runs its discovery SELECT with NO `manifold.workspace_id`
+ * GUC, so it MUST be invoked by a maintenance role that is EXEMPT from RLS (a BYPASSRLS or table-
+ * owner role — the cron/reconciler-worker connection, NOT the RLS-subject `manifold_app` gateway
+ * role). Under FORCE-RLS as an RLS-subject role the unscoped discovery SELECT matches ZERO rows
+ * (RLS filters every workspace out because the tenant GUC is unset) and the sweep silently no-ops,
+ * permanently stranding expired holds — the per-row set_config inside the release loop is far too
+ * late to save the discovery read. Callers pinned to an RLS-subject role must instead iterate
+ * `sweepExpiredForWorkspace` per workspace. (Cron/worker wiring is app-level, out of this package.)
  */
 export async function sweepExpired(db: Sql, now: Date = new Date()): Promise<number> {
-  // Find expired holds first (short read), then release each under its window lock. Carry
-  // each row's workspace_id so the release can set the tenant GUC BEFORE locking the row
-  // (bug #5) — required whenever the sweep runs as an RLS-subject role.
+  // Find expired holds first (short read; requires an RLS-exempt role — see doc above), then
+  // release each under its window lock. Carry each row's workspace_id so the release sets the
+  // tenant GUC BEFORE locking the row (bug #5).
   const expired = await db<{ id: string; created_at: Date; workspace_id: string }[]>`
     SELECT id, created_at, workspace_id FROM budget_reservation
     WHERE status = 'reserved' AND expires_at < ${now}
   `;
+  return releaseExpiredRows(db, expired);
+}
+
+/**
+ * FINDING 3 — the RLS-SUBJECT-SAFE sweep entrypoint. Sweeps expired reservations for ONE
+ * workspace, setting `manifold.workspace_id` in the SAME transaction as the discovery SELECT so
+ * the read is visible under FORCE-RLS as `manifold_app` (the unscoped `sweepExpired` above matches
+ * zero rows for such a role). An RLS-subject worker sweeps the whole fleet by iterating this over
+ * every workspace id it owns. Returns the count expired for this workspace.
+ */
+export async function sweepExpiredForWorkspace(
+  db: Sql,
+  workspaceId: string,
+  now: Date = new Date(),
+): Promise<number> {
+  // GUC via set_config(..., true) is transaction-local, so the discovery SELECT must share the
+  // transaction that sets it — hence the db.begin wrapper around the read.
+  const expired = await db.begin(async (sql: TransactionSql) => {
+    await sql`SELECT set_config('manifold.workspace_id', ${workspaceId}, true)`;
+    return sql<{ id: string; created_at: Date; workspace_id: string }[]>`
+      SELECT id, created_at, workspace_id FROM budget_reservation
+      WHERE workspace_id = ${workspaceId} AND status = 'reserved' AND expires_at < ${now}
+    `;
+  });
+  return releaseExpiredRows(db, expired);
+}
+
+/** Release each discovered expired reservation in its own transaction (each sets the tenant GUC
+ *  from the row's workspace_id before locking — bug #5). Shared by both sweep entrypoints. */
+async function releaseExpiredRows(
+  db: Sql,
+  expired: { id: string; created_at: Date; workspace_id: string }[],
+): Promise<number> {
   let count = 0;
   for (const row of expired) {
     const done = await db.begin(async (sql: TransactionSql): Promise<boolean> => {
@@ -423,7 +511,8 @@ type ReleaseOutcome =
  * the actual to `committed` — cost-unit on µ$, token-unit on tokens. The leaf uses the persisted
  * (window_start, shard); ancestors re-derive their coordinates from each ancestor's window.
  *
- * `RECONCILE` (commit) also handles the LATE-TERMINAL case (H1): if the reservation was already
+ * `COMMIT` (the product verb; formerly `RECONCILE`) also handles the LATE-TERMINAL case (H1):
+ * if the reservation was already
  * swept to `expired` (its hold released), a terminal actual arriving afterward is still counted
  * into `committed` (expired → committed), so real spend that outlived the reservation window is
  * never zeroed. Any other terminal state is an idempotent no-op. MUST run inside a `db.begin`
@@ -432,7 +521,7 @@ type ReleaseOutcome =
 async function releaseReservation(
   sql: TransactionSql,
   reservationId: string,
-  event: "RECONCILE" | "ROLLBACK" | "EXPIRE",
+  event: "COMMIT" | "ROLLBACK" | "EXPIRE",
   opts: { actual?: bigint; actualTokens?: bigint; workspaceId?: string } = {},
 ): Promise<ReleaseOutcome> {
   // Scope the tenant GUC FIRST — BEFORE the lock — so the reservation row is visible to the
@@ -451,11 +540,31 @@ async function releaseReservation(
   const actualTokens = opts.actualTokens ?? 0n;
   const chain = await loadChain(sql, res.budget_account_id);
 
+  // Finding 2 (ABBA deadlock): acquire the chain's counter-row locks in the SAME global order
+  // reserve() uses — budget_account id ASC — via an explicit ordered SELECT ... FOR UPDATE BEFORE
+  // any UPDATE below. release previously UPDATEd the chain leaf→root (depth order), the OPPOSITE
+  // of reserve's id-ASC lock order, so a commit/rollback/sweep racing a reserve on the same
+  // hierarchical budget could deadlock (each holding one row, waiting on the other). Ordering the
+  // locks here removes the cycle. We lock the EXACT rows the UPDATEs will touch: the leaf uses the
+  // persisted (window_start, shard); ancestors re-derive their shard-0 coordinate. This covers
+  // both the normal release and the late-terminal (expired → committed) branch below.
+  const releaseLockOrder = chain
+    .map((acct) => ({ acct, coord: releaseCoord(acct, res) }))
+    .sort((a, b) => (a.acct.id < b.acct.id ? -1 : a.acct.id > b.acct.id ? 1 : 0));
+  for (const { acct, coord } of releaseLockOrder) {
+    await sql`
+      SELECT 1 FROM budget_window_state
+      WHERE budget_account_id = ${acct.id}
+        AND window_start = ${coord.windowStart} AND shard = ${coord.shard}
+      FOR UPDATE
+    `;
+  }
+
   if (res.status !== "reserved") {
     // Late-terminal reconcile (H1 / §8.4): the sweep already expired this hold (reserved → 0),
     // but a terminal cost arrived afterward. Count that real spend into committed and move
     // expired → committed WITHOUT touching reserved again. Any other terminal state is a no-op.
-    if (event === "RECONCILE" && res.status === "expired") {
+    if (event === "COMMIT" && res.status === "expired") {
       for (const acct of chain) {
         const coord = releaseCoord(acct, res);
         if (acct.unit === "tokens") {

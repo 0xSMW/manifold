@@ -22,7 +22,15 @@ import assert from "node:assert/strict";
 import postgres from "postgres";
 import { startPg, type PgHarness } from "../../database/test/pg-harness.ts";
 
-import { reserve, commit, rollback, sweepExpired, bucketStart, ulid } from "../dist/index.js";
+import {
+  reserve,
+  commit,
+  rollback,
+  sweepExpired,
+  sweepExpiredForWorkspace,
+  bucketStart,
+  ulid,
+} from "../dist/index.js";
 
 type Sql = ReturnType<typeof postgres>;
 
@@ -55,6 +63,13 @@ const ACCOUNTS: AcctSeed[] = [
   { id: "ba_tokens", unit: "tokens", limit: TOKEN_LIMIT }, // token-unit guard
   { id: "ba_hier_parent", limit: EST * 5n }, // hierarchical parent (binding cap)
   { id: "ba_hier_child", parent: "ba_hier_parent", limit: EST * 100n }, // hierarchical leaf
+  // --- regression-test accounts for the ENGINE fixes (findings 1-5) ---
+  { id: "ba_tokens_commit", unit: "tokens", limit: TOKEN_LIMIT }, // finding 1: committed+reserved token guard
+  { id: "ba_dl_aparent", limit: EST * 10_000n }, // finding 2: deadlock-order parent (id sorts BEFORE child)
+  { id: "ba_dl_zchild", parent: "ba_dl_aparent", limit: EST * 10_000n }, // finding 2: leaf (id sorts AFTER parent)
+  { id: "ba_sweep_ws" }, // finding 3: workspace-scoped sweep under the RLS-subject role
+  { id: "ba_fresh_shard", limit: EST * 5n }, // finding 4: fresh-shard cross-shard oversell
+  { id: "ba_roll_straddle", window: "rolling_30d", limit: EST * 5n }, // finding 5: rolling anchor + no-oversell
 ];
 
 before(async () => {
@@ -233,9 +248,14 @@ test("SHARDED COMMIT: reserve on shard != 0 and commit decrements THAT shard's c
   assert.equal(res.ok, true);
   if (!res.ok) return;
 
-  // reserve bumped the shard-3 row; shard 0 has no row at all.
+  // reserve bumped the shard-3 row. NOTE (finding 4): reserve now ALSO guarantees a shard-0
+  // SERIALIZATION ANCHOR row exists (so concurrent reserves on distinct fresh shards serialize),
+  // so shard 0 now exists — but is never bumped: it stays at reserved=0, committed=0.
   assert.equal((await windowRow(budgetId, windowStart, SHARD))!.reserved, EST, "shard 3 holds the reserve");
-  assert.equal(await windowRow(budgetId, windowStart, 0), undefined, "shard 0 was never touched");
+  const anchorBefore = await windowRow(budgetId, windowStart, 0);
+  assert.ok(anchorBefore, "the shard-0 anchor row exists (finding 4)");
+  assert.equal(anchorBefore!.reserved, 0n, "the shard-0 anchor holds no reserve");
+  assert.equal(anchorBefore!.committed, 0n, "the shard-0 anchor holds no committed");
 
   const actual = 700_000n;
   const outcome = await commit(sql, res.reservationId, actual, WORKSPACE_ID);
@@ -248,8 +268,11 @@ test("SHARDED COMMIT: reserve on shard != 0 and commit decrements THAT shard's c
   assert.equal(s3!.reserved, 0n, "shard 3 reserved is released (bug #8)");
   assert.equal(s3!.committed, actual, "shard 3 committed grows by the actual (bug #8)");
 
-  // And the release NEVER conjured/altered a shard-0 row.
-  assert.equal(await windowRow(budgetId, windowStart, 0), undefined, "shard 0 still has no counter row");
+  // And the release NEVER bumped the shard-0 anchor (it decrements the reservation's OWN shard 3).
+  const anchorAfter = await windowRow(budgetId, windowStart, 0);
+  assert.ok(anchorAfter, "the shard-0 anchor row still exists");
+  assert.equal(anchorAfter!.reserved, 0n, "shard-0 anchor reserved untouched by the release");
+  assert.equal(anchorAfter!.committed, 0n, "shard-0 anchor committed untouched by the release");
 });
 
 // ---------------------------------------------------------------------------
@@ -525,4 +548,224 @@ test("HIERARCHICAL: a parent cap denies a leaf reserve even when the leaf has ro
   assert.equal(done.status, "committed");
   assert.equal((await windowRow(parentId, windowStart))!.reserved, EST * 4n, "commit releases the parent hold too");
   assert.equal((await windowRow(parentId, windowStart))!.committed, EST, "commit grows the parent committed");
+});
+
+// ---------------------------------------------------------------------------
+// FINDING 1 — a token-unit hard budget must count COMMITTED tokens (not just
+// reserved) in its guard: committed + reserved + est ≤ token limit.
+// ---------------------------------------------------------------------------
+test("TOKEN COMMITTED+RESERVED (finding 1): a token budget denies once committed + reserved + est would exceed the limit", async () => {
+  const budgetId = "ba_tokens_commit"; // unit=tokens, limit=10_000
+  const windowStart = monthNow();
+
+  // Reserve 6000 tokens, then COMMIT them with actualTokens=6000 -> committed_tokens=6000, hold freed.
+  const r1 = await reserve(appSql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: 1n,
+    workspaceId: WORKSPACE_ID, windowStart,
+    estimatedInputTokens: 4000n, maxOutputTokens: 2000n,
+  });
+  assert.equal(r1.ok, true, "the first token reserve fits");
+  if (!r1.ok) return;
+  const c = await commit(appSql, r1.reservationId, 1n, WORKSPACE_ID, 6000n);
+  assert.equal(c.status, "committed");
+  const t1 = await windowTokens(budgetId, windowStart);
+  assert.equal(t1!.committed, 6000n, "committed_tokens grew by the actual tokens");
+  assert.equal(t1!.reserved, 0n, "the token hold was released on commit");
+
+  // committed(6000) + reserved(0) + 4000 = 10000 == limit -> the boundary reserve is admitted.
+  const r2 = await reserve(appSql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: 1n,
+    workspaceId: WORKSPACE_ID, windowStart,
+    estimatedInputTokens: 3000n, maxOutputTokens: 1000n, // 4000 tokens
+  });
+  assert.equal(r2.ok, true, "committed + reserved exactly at the token limit is admitted");
+
+  // Now committed(6000) + reserved(4000) = 10000; a single further token would exceed -> DENIED.
+  // The guard MUST sum committed_tokens too, not just reserved_tokens.
+  const r3 = await reserve(appSql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: 1n,
+    workspaceId: WORKSPACE_ID, windowStart,
+    estimatedInputTokens: 1n, maxOutputTokens: 0n,
+  });
+  assert.equal(r3.ok, false, "committed + reserved already at the token limit -> a further token reserve is denied");
+  assert.equal((await windowTokens(budgetId, windowStart))!.reserved, 4000n, "the denied token reserve bumped nothing");
+});
+
+// ---------------------------------------------------------------------------
+// FINDING 2 — reserve() locks the chain id-ASC; release (commit/rollback/sweep)
+// must take its chain locks in the SAME id-ASC order, or a reserve racing a
+// release on a hierarchy deadlocks. Here the parent id sorts BEFORE the child, so
+// id-ASC order (parent→child) is the OPPOSITE of the old leaf→root release order.
+// ---------------------------------------------------------------------------
+test("DEADLOCK ORDERING (finding 2): concurrent reserve and commit/rollback on a hierarchy never deadlock", async () => {
+  const childId = "ba_dl_zchild"; // leaf; id sorts AFTER the parent
+  const windowStart = monthNow();
+
+  // Pre-create reservations to release CONCURRENTLY with fresh reserves.
+  const pre: string[] = [];
+  for (let i = 0; i < 12; i++) {
+    const r = await reserve(appSql, {
+      budgetAccountId: childId, requestId: ulid(), estMicroUsd: EST,
+      workspaceId: WORKSPACE_ID, windowStart,
+    });
+    assert.equal(r.ok, true);
+    if (r.ok) pre.push(r.reservationId);
+  }
+
+  // Fresh reserves lock parent→child (id-ASC); releases now lock parent→child too (finding 2 fix),
+  // so no reserve/release pair can form the parent↔child lock cycle that used to deadlock. Fire
+  // them all at once and require every op to complete without error.
+  const ops: Promise<unknown>[] = [];
+  for (let i = 0; i < 24; i++) {
+    ops.push(reserve(appSql, {
+      budgetAccountId: childId, requestId: ulid(), estMicroUsd: EST,
+      workspaceId: WORKSPACE_ID, windowStart,
+    }));
+  }
+  pre.forEach((id, i) => {
+    ops.push(i % 2 === 0
+      ? commit(appSql, id, EST, WORKSPACE_ID)
+      : rollback(appSql, id, WORKSPACE_ID));
+  });
+
+  const settled = await Promise.allSettled(ops);
+  const deadlocks = settled.filter(
+    (s) => s.status === "rejected" && /deadlock/i.test(String((s as PromiseRejectedResult).reason)),
+  );
+  assert.equal(deadlocks.length, 0, "no transaction deadlocked (reserve and release share the id-ASC lock order)");
+  assert.equal(
+    settled.filter((s) => s.status === "rejected").length, 0,
+    "every reserve/commit/rollback completed without error",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// FINDING 3 — the unscoped all-workspaces sweep needs a BYPASSRLS/owner role; run
+// as an RLS-subject role it sees zero rows. sweepExpiredForWorkspace sets the tenant
+// GUC in the discovery transaction and works under the RLS-subject role.
+// ---------------------------------------------------------------------------
+test("SWEEP RLS (finding 3): unscoped sweep is RLS-blind as a subject role; the workspace-scoped sweep releases the hold", async () => {
+  const budgetId = "ba_sweep_ws";
+  const windowStart = monthNow();
+  const res = await reserve(appSql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: EST,
+    workspaceId: WORKSPACE_ID, windowStart,
+    expiresAt: new Date(Date.now() - 60_000), // already past expiry
+  });
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal((await windowRow(budgetId, windowStart))!.reserved, EST, "hold held before sweep");
+
+  // Unscoped sweep AS the RLS-subject role: its discovery SELECT sets no tenant GUC, so FORCE-RLS
+  // filters every row out -> it releases nothing and the hold is stranded (finding 3).
+  const blind = await sweepExpired(appSql);
+  assert.equal(blind, 0, "unscoped sweep as an RLS-subject role sees no rows and releases nothing");
+  assert.equal(
+    (await windowRow(budgetId, windowStart))!.reserved, EST,
+    "the hold is still stranded after the RLS-blind unscoped sweep",
+  );
+
+  // Workspace-scoped entrypoint sets the GUC in the discovery txn -> finds and releases the hold.
+  const scoped = await sweepExpiredForWorkspace(appSql, WORKSPACE_ID);
+  assert.ok(scoped >= 1, "workspace-scoped sweep releases the expired hold under the RLS-subject role");
+  assert.equal(
+    (await windowRow(budgetId, windowStart))!.reserved, 0n,
+    "the hold is released after the workspace-scoped sweep",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// FINDING 4 — two reserves on DISTINCT brand-new shard rows must not each admit the
+// full limit. The shard-0 anchor serializes them. (Unlike the SHARDED OVERSELL test,
+// the shard rows are NOT pre-created — this is the fresh-shard race.)
+// ---------------------------------------------------------------------------
+test("FRESH-SHARD OVERSELL (finding 4): concurrent reserves on distinct brand-new shards cannot exceed the limit", async () => {
+  const budgetId = "ba_fresh_shard"; // limit = 5*EST
+  const windowStart = monthNow();
+  const CAP = 5n;
+
+  // 20 reserves spread across 4 shards (5 per shard), all fresh — no shard row pre-created. Under
+  // the bug each reserve is first to touch its shard, locks a disjoint set, sums only its own
+  // uncommitted row and admits -> ~4x oversell. The anchor forces them to serialize on shard 0.
+  const N = 20;
+  const inputs = Array.from({ length: N }, (_, i) => ({
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: EST,
+    workspaceId: WORKSPACE_ID, windowStart, shard: i % SHARD_COUNT,
+  }));
+  const results = await Promise.all(inputs.map((i) => reserve(appSql, i)));
+  const okCount = results.filter((r) => r.ok).length;
+
+  const [{ total }] = await sql<{ total: string }[]>`
+    SELECT COALESCE(SUM(reserved_microusd), 0)::text AS total FROM budget_window_state
+    WHERE budget_account_id = ${budgetId} AND window_start = ${windowStart}
+  `;
+  assert.ok(
+    BigInt(total) <= EST * CAP,
+    `Σ reserved across fresh shards (${total}) MUST NOT exceed the limit (${EST * CAP})`,
+  );
+  assert.equal(BigInt(total), EST * CAP, "exactly the limit is reserved across the fresh shards — no oversell");
+  assert.equal(okCount, Number(CAP), "exactly 5 reserves succeed across all fresh shards");
+});
+
+// ---------------------------------------------------------------------------
+// FINDING 5 — rolling_30d guards on the trailing-30-day SUM but reserve locks only
+// today's row (lock granularity < guard granularity). The fix serializes every rolling
+// reserve on a CANONICAL epoch-sentinel anchor row (independent of which UTC-day row it
+// bumps), so concurrent reserves compute the trailing sum against committed — never stale —
+// state. This asserts (a) the anchor mechanism is in place and never pollutes the guard, and
+// (b) concurrent same-window reserves cannot oversell the trailing-30-day limit.
+//
+// NOTE: a fully deterministic CROSS-day concurrent admit-count is not possible — a rolling
+// window ending at an EARLIER day legitimately excludes LATER days, so the admit count of a
+// multi-day concurrent batch is order-dependent by definition. The deterministic guarantees the
+// anchor provides are exactly the two asserted below.
+// ---------------------------------------------------------------------------
+test("ROLLING ANCHOR (finding 5): rolling reserves serialize on a canonical anchor row (excluded from the guard) and concurrent same-window reserves cannot oversell the trailing limit", async () => {
+  const budgetId = "ba_roll_straddle"; // rolling_30d, limit = 5*EST
+  const today = bucketStart("rolling_30d", new Date(dayMs(0)));
+  const EPOCH = new Date(0);
+
+  // Pre-commit EST on two PRIOR days within the trailing window (sequential). Each lands in its
+  // OWN daily row — DISTINCT from today's row — so the trailing sum as of today starts at 2*EST
+  // while today's row is still empty: exactly the lock-vs-guard granularity gap finding 5 targets.
+  for (const d of [2, 4]) {
+    const created = dayMs(d);
+    const r = await reserve(appSql, {
+      budgetAccountId: budgetId, requestId: ulid(created), estMicroUsd: EST,
+      workspaceId: WORKSPACE_ID, windowStart: bucketStart("rolling_30d", new Date(created)),
+    });
+    assert.equal(r.ok, true, `prior-day-${d} reserve fits`);
+    if (r.ok) await commit(appSql, r.reservationId, EST, WORKSPACE_ID);
+  }
+
+  // (a) The canonical epoch anchor row exists (the per-account serialization point) and is NEVER
+  //     bumped — it holds zero counters and sits below the trailing lower bound, so it can never
+  //     pollute the guard sum.
+  const anchor = await windowRow(budgetId, EPOCH, 0);
+  assert.ok(anchor, "the canonical epoch anchor row exists for the rolling account (finding 5)");
+  assert.equal(anchor!.reserved, 0n, "the anchor holds no reserve");
+  assert.equal(anchor!.committed, 0n, "the anchor holds no committed");
+
+  // (b) Fire 10 concurrent reserves dated TODAY. The guard sums the WHOLE trailing window (today's
+  //     row + the two prior day-rows = 2*EST committed), leaving room for exactly 3 more (limit
+  //     5*EST). All reserves serialize on the anchor, so each sees committed state — no oversell.
+  const inputs = Array.from({ length: 10 }, () => ({
+    budgetAccountId: budgetId, requestId: ulid(dayMs(0)), estMicroUsd: EST,
+    workspaceId: WORKSPACE_ID, windowStart: today,
+  }));
+  const results = await Promise.all(inputs.map((i) => reserve(appSql, i)));
+  const okCount = results.filter((r) => r.ok).length;
+
+  const lower = new Date(today.getTime() - 29 * 24 * 60 * 60 * 1000);
+  const [{ total }] = await sql<{ total: string }[]>`
+    SELECT COALESCE(SUM(committed_microusd + reserved_microusd), 0)::text AS total
+    FROM budget_window_state
+    WHERE budget_account_id = ${budgetId} AND window_start >= ${lower} AND window_start <= ${today}
+  `;
+  assert.ok(
+    BigInt(total) <= EST * 5n,
+    `trailing-30d Σ (${total}) MUST NOT exceed the limit (${EST * 5n}) — rolling oversell`,
+  );
+  assert.equal(BigInt(total), EST * 5n, "exactly the limit is reserved across the trailing window");
+  assert.equal(okCount, 3, "exactly 3 of the concurrent today-reserves fit the remaining trailing headroom");
 });
