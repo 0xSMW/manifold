@@ -218,10 +218,10 @@ Decision: streaming MUST NOT grow process memory proportional to the full respon
 Context: the storage-bounded mode (§13) measures footprint with `pg_total_relation_size` (a database-wide number) and reclaims space with O(1) partition drops, while `workspace.storage_ceiling_bytes` is per-workspace — mutually consistent only if a workspace *is* the database. Decision: each installation's durable state is a single-tenant Postgres database (a Neon project/branch per workspace); exactly one `workspace` row per database. The control plane is multi-installation — it holds a connection per installation and selects a workspace by selecting its database, never by filtering a shared table. Consequences: `pg_total_relation_size` over `public` *is* the workspace footprint (§13.2 holds unchanged); a partition drop never touches another tenant's rows (§13.6 stays O(1)); the ceiling, forecast, and shedding are all measurable per workspace. Global reference data (`canonical_model`, `provider_model_offering`, global prices) is replicated into each database by the registry-sync job (§11.6), not shared across tenants. RLS + the query-lint (§15.2) remain as defense-in-depth and as the seam for a future hosted multi-tenant edition, but the database — not RLS — is the primary isolation boundary. A hosted multi-tenant edition, if ever built, is a new ADR that supersedes this one and re-opens §13 (per-workspace byte accounting) and §15 (RLS as primary boundary).
 
 **ADR-0022 — Provider-secret ciphertext travels in the signed snapshot; plaintext never does. Accepted (refines ADR-0005, ADR-0016).**
-Context: to decrypt a provider secret the gateway needs the ciphertext, which lives in `provider_credential.encrypted_secret` in Postgres — but ADR-0005 forbids a DB read on the dispatch path (B3). Decision: the snapshot `credmap` carries the AES-256-GCM *ciphertext* of each reachable credential plus its `dek_id`, never the plaintext and never the DEK. The gateway decrypts in-process with a DEK unwrapped once per isolate from the KEK and cached in memory. Rotating or revoking a secret writes a new ciphertext and republishes the snapshot — the existing config path (§8.2) — so the prior ciphertext stops being served within the propagation window; there is no separate secret cache to invalidate. Consequences: credential retrieval is not a DB read (ADR-0005 holds); a leaked snapshot store still exposes no usable secret because the DEK/KEK are not in it (ADR-0016 holds); secret-rotation latency equals snapshot propagation latency (§2.3, §8.2), stated in the rotation runbook (§19.4); ciphertext counts against the 512 KB snapshot budget (§7.4).
+Context: to decrypt a provider secret the gateway needs the ciphertext, which lives in `provider_credential.encrypted_secret` in Postgres — but ADR-0005 forbids a DB read on the dispatch path (B3). Decision: each snapshot target carries the AES-256-GCM *ciphertext* of its credential, its `dek_id`, and the KEK-wrapped DEK (authored in the `data_encryption_key` table, §6.4) — never the plaintext secret and never the KEK. The gateway unwraps the DEK once per isolate with the KEK (platform secret store), caches only the unwrapped DEK in memory, and decrypts in-process. Rotating or revoking a secret writes a new ciphertext and republishes the snapshot — the existing config path (§8.2) — so the prior ciphertext stops being served within the propagation window; there is no separate secret cache to invalidate. Consequences: credential retrieval is not a DB read (ADR-0005 holds); a leaked snapshot store still exposes no usable secret because the DEK/KEK are not in it (ADR-0016 holds); secret-rotation latency equals snapshot propagation latency (§2.3, §8.2), stated in the rotation runbook (§19.4); ciphertext counts against the 512 KB snapshot budget (§7.4).
 
 **ADR-0023 — Terminal-event intent is persisted synchronously before the response is released; `after()` is an optimization. Accepted (refines ADR-0017).**
-Context: `after()` (Vercel) is best-effort — an instance killed by `maxDuration`, deploy, or crash after the last provider byte but before `after()` runs loses the terminal event, and with it hard-budget reconciliation (H1/H9). Decision: at the terminal transition the gateway writes the terminal-event intent to the durable `job_ledger` (folded into the same transaction as the budget reconcile touch on the enterprise path; a single synchronous insert on the public path) *before* releasing the final bytes of the response; `after()`/the Queue then performs the reduce as an optimization. Consequences: the durability boundary is the synchronous ledger write, not `after()`; reconciliation is driven from the durable terminal `Observation` carrying real usage/cost, never from best-effort post-response work (§8.1, §8.4, §17.2); a completed-but-uncompacted request cannot silently escape hard-budget accounting.
+Context: `after()` (Vercel) is best-effort — an instance killed by `maxDuration`, deploy, or crash after the last provider byte but before `after()` runs loses the terminal event, and with it hard-budget reconciliation (H1/H9). Decision: durability is required only where money depends on it. On the **enterprise / hard-budget path**, the terminal-event intent is written to the durable `job_ledger` in the same transaction as the budget reconcile touch, *before* the final bytes are released, so reconciliation cannot be lost. On the **public path** (DB-free by ADR-0012) observation ingest stays best-effort via `after()` / the Queue: losing a log line to a crashed instance is acceptable, and public per-user budgets are opt-in — when enabled they promote that request to the enterprise durable path. Consequences: no synchronous Neon write is added to the DB-free public path (ADR-0012 and §16.4 preserved); the durability boundary is the synchronous ledger write for money and the platform queue for public logs; reconciliation is driven from the durable terminal `Observation` on the paths where it exists (§8.1, §8.4, §17.2); a completed request on a hard budget cannot silently escape accounting.
 
 **ADR-0024 — The snapshot-signing keypair is control-plane-owned and distinct from installation identity. Accepted (refines ADR-0016).**
 Context: §7.3/§14.3 previously said the gateway verifies a snapshot against "the installation's pinned public key," but `gateway_installation.public_key` is the installation's *ingest* identity — conflating them either lets the wrong key verify a snapshot or leaves rotation undefined (H10). Decision: two disjoint keypairs. (1) The **snapshot-signing keypair** is owned by the control plane (`MANIFOLD_SNAPSHOT_SIGNING_KEY`, §19.3); the gateway pins only its public half (`MANIFOLD_SNAPSHOT_PUBLIC_KEY`) and verifies every snapshot against it. (2) The **installation-identity keypair** (`gateway_installation.public_key`) authenticates the installation to the ingest endpoint and heartbeat and never verifies a snapshot. Consequences: snapshot integrity depends on the control-plane signing key alone; the two keys rotate independently (§19.4); a test asserts an installation-identity key cannot validate a snapshot and vice-versa (§21.8).
@@ -817,6 +817,16 @@ CREATE TABLE provider_credential (
 );
 CREATE INDEX provider_credential_ws_idx ON provider_credential (workspace_id) WHERE revoked_at IS NULL;
 
+CREATE TABLE data_encryption_key (                      -- wrapped DEKs; the DEK is unwrapped only in-process (§14.3, A2)
+  id text PRIMARY KEY,                                  -- dek_… ; referenced by provider_credential.dek_id and the snapshot
+  workspace_id text NOT NULL REFERENCES workspace(id),
+  wrapped_dek bytea NOT NULL,                           -- DEK sealed by the KEK (KMS / platform secret); never the plaintext DEK
+  kek_id text NOT NULL,                                 -- which KEK wrapped it (drives KEK rotation / re-wrap)
+  status text NOT NULL CHECK (status IN ('active','retiring','revoked')) DEFAULT 'active',
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX data_encryption_key_ws_idx ON data_encryption_key (workspace_id);
+
 -- Registry: mostly global reference data, but operator overrides are workspace-scoped.
 CREATE TABLE canonical_model (
   id text PRIMARY KEY,                                   -- cm_… ; stable canonical identity
@@ -1050,7 +1060,7 @@ CREATE INDEX budget_window_state_ws_idx ON budget_window_state (workspace_id);
 
 `budget_window_state` is the hot row the reservation transaction touches: upsert the `(budget, window_start, shard)` row (`INSERT … ON CONFLICT DO UPDATE`, so a new window never races two first-requests into an oversell), `SELECT … FOR UPDATE`, check `committed + reserved + new ≤ limit`, bump `reserved`, insert `budget_reservation`, commit (§16.3). On completion, `commit` moves the amount from `reserved` to `committed`; `expired`/`rolled_back` reservations are swept and release `reserved`.
 
-**Window semantics (H3).** For `daily`/`weekly`/`monthly`, `window_start` is the bucket boundary and the guard is a simple per-bucket sum. For `rolling_30d`, headroom is a trailing-30-day sum over `cost_ledger` (or `usage_record` for token units) that the reserve txn computes and caches on the current-UTC-day `window_start` row, so the trailing sum advances daily rather than resetting. For `total`, `window_start` is the fixed sentinel `'epoch'` and the single row accumulates forever. **Token-unit hard budgets** use `reserved_tokens`/`committed_tokens` with the identical guard applied to token counts, so a token cap can reserve pre-dispatch exactly like a cost cap.
+**Window semantics (H3).** For `daily`/`weekly`/`monthly`, `window_start` is the bucket boundary and the guard is a simple per-bucket sum. For `rolling_30d`, the budget keeps **30 daily `budget_window_state` rows** (one per UTC day, `window_start` = the day) and headroom is `limit − Σ(committed+reserved)` over the trailing 30 rows; committed spend is written into today's row at reconcile and never re-scanned from `cost_ledger` — which H4 partition-drops after `min_trace_days` (A1/NEW-2), so deriving rolling headroom from it would silently under-count a *hard* budget. A daily job trims rows older than 30 days. For `total`, `window_start` is the fixed sentinel `'epoch'` and the single row accumulates forever. Because these counters live in the never-shed `budget_window_state`, retention cannot erode a hard budget's headroom; `cost_ledger`/`usage_record` are observability projections, not the budget source of truth. **Token-unit hard budgets** use `reserved_tokens`/`committed_tokens` with the identical guard applied to token counts, so a token cap can reserve pre-dispatch exactly like a cost cap.
 
 **Sharded counters (H2).** A high-fan-in root (a workspace-level cap fronting all enterprise traffic) fans its counter across `shard ∈ [0,N)`: a reserve picks `shard = hash(request_id) % N`, locks only that shard, and headroom is the sum across shards (`N` reads, still one write). `N` is `1` by default and is raised per budget when its measured reserve rate approaches the single-row ceiling (~a few hundred reserve/s), trading a tiny sum-read cost for parallelism. The documented supported ceiling per budget subtree is published with the load test (§16.3, §21.7).
 
@@ -1092,6 +1102,7 @@ CREATE TABLE observation (                                -- reduction of events
   status text NOT NULL CHECK (status IN ('ok','error','denied','clamped','timeout')),
   http_status int,
   input_tokens bigint, output_tokens bigint, cached_tokens bigint, reasoning_tokens bigint,
+  cache_write_tokens bigint, audio_input_tokens bigint, audio_output_tokens bigint,   -- A5: cache-write/audio cost inputs
   cost_microusd bigint, cost_fidelity text CHECK (cost_fidelity IN ('exact','estimated','unknown')),
   latency_ms int, ttfb_ms int, attempts int NOT NULL DEFAULT 1, failovers int NOT NULL DEFAULT 0,
   policy_decision_id text, reason_codes jsonb NOT NULL DEFAULT '[]',
@@ -1150,6 +1161,7 @@ CREATE TABLE usage_record (                               -- exact|estimated|unk
   id text NOT NULL, workspace_id text NOT NULL REFERENCES workspace(id),
   observation_id text NOT NULL, trace_id text NOT NULL,
   input_tokens bigint, output_tokens bigint, cached_tokens bigint, reasoning_tokens bigint,
+  cache_write_tokens bigint, audio_input_tokens bigint, audio_output_tokens bigint,   -- A5
   fidelity text NOT NULL CHECK (fidelity IN ('exact','estimated','unknown')),
   occurred_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (id, created_at)                            -- partition key in PK (B1)
@@ -1203,6 +1215,9 @@ cost_microusd =
   + round_half_even( output_tokens         * output_per_mtok_microusd   / 1_000_000 )
   + round_half_even( cached_tokens         * cache_read_per_mtok_microusd / 1_000_000 )
   + round_half_even( reasoning_tokens      * reasoning_per_mtok_microusd / 1_000_000 )
+  + round_half_even( cache_write_tokens    * cache_write_per_mtok_microusd / 1_000_000 )   -- A5/M7
+  + round_half_even( audio_input_tokens    * audio_in_per_mtok_microusd  / 1_000_000 )     -- A5/M7
+  + round_half_even( audio_output_tokens   * audio_out_per_mtok_microusd / 1_000_000 )     -- A5/M7
 ```
 
 - `round_half_even` (banker's rounding) at the µ$ keeps aggregate drift centered on zero.
@@ -1407,7 +1422,7 @@ Per installation, keyed by the active `config_revision`:
 | `policy` | policy revision id → {entitlements index (subject→models), request constraints, data-handling constraints} | static allow/clamp/deny before credential resolution |
 | `credmap` | offering/target → provider_credential id + dek id + **AES-256-GCM ciphertext of the secret** (never plaintext, never the DEK) | decrypt the provider secret in-process with a cached DEK, zero DB reads (ADR-0022) |
 
-Plaintext secrets never appear. `credmap` carries the credential id, the `dek_id`, and the AES-256-GCM *ciphertext* of the provider secret; the gateway decrypts it in-process with a DEK unwrapped once per isolate from the KEK (§14.3, ADR-0022). This is a keyed local decrypt, not a database read on the routing path, so ADR-0005 holds — and because the DEK and KEK are never in the snapshot, a leaked snapshot store yields no usable secret (ADR-0016). Rotating or revoking a secret republishes the snapshot with fresh ciphertext (§8.2), so there is no separate secret cache to invalidate.
+Plaintext secrets never appear. Each target carries the credential id, the `dek_id`, the AES-256-GCM *ciphertext* of the provider secret, and the KEK-wrapped DEK (`wrappedDek`); the gateway unwraps the DEK once per isolate with the KEK (from the platform secret store, never in the snapshot) and decrypts the secret in-process (§14.3, ADR-0022, A2). This is a keyed local decrypt, not a database read on the routing path, so ADR-0005 holds — and because the DEK and KEK are never in the snapshot, a leaked snapshot store yields no usable secret (ADR-0016). Rotating or revoking a secret republishes the snapshot with fresh ciphertext (§8.2), so there is no separate secret cache to invalidate.
 
 ### 7.2 Schema (contracts)
 
@@ -1433,6 +1448,7 @@ export const SnapshotKey = z.object({
 export const SnapshotTarget = z.object({
   offeringId: z.string(), credentialId: z.string(), dekId: z.string(),
   credentialCiphertext: z.string(),     // base64 AES-256-GCM {iv|ct|tag} of the provider secret (ADR-0022)
+  wrappedDek: z.string(),               // base64 KEK-wrapped DEK; unwrapped once per isolate, KEK never in snapshot (A2)
   weight: z.number().int(), priority: z.number().int(),
   baseUrl: z.string().nullable(), region: z.string().nullable(),
 });
@@ -1506,7 +1522,7 @@ sequenceDiagram
   G->>P: upstream request (SSRF-checked, header allowlist)
   P-->>G: SSE / body stream
   G-->>C: passthrough stream (bounded tee)
-  G->>I: persist terminal-event intent to job_ledger (SYNC, before final bytes), then emit accepted+attempt+terminal (ADR-0023)
+  G->>I: terminal-event intent → job_ledger (SYNC before final bytes on enterprise/money path; platform queue on public path), then emit accepted+attempt+terminal (ADR-0023)
   I->>I: reduce → observation → projections
   I->>N: reconcile reservation → committed from terminal Observation's actual cost (H1)
 ```
@@ -1522,7 +1538,7 @@ State machine `received → profiled → authenticated → authorized → reserv
 | dispatching→streaming | upstream returns first byte within timeout | `PROVIDER_TIMEOUT`/`PROVIDER_HTTP_5XX` (→ retry/failover §8.7) |
 | streaming→reconciled | terminal reached (ok or error) | always terminal; emits terminal event |
 
-**Failure modes:** upstream 5xx/timeout → retry/failover (§8.7); reservation succeeds but request then rejected pre-dispatch → immediate `rollback` (§8.4); client disconnect mid-stream → terminal event with `PROVIDER_STREAM_ABORTED`, reservation reconciled on bytes actually produced; the terminal-event intent is written to `job_ledger` **synchronously before the final bytes are released**, so an instance killed after the last provider byte still lands the observation and reconciliation on the next drain (ADR-0023) — `after()`/the Queue only performs the reduce as an optimization, and provider traffic is unaffected (ADR-0017). **Idempotency:** the trace id is the request idempotency anchor; reservation is unique per `(budget_account_id, request_id)` so a retried gateway invocation cannot double-reserve.
+**Failure modes:** upstream 5xx/timeout → retry/failover (§8.7); reservation succeeds but request then rejected pre-dispatch → immediate `rollback` (§8.4); client disconnect mid-stream → terminal event with `PROVIDER_STREAM_ABORTED`, reservation reconciled on bytes actually produced; on the enterprise/money path the terminal-event intent is written to `job_ledger` **synchronously before the final bytes are released**, so an instance killed after the last provider byte still lands reconciliation on the next drain (ADR-0023); the DB-free public path emits best-effort via `after()`/the Queue (a lost log is acceptable, no budget truth is at stake there) — `after()`/the Queue only performs the reduce as an optimization, and provider traffic is unaffected (ADR-0017). **Idempotency:** the trace id is the request idempotency anchor; reservation is unique per `(budget_account_id, request_id)` so a retried gateway invocation cannot double-reserve.
 
 ### 8.2 Config publishing lifecycle
 
@@ -1558,9 +1574,9 @@ sequenceDiagram
   participant DB as Neon
   G->>Q: accepted, provider_attempt*, terminal events (idempotency_key, producer seq)
   Q->>R: batch (≤100 / ≤5s)
-  R->>DB: INSERT observation_event ON CONFLICT (ws,producer,idem) DO NOTHING
-  R->>R: reduce(events for trace) → Observation (deterministic)
-  R->>DB: UPSERT observation (unique on ws,trace_id)
+  R->>DB: INSERT observation_event ON CONFLICT (ws,producer,idem,created_at) DO NOTHING
+  R->>R: reduce(events for trace) → Observation (deterministic; created_at from ULID)
+  R->>DB: UPSERT observation ON CONFLICT (ws,trace_id,created_at)
   R->>DB: project → trace_summary, usage_record, cost_ledger
   R->>DB: increment usage_aggregate (hourly bucket)
   R->>DB: advance projection_checkpoint
@@ -2965,3 +2981,12 @@ This section is the **live working log** for the review-driven revision of this 
 ### 29.6 Round log
 
 - **Round 1 (2026-07-20):** Closed B1–B4 and H1–H10 in the sections above; folded M13/M14/M19/L11/L1. Next: adversarial re-review of the revised spec (multi-agent) → triage mediums → fix → commit.
+- **Round 2 (2026-07-20):** Two-agent (opus×2) adversarial re-review found Round-1 regressions and structural ADR-0021 effects. **Fixed this round:** NEW-3 (§8.3 `ON CONFLICT` now includes `created_at`); NEW-2/A1 (`rolling_30d`/`total` headroom sourced from never-shed `budget_window_state`, not partition-dropped `cost_ledger` — money blocker); NEW-1/A6 (ADR-0023 durability scoped to enterprise/money path; public path stays DB-free via the platform queue — ADR-0012 preserved); A2 (added `data_encryption_key` table + `wrappedDek` in the snapshot so the DEK-unwrap input exists without a DB read); A5/M7 (added `cache_write_tokens`/`audio_input_tokens`/`audio_output_tokens` columns to `observation` + `usage_record` and the three missing cost terms to §6.10). **Deferred to the build phase (structural, need design, tracked below):** A3 (control-plane directory DB for identity/workspace-switcher under ADR-0021), A4 (registry-catalog fan-out into N per-workspace DBs), A8 (per-installation connection model), H2-oversell-disclosure (document sharded-budget overshoot bound or restrict hard budgets to N=1). Remaining triaged mediums/lows from Round-2 agent B still open per §29.5.
+
+### 29.7 Structural items to resolve during scaffolding (ADR-0021 second-order)
+
+These are not spec-prose nits; they are design decisions the schema/skeleton must embody, so they are being resolved as code lands rather than as speculative spec text:
+
+- **A3 — Control-plane directory database (global).** Under one-workspace-per-DB, identity (`member`, `api_token`, `cli_authorization`) lives inside each tenant DB, so nothing maps a logged-in human → the set of workspaces/databases they may open. Need a global directory DB: `directory_user`, `user_workspace_membership(user_id, workspace_id, database_ref, role)`, `installation_directory(installation_id, workspace_id, database_ref, region, edition)`. Auth resolves against the directory, then opens the selected workspace DB; the per-DB `member` row is the tenant-local projection.
+- **A4 — Catalog replication fan-out.** registry-sync (§11.6) must apply the pinned catalog into every tenant DB (per-DB `job_ledger` job fanned out from the directory, `catalog_revision` recorded per DB, drift alert), and the fixed ~5,696-model catalog footprint must be added to the §13 capacity floor.
+- **A8 — Per-request DB routing.** "Connection per installation" is infeasible on serverless at N-DB scale; route per request from the directory to a bounded per-instance pool keyed by `database_ref`; cross-installation views come from the directory / rolled-up metrics, never N-way live fan-out.
