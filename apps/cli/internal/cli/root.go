@@ -40,6 +40,7 @@ Exit codes: 0 ok, 1 generic error, 2 usage error, 3 auth error,
 	root.PersistentFlags().StringVar(&flagContext, "context", os.Getenv("MANIFOLD_CONTEXT"), "named CLI context (config/session profile) to act in (env MANIFOLD_CONTEXT)")
 	root.PersistentFlags().StringVar(&flagWorkspace, "workspace", os.Getenv("MANIFOLD_WORKSPACE"), "workspace id, overrides the context's workspace (env MANIFOLD_WORKSPACE)")
 	root.PersistentFlags().StringVar(&flagBaseURL, "base-url", os.Getenv("MANIFOLD_API"), "control-plane base URL, overrides the context (env MANIFOLD_API)")
+	root.PersistentFlags().StringVar(&flagToken, "token", os.Getenv("MANIFOLD_TOKEN"), "control-plane API token (Bearer), overrides the context (env MANIFOLD_TOKEN)")
 	root.PersistentFlags().BoolVar(&flagNoInput, "no-input", false, "non-interactive: never prompt, error instead (env MANIFOLD_NONINTERACTIVE)")
 	root.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "only print ids/errors")
 

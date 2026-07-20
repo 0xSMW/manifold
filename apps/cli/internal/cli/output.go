@@ -21,6 +21,7 @@ var (
 	flagContext   string
 	flagWorkspace string
 	flagBaseURL   string
+	flagToken     string
 	flagNoInput   bool
 	flagQuiet     bool
 )

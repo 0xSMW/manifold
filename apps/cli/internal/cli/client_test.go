@@ -1,0 +1,99 @@
+package cli
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+// The `key list` command is REAL: GET {base}/api/v1/keys with Bearer auth. httptest.Server is a real
+// loopback HTTP server (real sockets), so these exercise the actual client, not a mock.
+
+func TestKeyList_RealHTTP_SendsBearerAndRendersData(t *testing.T) {
+	var gotAuth, gotPath, gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		gotAuth = req.Header.Get("Authorization")
+		gotPath = req.URL.Path
+		gotAccept = req.Header.Get("Accept")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":[{"id":"vk_1","displayPrefix":"sk-abc"}],"nextCursor":null}`))
+	}))
+	defer srv.Close()
+
+	out, err := runCLI(t, "key", "list", "--base-url", srv.URL, "--token", "tok_secret", "--json")
+	if err != nil {
+		t.Fatalf("key list returned error: %v", err)
+	}
+	if gotPath != "/api/v1/keys" {
+		t.Fatalf("hit wrong path: %q (want /api/v1/keys)", gotPath)
+	}
+	if gotAuth != "Bearer tok_secret" {
+		t.Fatalf("bearer auth not sent: %q", gotAuth)
+	}
+	if gotAccept != "application/json" {
+		t.Fatalf("Accept header wrong: %q", gotAccept)
+	}
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if e := json.Unmarshal([]byte(out), &parsed); e != nil {
+		t.Fatalf("--json output not the passed-through body: %q (%v)", out, e)
+	}
+	if len(parsed.Data) != 1 || parsed.Data[0].ID != "vk_1" {
+		t.Fatalf("list data not rendered: %q", out)
+	}
+}
+
+func TestKeyList_RealHTTP_401MapsToAuthExit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"UNAUTHENTICATED","message":"missing bearer token"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := runCLI(t, "key", "list", "--base-url", srv.URL)
+	if err == nil {
+		t.Fatal("expected an auth error for 401, got nil")
+	}
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("expected *CLIError, got %T", err)
+	}
+	if cliErr.Code != ExitAuth {
+		t.Fatalf("401 UNAUTHENTICATED must map to ExitAuth(3), got %d", cliErr.Code)
+	}
+	if cliErr.ErrCode != "UNAUTHENTICATED" {
+		t.Fatalf("expected ErrCode UNAUTHENTICATED, got %q", cliErr.ErrCode)
+	}
+}
+
+func TestKeyList_RealHTTP_404MapsToNotFoundExit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"no such resource"}}`))
+	}))
+	defer srv.Close()
+
+	_, err := runCLI(t, "key", "list", "--base-url", srv.URL, "--token", "t")
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitNotFound {
+		t.Fatalf("404 NOT_FOUND must map to ExitNotFound(4); got %v", err)
+	}
+}
+
+func TestKeyList_NoBaseURL_UsageError(t *testing.T) {
+	// With no base URL and no MANIFOLD_API, the real client refuses with a usage error.
+	t.Setenv("MANIFOLD_API", "")
+	_, err := runCLI(t, "key", "list")
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitUsage {
+		t.Fatalf("no base URL must be ExitUsage(2); got %v", err)
+	}
+}

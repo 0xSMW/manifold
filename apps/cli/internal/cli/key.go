@@ -37,7 +37,8 @@ func mintKey(cmd *cobra.Command, args []string, flags map[string]string) error {
 func newKeyCmd() *cobra.Command {
 	c := branch("key", "virtual keys")
 	c.AddCommand(
-		leafList("key", "list keys"),
+		// `key list` is REAL: GET {base-url}/api/v1/keys with bearer auth (not a stub echo).
+		apiLeafList("key", "/keys", "list keys"),
 		leafGet("key", "get a key (metadata only, never the plaintext)"),
 		buildLeaf(cmdSpec{
 			Use:   "mint",
