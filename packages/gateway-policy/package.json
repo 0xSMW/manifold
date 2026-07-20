@@ -1,0 +1,27 @@
+{
+  "name": "@manifold/gateway-policy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Deny-first policy evaluator, reason codes, and simulator core (SPEC §11). Pure — depends only on @manifold/contracts and @manifold/domain; no platform or DB imports (SPEC §4.2).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@manifold/contracts": "0.0.0",
+    "@manifold/domain": "0.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
