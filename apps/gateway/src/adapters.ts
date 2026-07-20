@@ -258,10 +258,16 @@ const MAX_REDIRECTS = 10;
  * address, no rebind) needs a custom undici dispatcher. Checking all families closes the common
  * dual-stack/rebind cases. Loopback/http are permitted only when the injected policy relaxes them.
  */
+/** Resolve a hostname to its addresses (all families). Injectable so an adversarial test can
+ *  simulate hostile DNS (a name resolving to a private/metadata address). */
+export type HostResolver = (host: string) => Promise<{ address: string }[]>;
+
 export class EgressFetcher implements Fetcher {
   private readonly policy: SsrfPolicy;
-  constructor(policy: SsrfPolicy = STRICT_SSRF) {
+  private readonly resolve: HostResolver;
+  constructor(policy: SsrfPolicy = STRICT_SSRF, resolve?: HostResolver) {
     this.policy = policy;
+    this.resolve = resolve ?? ((host) => lookup(host, { all: true }));
   }
 
   /** Validate one destination URL: scheme (via the shared predicate) + no resolved private address. */
@@ -277,7 +283,11 @@ export class EgressFetcher implements Fetcher {
       return;
     }
     // Resolve ALL families and reject if ANY resolved address is private (dual-stack blind spot).
-    const resolved = await lookup(host, { all: true });
+    // This is the core DNS-rebind defense: a name whose DNS answer points at a private/metadata
+    // address is blocked BEFORE the request is issued. (Full connection pinning to the exact validated
+    // address — closing the fetch-time re-resolution TOCTOU — needs a custom dispatcher; see the class
+    // doc RESIDUAL. This check catches a hostile answer at validation time.)
+    const resolved = await this.resolve(host);
     for (const { address } of resolved) {
       if (isPrivateIp(address)) {
         throw new Error(`egress: blocked private address ${address} (resolved from ${host})`);

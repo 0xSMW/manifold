@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { after, test } from "node:test";
-import { EgressFetcher } from "../src/adapters.ts";
+import { EgressFetcher, type HostResolver } from "../src/adapters.ts";
 
 const SECRET = "sk-ant-SECRET-must-never-leak-to-a-redirect-target";
 
@@ -109,4 +109,29 @@ test("EgressFetcher follows a SAME-host redirect (does not over-block legitimate
   const res = await fetcher.fetch(new Request(`http://127.0.0.1:${port}/start`));
   assert.equal(res.status, 200);
   assert.equal(finalHits, 1, "the same-host redirect target should be reached");
+});
+
+// ── DNS-rebind defense (§14.4): a hostile DNS answer that points a name at a private/metadata address
+// must be blocked at validation, BEFORE any request is issued. These inject the resolver to simulate
+// the rebind answer deterministically (no real DNS). NOTE: this is the resolve-then-validate defense;
+// full connection PINNING to the exact validated IP (closing the fetch-time re-resolution window) is a
+// documented residual that needs a custom dispatcher — not claimed here.
+test("DNS rebind: a hostname resolving to cloud-metadata is blocked before dispatch", async () => {
+  const rebind: HostResolver = async () => [{ address: "169.254.169.254" }]; // hostile answer
+  const fetcher = new EgressFetcher({ allowInsecureHttp: true, allowPrivate: false }, rebind);
+  await assert.rejects(
+    fetcher.fetch(new Request("https://provider.example.com/v1/messages")),
+    /blocked private address 169\.254\.169\.254/,
+    "a name resolving to 169.254.169.254 must be refused, never dispatched",
+  );
+});
+
+test("DNS rebind: a name resolving to public AND private is blocked (any-private-blocks, dual-stack)", async () => {
+  const mixed: HostResolver = async () => [{ address: "8.8.8.8" }, { address: "10.0.0.5" }];
+  const fetcher = new EgressFetcher({ allowInsecureHttp: true, allowPrivate: false }, mixed);
+  await assert.rejects(
+    fetcher.fetch(new Request("https://dual.example.com/")),
+    /blocked private address 10\.0\.0\.5/,
+    "a private address in ANY resolved family blocks the whole request",
+  );
 });
