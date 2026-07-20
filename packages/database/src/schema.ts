@@ -22,7 +22,7 @@ import {
   text,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { bytea, citext, id, money, partId, ts, tokens } from "./columns";
+import { bytea, citext, id, money, partId, ts, tokens } from "./columns.js";
 
 // ---------------------------------------------------------------------------
 // jsonb payload types (validated at the edge by @manifold/contracts Zod schemas)
@@ -345,6 +345,10 @@ export const providerCredential = pgTable(
     baseUrl: text("base_url"),
     deployment: jsonb("deployment"),
     allowedHosts: jsonb("allowed_hosts").notNull().default([]),
+    // `status` is the pre-revoke validation/rotation lifecycle only; `revoked_at` is the SINGLE
+    // revoke signal (F23-F3). A row is revoked iff revoked_at IS NOT NULL — 'revoked' is NOT a
+    // status value. The CHECK now lists every non-terminal machine state incl. 'rotating', so the
+    // domain machine (PROVIDER_CREDENTIAL_STATES) and the CHECK no longer drift.
     status: text("status").notNull().default("unvalidated"),
     lastValidatedAt: ts("last_validated_at"),
     revokedAt: ts("revoked_at"),
@@ -357,7 +361,7 @@ export const providerCredential = pgTable(
       .where(sql`revoked_at IS NULL`),
     check(
       "provider_credential_status_chk",
-      sql`${t.status} IN ('unvalidated','valid','invalid','revoked')`,
+      sql`${t.status} IN ('unvalidated','valid','invalid','rotating')`,
     ),
   ],
 );

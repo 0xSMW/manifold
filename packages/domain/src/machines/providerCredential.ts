@@ -3,6 +3,11 @@
 // `unvalidated → valid ⇄ invalid → rotating → revoked`. Terminal: `revoked`. Credentials
 // use lifecycle columns (never row deletion, §5.3), so `revoked` is reachable directly
 // from `valid`/`invalid` (immediate revoke) as well as via `rotating` (planned rotation).
+//
+// Persistence mapping (F23-F3): the pre-revoke states map 1:1 to provider_credential.status
+// ('unvalidated','valid','invalid','rotating' — exactly the status CHECK), while `revoked` is the
+// single revoke signal `revoked_at IS NOT NULL` (NOT a status value). Keep the four non-terminal
+// states here in lock-step with provider_credential_status_chk so the machine and DB never drift.
 import { invalidTransition, ok, type Transition } from "./types.js";
 
 export const PROVIDER_CREDENTIAL_STATES = [

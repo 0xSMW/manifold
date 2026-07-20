@@ -43,6 +43,13 @@
       "when": 1784510276374,
       "tag": "0005_partition_rls_and_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1784510276375,
+      "tag": "0006_provider_credential_revoke_signal",
+      "breakpoints": true
     }
   ]
 }

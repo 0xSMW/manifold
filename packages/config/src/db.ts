@@ -17,10 +17,6 @@ export function jval(v: unknown): JsonParam {
   return v as unknown as JsonParam;
 }
 
-export function client(db: Database): PgSql {
-  return db.$client;
-}
-
 // ── Row shapes (snake_case, as returned by postgres-js) ─────────────────────
 export interface InstallationRow {
   id: string;
@@ -216,12 +212,14 @@ export async function readCredential(
   sql: PgSql,
   id: string,
 ): Promise<CredentialRow | null> {
-  // Only a LIVE credential may be embedded in the snapshot: never a revoked or invalid one
-  // (review bug: this read did not filter revoked_at/status, so a revoked/rotated-out provider key
-  // still shipped in the snapshot). A revoked/invalid credential returns null here → assembleSnapshot
-  // drops the referencing target, so a dead key never reaches the gateway. status IN
-  // ('valid','unvalidated'): 'unvalidated' is the default for a freshly-added, not-yet-probed
-  // credential and is still live; 'invalid' and 'revoked' are excluded, as is any revoked_at row.
+  // Only a LIVE credential may be embedded in the snapshot: never a revoked, invalid, or rotating
+  // one (review bug: this read did not filter revoked_at/status, so a revoked/rotated-out provider
+  // key still shipped in the snapshot). Such a credential returns null here → assembleSnapshot drops
+  // the referencing target, so a dead key never reaches the gateway. revoked_at IS NULL is the
+  // SINGLE revoke signal (F23-F3): a row is revoked iff revoked_at IS NOT NULL — 'revoked' is no
+  // longer a status value. status IN ('valid','unvalidated'): 'unvalidated' is the default for a
+  // freshly-added, not-yet-probed credential and is still live; 'invalid' and 'rotating' are
+  // excluded, as is any revoked_at row.
   const rows = await sql<CredentialRow[]>`
     SELECT id, provider, encrypted_secret, dek_id, base_url, allowed_hosts
     FROM provider_credential
