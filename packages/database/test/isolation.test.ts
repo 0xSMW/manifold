@@ -157,6 +157,45 @@ test("RLS: WITH CHECK blocks writing a foreign-tenant row (fail-closed on write)
   assert.equal(err!.code, "42501");
 });
 
+test("RLS: querying a partition CHILD directly is workspace-scoped (finding 1, the leak)", async () => {
+  // Postgres does NOT inherit RLS from a partitioned parent to its children. Before 0005 the
+  // bootstrap children had no RLS, so `SELECT … FROM cost_ledger_YYYYMM` (naming the child)
+  // returned EVERY tenant's rows. Seed a second-tenant (ws_b) row co-located in the SAME child
+  // as the ws_a seed row, then read the child DIRECTLY as the app role under ws_a's GUC.
+  await sql`INSERT INTO cost_ledger ${sql({
+    id: "cl-b", workspace_id: "ws_b", amount_microusd: 700, fidelity: "exact",
+    occurred_at: new Date(),
+  })}`;
+
+  // Resolve the concrete monthly child partition that holds cost_ledger rows (created for
+  // CURRENT_DATE by 0001; both cl-1 and cl-b default created_at=now() land in it).
+  const [{ child }] = await sql`
+    SELECT c.relname AS child
+    FROM pg_inherits i
+    JOIN pg_class c ON c.oid = i.inhrelid
+    WHERE i.inhparent = 'cost_ledger'::regclass
+      AND c.relname <> 'cost_ledger_default'
+  `;
+  assert.ok(child, "a monthly cost_ledger child partition must exist");
+
+  // As superuser (RLS-exempt) both tenants' rows are physically in that child.
+  const allRows = await sql.unsafe(
+    `SELECT id, workspace_id FROM "${child}" ORDER BY id`,
+  );
+  assert.equal(allRows.length, 2, "both ws_a and ws_b rows are co-located in the child");
+
+  // As the non-superuser app role under ws_a's GUC, a DIRECT child query must show ONLY ws_a.
+  const scoped = await sql.begin(async (tx: Sql) => {
+    await tx.unsafe("SET LOCAL ROLE app_role");
+    await tx.unsafe("SELECT set_config('manifold.workspace_id','ws_a', true)");
+    return tx.unsafe(`SELECT id, workspace_id FROM "${child}"`);
+  });
+  assert.equal(scoped.length, 1, "child partition RLS must scope a direct child query to ws_a");
+  assert.equal(scoped[0].workspace_id, "ws_a");
+  assert.equal(scoped[0].id, "cl-1");
+  for (const r of scoped) assert.equal(r.workspace_id, "ws_a", "no ws_b row may leak via the child");
+});
+
 // ---------------------------------------------------------------------------
 // 3. ATTACK B1: reservation idempotency + partition routing + partition shape (§6.7).
 // ---------------------------------------------------------------------------
@@ -172,11 +211,11 @@ test("B1: duplicate reservation (same account+request+created_at) is rejected by
   const ts = currentMonthInstant();
   const exp = new Date(ts.getTime() + 3_600_000);
 
-  // First reservation succeeds.
+  // First reservation succeeds. window_start is NOT NULL as of 0005; reserve() always writes it.
   await sql`INSERT INTO budget_reservation ${sql({
     id: "res-1", workspace_id: "ws_a", budget_account_id: "ba_a", request_id: "req-1",
     estimated_input_tokens: 10, max_output_tokens: 10, reserved_microusd: 100,
-    status: "reserved", expires_at: exp, created_at: ts,
+    status: "reserved", expires_at: exp, created_at: ts, window_start: ts,
   })}`;
 
   // Duplicate on (budget_account_id, request_id, created_at) must be rejected.
@@ -185,7 +224,7 @@ test("B1: duplicate reservation (same account+request+created_at) is rejected by
     await sql`INSERT INTO budget_reservation ${sql({
       id: "res-2", workspace_id: "ws_a", budget_account_id: "ba_a", request_id: "req-1",
       estimated_input_tokens: 99, max_output_tokens: 99, reserved_microusd: 999,
-      status: "reserved", expires_at: exp, created_at: ts,
+      status: "reserved", expires_at: exp, created_at: ts, window_start: ts,
     })}`;
   } catch (e) {
     err = e as typeof err;
@@ -198,21 +237,22 @@ test("B1: duplicate reservation (same account+request+created_at) is rejected by
   );
 });
 
-test("B1: reservation with created_at outside any partition raises 'no partition found'", async () => {
-  const outside = new Date(Date.UTC(2000, 0, 1, 0, 0, 0)); // year 2000: no partition exists
+test("finding-5: an out-of-range created_at lands in the DEFAULT partition (ingest doesn't error)", async () => {
+  // Migration 0005 adds a DEFAULT partition to every RANGE parent so an out-of-month created_at
+  // no longer raises "no partition of relation …" and hard-fails ingest. (The app still
+  // validates/denies out-of-range at the boundary; the default is a safety net.)
+  const outside = new Date(Date.UTC(2000, 0, 1, 0, 0, 0)); // year 2000: no monthly partition exists
   const exp = new Date(outside.getTime() + 3_600_000);
-  let err: { message?: string } | undefined;
-  try {
-    await sql`INSERT INTO budget_reservation ${sql({
-      id: "res-oob", workspace_id: "ws_a", budget_account_id: "ba_a", request_id: "req-oob",
-      estimated_input_tokens: 1, max_output_tokens: 1, reserved_microusd: 1,
-      status: "reserved", expires_at: exp, created_at: outside,
-    })}`;
-  } catch (e) {
-    err = e as { message?: string };
-  }
-  assert.ok(err, "insert into a non-existent partition must fail");
-  assert.match(err!.message ?? "", /no partition of relation/i);
+  await sql`INSERT INTO budget_reservation ${sql({
+    id: "res-oob", workspace_id: "ws_a", budget_account_id: "ba_a", request_id: "req-oob",
+    estimated_input_tokens: 1, max_output_tokens: 1, reserved_microusd: 1,
+    status: "reserved", expires_at: exp, created_at: outside, window_start: outside,
+  })}`;
+  // The row must exist and physically reside in the DEFAULT partition, not a monthly one.
+  const [row] = await sql`
+    SELECT tableoid::regclass::text AS part FROM budget_reservation WHERE id = 'res-oob'
+  `;
+  assert.equal(row.part, "budget_reservation_default", "out-of-range row must land in the default partition");
 });
 
 test("B1: pg_partitioned_table shows exactly 8 RANGE + 1 LIST partitioned tables", async () => {

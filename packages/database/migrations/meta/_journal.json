@@ -36,6 +36,13 @@
       "when": 1784510276373,
       "tag": "0004_cache_read_tokens_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784510276374,
+      "tag": "0005_partition_rls_and_integrity",
+      "breakpoints": true
     }
   ]
 }

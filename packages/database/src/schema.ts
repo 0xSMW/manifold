@@ -796,10 +796,10 @@ export const budgetReservation = pgTable(
     reconciledAt: ts("reconciled_at"),
     // Exact counter-row coordinates that reserve() bumped (added by migration
     // 0003_reservation_counter_coords, SPEC §16.3). commit()/rollback()/sweepExpired()
-    // decrement THAT same budget_window_state row instead of re-deriving it. `window_start`
-    // is nullable only because it was added to an existing partitioned table; reserve()
-    // always writes it. `shard` mirrors budget_window_state.shard (smallint, default 0).
-    windowStart: ts("window_start"),
+    // decrement THAT same budget_window_state row instead of re-deriving it. reserve() always
+    // writes it; tightened to NOT NULL by migration 0005 (it was born nullable only because it
+    // was added to an existing partitioned table). `shard` mirrors budget_window_state.shard.
+    windowStart: ts("window_start").notNull(),
     shard: smallint("shard").notNull().default(0),
   },
   (t) => [
@@ -809,6 +809,11 @@ export const budgetReservation = pgTable(
       t.requestId,
       t.createdAt,
     ),
+    // Sweep index (0005): sweepExpired() finds reserved rows past expiry without seq-scanning
+    // every partition. Partial on status='reserved' so committed/rolled_back/expired are excluded.
+    index("reservation_sweep_idx")
+      .on(t.expiresAt)
+      .where(sql`status = 'reserved'`),
     check("reservation_reserved_microusd_chk", sql`${t.reservedMicrousd} >= 0`),
     check(
       "reservation_status_chk",
@@ -835,6 +840,12 @@ export const budgetWindowState = pgTable(
   (t) => [
     primaryKey({ columns: [t.budgetAccountId, t.windowStart, t.shard] }),
     index("budget_window_state_ws_idx").on(t.workspaceId),
+    // Non-negativity of the money-truth counters (0005, §16.3): a decrement can never drive
+    // committed/reserved below zero.
+    check(
+      "budget_window_state_nonneg_chk",
+      sql`${t.committedMicrousd} >= 0 AND ${t.reservedMicrousd} >= 0 AND ${t.committedTokens} >= 0 AND ${t.reservedTokens} >= 0`,
+    ),
   ],
 );
 
@@ -1046,6 +1057,14 @@ export const usageRecord = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.id, t.createdAt] }),
+    // Idempotent re-ingest (0005): with ON CONFLICT DO NOTHING + a deterministic created_at in
+    // observe.ts, a replayed observation cannot double-insert usage. created_at is in the key
+    // because the table is partitioned by it.
+    uniqueIndex("usage_record_ingest_uq").on(
+      t.workspaceId,
+      t.observationId,
+      t.createdAt,
+    ),
     check(
       "usage_record_fidelity_chk",
       sql`${t.fidelity} IN ('exact','estimated','unknown')`,
@@ -1083,6 +1102,15 @@ export const costLedger = pgTable(
       t.workspaceId,
       t.costCenterId,
       t.occurredAt,
+    ),
+    // Idempotent re-ingest (0005): with ON CONFLICT DO NOTHING + a deterministic created_at in
+    // observe.ts, a replayed observation cannot double-insert cost. created_at is in the key
+    // because the table is partitioned by it. (observation_id is nullable for non-observation
+    // ledger entries; NULLs are distinct, so those rows are never deduped by this index.)
+    uniqueIndex("cost_ledger_ingest_uq").on(
+      t.workspaceId,
+      t.observationId,
+      t.createdAt,
     ),
     check(
       "cost_ledger_fidelity_chk",
