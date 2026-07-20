@@ -1,0 +1,20 @@
+{
+  "name": "@manifold/crypto",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Envelope encryption primitives (SPEC §14.3, ADR-0016/0022): AES-256-GCM seal/open, KEK-wrapped DEKs, HMAC key hashing. node:crypto only, zero external deps.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "test": "node --test $(find dist -name '*.test.js')"
+  }
+}

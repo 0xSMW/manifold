@@ -6,6 +6,7 @@
     { "path": "packages/ports" },
     { "path": "packages/gateway-core" },
     { "path": "packages/database" },
-    { "path": "packages/config" }
+    { "path": "packages/config" },
+    { "path": "packages/crypto" }
   ]
 }
