@@ -82,6 +82,7 @@ interface CtxOpts {
   fetcher: GatewayContext["fetcher"];
   ssrfPolicy?: GatewayContext["ssrfPolicy"];
   resolveSecret?: GatewayContext["resolveSecret"];
+  clock?: GatewayContext["clock"];
 }
 function makeCtx(o: CtxOpts): { ctx: GatewayContext; ingest: FakeIngestSink } {
   const ingest = new FakeIngestSink();
@@ -89,7 +90,7 @@ function makeCtx(o: CtxOpts): { ctx: GatewayContext; ingest: FakeIngestSink } {
     installationId: "test",
     snapshot: o.snapshot,
     crypto,
-    clock: new FixedClock(),
+    clock: o.clock ?? new FixedClock(),
     ingest,
     fetcher: o.fetcher,
     pepper,
@@ -261,6 +262,109 @@ test("(g) real HTTP server wiring: bad key → 401 through node:http", async () 
   assert.equal(res.status, 401);
   const body = (await res.json()) as { error: { code: string } };
   assert.equal(body.error.code, "AUTH_KEY_UNKNOWN");
+});
+
+// ── (h) a successful dispatch emits BOTH accepted AND a terminal event ────────
+// Regression: reduce() needs a terminal to close the trace; a 200 that emits only `accepted`
+// leaves the trace "incomplete" → $0 cost. Every request must end with a terminal.
+test("(h) success path emits accepted + terminal (trace is complete)", async () => {
+  const fetcher = new FakeFetcher(() => new Response("ok", { status: 200 }));
+  const { ctx, ingest } = makeCtx({ snapshot: makeSnapshot(makeTarget()), fetcher });
+
+  const res = await handleRequest(ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  assert.equal(res.status, 200);
+
+  const kinds = ingest.events.map((e) => e.kind);
+  assert.ok(kinds.includes("accepted"), "accepted emitted");
+  assert.ok(kinds.includes("terminal"), "terminal emitted");
+  const terminal = ingest.events.find((e) => e.kind === "terminal");
+  assert.equal(terminal?.status, 200, "terminal carries the final upstream status");
+});
+
+// ── (i) occurredAt is stamped per-event, not once at request start ────────────
+// Regression: one shared `now` collapses latency/time-windowing. With a clock that advances
+// on each read, accepted and terminal must carry distinct occurredAt instants.
+test("(i) occurredAt is per-event (accepted ≠ terminal with a ticking clock)", async () => {
+  let ms = Date.parse("2026-07-20T00:00:00.000Z");
+  const tickingClock = {
+    now(): Date {
+      const d = new Date(ms);
+      ms += 1000; // advance 1s per read
+      return d;
+    },
+  };
+  const fetcher = new FakeFetcher(() => new Response("ok", { status: 200 }));
+  const { ctx, ingest } = makeCtx({
+    snapshot: makeSnapshot(makeTarget()),
+    fetcher,
+    clock: tickingClock,
+  });
+
+  await handleRequest(ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  const accepted = ingest.events.find((e) => e.kind === "accepted");
+  const terminal = ingest.events.find((e) => e.kind === "terminal");
+  assert.ok(accepted && terminal, "both events emitted");
+  assert.notEqual(accepted!.occurredAt, terminal!.occurredAt, "distinct per-event timestamps");
+});
+
+// ── (j) undici-shaped timeout → PROVIDER_TIMEOUT 504 (not a generic 502) ──────
+// Regression: undici throws TypeError('fetch failed') with the TimeoutError on `.cause`, so a
+// top-level `instanceof DOMException` check never matched and timeouts fell through to 5xx.
+test("(j) undici timeout (TimeoutError on err.cause) → 504 PROVIDER_TIMEOUT", async () => {
+  const fetcher: GatewayContext["fetcher"] = {
+    fetch: () => {
+      const err = new TypeError("fetch failed");
+      (err as { cause?: unknown }).cause = new DOMException("The operation timed out.", "TimeoutError");
+      throw err;
+    },
+  };
+  const { ctx, ingest } = makeCtx({ snapshot: makeSnapshot(makeTarget()), fetcher });
+
+  const res = await handleRequest(ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  assert.equal(res.status, 504);
+  const body = (await res.json()) as { error: { code: string } };
+  assert.equal(body.error.code, "PROVIDER_TIMEOUT");
+  assert.equal(ingest.events.at(-1)?.reasonCodes[0], "PROVIDER_TIMEOUT");
+});
+
+// ── (k) egress SSRF block from the fetcher → 403 SSRF_BLOCKED (not 502) ────────
+// Regression: EgressFetcher's post-DNS recheck throws Error('egress: blocked private address …');
+// the catch mapped it to PROVIDER_HTTP_5XX 502 instead of the SSRF safety code.
+test("(k) egress-blocked fetch error → 403 SSRF_BLOCKED", async () => {
+  const fetcher: GatewayContext["fetcher"] = {
+    fetch: () => {
+      throw new Error("egress: blocked private address 10.0.0.5");
+    },
+  };
+  const { ctx, ingest } = makeCtx({ snapshot: makeSnapshot(makeTarget()), fetcher });
+
+  const res = await handleRequest(ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  assert.equal(res.status, 403);
+  const body = (await res.json()) as { error: { code: string } };
+  assert.equal(body.error.code, "SSRF_BLOCKED");
+  assert.equal(ingest.events.at(-1)?.reasonCodes[0], "SSRF_BLOCKED");
+});
+
+// ── (l) an unparseable expiresAt fails CLOSED → 401 AUTH_KEY_EXPIRED ───────────
+// Regression: new Date('not-a-date').getTime() is NaN and `NaN <= now` is false, so a corrupt
+// expiry never expired the key (fail-open). It must be treated as expired.
+test("(l) corrupt expiresAt ('not-a-date') → 401 AUTH_KEY_EXPIRED", async () => {
+  const base = makeSnapshot(makeTarget());
+  const snapshot: Snapshot = {
+    ...base,
+    keys: {
+      [keyHash]: { ...base.keys[keyHash]!, expiresAt: "not-a-date" },
+    },
+  };
+  const { ctx } = makeCtx({
+    snapshot,
+    fetcher: { fetch: () => { throw new Error("upstream must not be called"); } },
+  });
+
+  const res = await handleRequest(ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  assert.equal(res.status, 401);
+  const body = (await res.json()) as { error: { code: string } };
+  assert.equal(body.error.code, "AUTH_KEY_EXPIRED");
 });
 
 function listen(server: Server): Promise<number> {

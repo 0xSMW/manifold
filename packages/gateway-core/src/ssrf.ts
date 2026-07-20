@@ -34,6 +34,7 @@ function isPrivateIpv4(o: number[]): boolean {
   if (a === 172 && b >= 16 && b <= 31) return true; // RFC-1918 172.16.0.0/12
   if (a === 192 && b === 168) return true; // RFC-1918 192.168.0.0/16
   if (a === 169 && b === 254) return true; // link-local 169.254.0.0/16
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT 100.64.0.0/10 (RFC 6598; cloud metadata)
   if (a === 0) return true; // 0.0.0.0/8
   if (a >= 224) return true; // multicast / reserved
   return false;
@@ -82,6 +83,13 @@ function isPrivateIpv6Groups(g: number[]): boolean {
   if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7 unique-local
   // IPv4-mapped ::ffff:a.b.c.d  (first 5 groups zero, 6th == 0xffff)
   if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0xffff) {
+    return isPrivateIpv4([g[6]! >> 8, g[6]! & 0xff, g[7]! >> 8, g[7]! & 0xff]);
+  }
+  // IPv4-COMPATIBLE ::a.b.c.d / ::hex:hex (first 6 groups zero, embedded v4 in the last 2). This
+  // legacy/deprecated form is still routable to the embedded v4, so `::7f00:1` / `::127.0.0.1`
+  // reach 127.0.0.1 — classify by the embedded IPv4 so loopback/RFC-1918 forms can't slip through.
+  // (::1 / :: are already handled above by the head-zero branch.)
+  if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
     return isPrivateIpv4([g[6]! >> 8, g[6]! & 0xff, g[7]! >> 8, g[7]! & 0xff]);
   }
   return false;

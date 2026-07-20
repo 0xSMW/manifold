@@ -32,6 +32,13 @@ const mustBlock = [
   "https://[fe80::1]/", // link-local
   "https://0.0.0.0/",
   "https://metadata.google.internal/",
+  "https://[::7f00:1]/", // IPv4-COMPATIBLE ::hex:hex loopback (127.0.0.1) — first 6 groups zero
+  "https://[::127.0.0.1]/", // IPv4-COMPATIBLE ::a.b.c.d loopback (dotted tail)
+  "https://[::a9fe:a9fe]/", // IPv4-COMPATIBLE link-local/metadata 169.254.169.254
+  "https://[::a00:1]/", // IPv4-COMPATIBLE RFC-1918 10.0.0.1
+  "https://100.100.100.200/", // CGNAT 100.64.0.0/10 (cloud metadata on some providers)
+  "https://100.64.0.1/", // CGNAT lower bound
+  "https://100.127.255.255/", // CGNAT upper bound
 ];
 
 for (const url of mustBlock) {
@@ -75,11 +82,28 @@ const privateIps = [
   "fe80::1",
   "10.1.2.3",
   "169.254.169.254",
+  // IPv4-COMPATIBLE IPv6 (first 6 groups zero, embedded v4 in the last 2) — hex and dotted forms.
+  "::7f00:1", // 127.0.0.1 (hex) — regression: was FALSE before the classifier fix
+  "::127.0.0.1", // 127.0.0.1 (dotted)
+  "::a9fe:a9fe", // 169.254.169.254 link-local/metadata
+  "::a00:1", // 10.0.0.1 RFC-1918
+  // CGNAT 100.64.0.0/10 (used as a metadata/shared range on some clouds).
+  "100.64.0.0", // lower bound
+  "100.100.100.200",
+  "100.127.255.255", // upper bound
 ];
 for (const ip of privateIps) {
   test(`isPrivateIp('${ip}') === true`, () => assert.equal(isPrivateIp(ip), true));
 }
-const publicIps = ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"]; // real public v4/v6
+// Public addresses that must NOT be misclassified — including the boundaries just OUTSIDE CGNAT.
+const publicIps = [
+  "8.8.8.8",
+  "1.1.1.1",
+  "2606:4700:4700::1111",
+  "100.63.255.255", // one below CGNAT (100.64.0.0/10)
+  "100.128.0.1", // one above CGNAT
+  "99.64.0.1", // shares the second octet but not the first
+]; // real public v4/v6
 for (const ip of publicIps) {
   test(`isPrivateIp('${ip}') === false`, () => assert.equal(isPrivateIp(ip), false));
 }

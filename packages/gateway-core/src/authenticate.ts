@@ -45,8 +45,14 @@ export async function authenticate(
   if (record.revoked) {
     return { ok: false, reason: "AUTH_KEY_REVOKED", message: "api key has been revoked" };
   }
-  if (record.expiresAt !== null && new Date(record.expiresAt).getTime() <= now.getTime()) {
-    return { ok: false, reason: "AUTH_KEY_EXPIRED", message: "api key has expired" };
+  if (record.expiresAt !== null) {
+    // Fail CLOSED on an unparseable expiry: Date.parse of a corrupt/typo string is NaN, and
+    // `NaN <= now` is false — which would let a malformed key live forever. Treat any expiry we
+    // cannot parse as already expired (§14.3, defense-in-depth).
+    const expiresMs = new Date(record.expiresAt).getTime();
+    if (Number.isNaN(expiresMs) || expiresMs <= now.getTime()) {
+      return { ok: false, reason: "AUTH_KEY_EXPIRED", message: "api key has expired" };
+    }
   }
   if (record.profileId !== profileId) {
     return {

@@ -99,16 +99,66 @@ test("§7.3: a snapshot signed by a DIFFERENT key is REJECTED under the pinned k
   assert.throws(() => new SnapshotFileStore(path, publicKeyBase64), /bad_signature/);
 });
 
+// BUG (fail-OPEN in production): with NO pinned public key the loader previously only WARNED and
+// loaded an unsigned/forged snapshot everywhere — including production. In production (or when
+// MANIFOLD_REQUIRE_SIGNED is set) a missing key MUST fail closed (throw); the warn-only escape is
+// dev-ONLY.
+test("§7.3 FAIL CLOSED: production + no pinned key ⇒ load THROWS (no unverified snapshot)", async () => {
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevKey = process.env.MANIFOLD_SNAPSHOT_PUBLIC_KEY;
+  const prevRequire = process.env.MANIFOLD_REQUIRE_SIGNED;
+  process.env.NODE_ENV = "production";
+  delete process.env.MANIFOLD_SNAPSHOT_PUBLIC_KEY;
+  delete process.env.MANIFOLD_REQUIRE_SIGNED;
+  try {
+    const path = writeSnap("prod-unsigned.json", baseSnapshot());
+    assert.throws(
+      () => new SnapshotFileStore(path),
+      /MANIFOLD_SNAPSHOT_PUBLIC_KEY|require|signed|production/i,
+      "production must not load an unverified snapshot",
+    );
+  } finally {
+    if (prevNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = prevNodeEnv;
+    if (prevKey !== undefined) process.env.MANIFOLD_SNAPSHOT_PUBLIC_KEY = prevKey;
+    if (prevRequire !== undefined) process.env.MANIFOLD_REQUIRE_SIGNED = prevRequire;
+  }
+});
+
+test("§7.3: MANIFOLD_REQUIRE_SIGNED + no pinned key ⇒ load THROWS even outside production", async () => {
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevKey = process.env.MANIFOLD_SNAPSHOT_PUBLIC_KEY;
+  const prevRequire = process.env.MANIFOLD_REQUIRE_SIGNED;
+  delete process.env.NODE_ENV;
+  delete process.env.MANIFOLD_SNAPSHOT_PUBLIC_KEY;
+  process.env.MANIFOLD_REQUIRE_SIGNED = "1";
+  try {
+    const path = writeSnap("require-signed-unsigned.json", baseSnapshot());
+    assert.throws(() => new SnapshotFileStore(path));
+  } finally {
+    if (prevNodeEnv !== undefined) process.env.NODE_ENV = prevNodeEnv;
+    if (prevKey !== undefined) process.env.MANIFOLD_SNAPSHOT_PUBLIC_KEY = prevKey;
+    if (prevRequire === undefined) delete process.env.MANIFOLD_REQUIRE_SIGNED;
+    else process.env.MANIFOLD_REQUIRE_SIGNED = prevRequire;
+  }
+});
+
 test("DEV escape hatch: no pinned key ⇒ unsigned snapshot loads (with a loud warning)", async () => {
   const warnings: string[] = [];
   const orig = console.warn;
+  const prevNodeEnv = process.env.NODE_ENV;
+  const prevRequire = process.env.MANIFOLD_REQUIRE_SIGNED;
+  delete process.env.NODE_ENV; // dev context: NOT production and no require-signed flag
+  delete process.env.MANIFOLD_REQUIRE_SIGNED;
   console.warn = (...a: unknown[]) => { warnings.push(a.join(" ")); };
   try {
     const path = writeSnap("unsigned.json", baseSnapshot());
-    const store = new SnapshotFileStore(path); // no pinned key → allowed
+    const store = new SnapshotFileStore(path); // no pinned key → allowed (dev only)
     await store.loadActive("local-dev");
   } finally {
     console.warn = orig;
+    if (prevNodeEnv !== undefined) process.env.NODE_ENV = prevNodeEnv;
+    if (prevRequire !== undefined) process.env.MANIFOLD_REQUIRE_SIGNED = prevRequire;
   }
   assert.ok(warnings.some((w) => w.includes("MANIFOLD_SNAPSHOT_PUBLIC_KEY")), "must warn loudly when unverified");
 });

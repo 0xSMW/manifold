@@ -111,30 +111,80 @@ export function isPrivateAddress(ip: string): boolean {
   return isPrivateIp(ip);
 }
 
+/** Redirect hops we follow before giving up (same order of magnitude as browser/undici defaults). */
+const MAX_REDIRECTS = 10;
+
 /**
- * Provider-egress Fetcher (§14.4): https-only, DNS-resolves the host once and rejects private
- * destinations (SSRF defense in depth — gateway-core already applied the per-target allowlist).
- * NOTE(§14.4): true DNS pinning (connect to the exact validated address, no rebind) needs a
- * custom dispatcher; this skeleton resolves-then-checks-then-fetches, which closes the common
- * cases. Loopback/http are permitted only when the injected policy relaxes them (local tests).
+ * Provider-egress Fetcher (§14.4): https-only, rejects private destinations, and does NOT let
+ * `fetch` auto-follow redirects — it validates every hop itself (SSRF defense in depth; gateway-core
+ * already applied the per-target allowlist to the ORIGIN).
+ *
+ * Redirects (redirect SSRF + credential exfil): an allowlisted upstream returning `302 Location:
+ * http://169.254.169.254/` or `https://evil.example/` would otherwise be followed WITH the injected
+ * provider secret still attached. We use `redirect:"manual"` and re-validate each Location: scheme +
+ * resolved-private-IP + it must stay on the SAME host as the origin (the fetcher can't see the
+ * per-target allowlist, so a cross-host redirect — which the allowlist never vetted — is refused).
+ *
+ * DNS (§14.4): the host is resolved with `{all:true}` and EVERY resolved address (v4 AND v6) must be
+ * public — a name with a public A but a private AAAA (or vice-versa) is blocked. RESIDUAL: this
+ * resolves-then-fetches, and `fetch` re-resolves; true pinning (connect to the exact validated
+ * address, no rebind) needs a custom undici dispatcher. Checking all families closes the common
+ * dual-stack/rebind cases. Loopback/http are permitted only when the injected policy relaxes them.
  */
 export class EgressFetcher implements Fetcher {
   private readonly policy: SsrfPolicy;
   constructor(policy: SsrfPolicy = STRICT_SSRF) {
     this.policy = policy;
   }
-  async fetch(req: Request): Promise<Response> {
-    const url = new URL(req.url);
-    // Reuse gateway-core's single scheme/policy predicate so this gate can never
-    // drift from ssrfCheck's (§14.4); the post-DNS resolved-IP recheck below stays
-    // as intentional defense-in-depth against name→private-address rebinding.
+
+  /** Validate one destination URL: scheme (via the shared predicate) + no resolved private address. */
+  private async assertDestinationAllowed(url: URL): Promise<void> {
+    // Reuse gateway-core's single scheme/policy predicate so this gate can never drift from
+    // ssrfCheck's (§14.4).
     const scheme = schemeAllowed(url, this.policy);
     if (!scheme.ok) throw new Error(`egress: ${scheme.reason}`);
-    if (!this.policy.allowPrivate) {
-      const host = url.hostname.replace(/^\[|\]$/g, "");
-      const address = isIP(host) ? host : (await lookup(host)).address;
-      if (isPrivateAddress(address)) throw new Error(`egress: blocked private address ${address}`);
+    if (this.policy.allowPrivate) return;
+    const host = url.hostname.replace(/^\[|\]$/g, "");
+    if (isIP(host)) {
+      if (isPrivateAddress(host)) throw new Error(`egress: blocked private address ${host}`);
+      return;
     }
-    return globalThis.fetch(req);
+    // Resolve ALL families and reject if ANY resolved address is private (dual-stack blind spot).
+    const resolved = await lookup(host, { all: true });
+    for (const { address } of resolved) {
+      if (isPrivateAddress(address)) {
+        throw new Error(`egress: blocked private address ${address} (resolved from ${host})`);
+      }
+    }
+  }
+
+  async fetch(req: Request): Promise<Response> {
+    const originHost = new URL(req.url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    let current = req;
+    for (let hop = 0; ; hop++) {
+      await this.assertDestinationAllowed(new URL(current.url));
+      // redirect:"manual" — never let fetch auto-follow; we vet each Location ourselves.
+      const res = await globalThis.fetch(current, { redirect: "manual" });
+      if (res.status < 300 || res.status >= 400) return res; // not a redirect → hand it back
+      const location = res.headers.get("location");
+      if (!location) return res; // 3xx with no Location → nothing to follow
+      if (hop >= MAX_REDIRECTS) throw new Error("egress: too many redirects");
+      const next = new URL(location, current.url);
+      const nextHost = next.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+      // Refuse any CROSS-HOST redirect: the origin is the ONLY host gateway-core checked against the
+      // per-target allowlist. A redirect to a different host (evil.example / a private IP / cloud
+      // metadata) must NOT receive the injected provider secret.
+      if (nextHost !== originHost) {
+        throw new Error(`egress: refused cross-host redirect ${originHost} -> ${nextHost}`);
+      }
+      // Same host: re-validate scheme + resolved-private-IP (catch an https→http downgrade or a name
+      // that now resolves private) before following.
+      await this.assertDestinationAllowed(next);
+      await res.body?.cancel().catch(() => {});
+      // Re-issue to the same host carrying method + headers. NOTE: a request body is not replayed on
+      // a same-host redirect (the origin stream is already consumed) — an acceptable residual for the
+      // uncommon provider-side same-host redirect; the security-critical cross-host case is refused.
+      current = new Request(next.toString(), { method: current.method, headers: current.headers });
+    }
   }
 }

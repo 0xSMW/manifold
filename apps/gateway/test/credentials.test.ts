@@ -113,6 +113,29 @@ test("end-to-end FAIL CLOSED: no credential material at all ⇒ 502, upstream NE
   assert.equal(calls(), 0, "upstream must NEVER be called with an empty provider secret");
 });
 
+// BUG (fail-OPEN credential via EMPTY decrypt): a credentialCiphertext that decrypts to an EMPTY
+// plaintext is NOT a real secret. Returning "" would let handleRequest dispatch `x-api-key: ''`
+// upstream. The resolver must THROW so handleRequest fails CLOSED (502 CREDENTIAL_UNAVAILABLE).
+const emptyCiphertext = packBase64(sealAesGcm(DEK, utf8(""))); // a VALID AES-GCM seal of ""
+
+test("makeSecretResolver THROWS when the ciphertext decrypts to an EMPTY string (fail closed)", async () => {
+  await assert.rejects(
+    makeSecretResolver(KEK)(target({ credentialCiphertext: emptyCiphertext, wrappedDek })),
+  );
+});
+
+test("end-to-end FAIL CLOSED: credential decrypts to EMPTY ⇒ 502, upstream NEVER called", async () => {
+  const { fetcher, calls } = countingFetcher();
+  const res = await handleRequest(
+    ctxFor(target({ credentialCiphertext: emptyCiphertext, wrappedDek }), fetcher),
+    req(),
+  );
+  assert.equal(res.status, 502, "an empty decrypted secret must fail closed, not dispatch x-api-key:''");
+  const body = (await res.json()) as { error: { code: string } };
+  assert.equal(body.error.code, "CREDENTIAL_UNAVAILABLE");
+  assert.equal(calls(), 0, "upstream must NEVER be called with an empty provider secret");
+});
+
 test("makeSecretResolver THROWS when it cannot produce a real non-empty secret", async () => {
   delete process.env.MANIFOLD_NONEXISTENT_SECRET;
   const resolve = makeSecretResolver(KEK);

@@ -70,7 +70,9 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     const event: ObservationEvent = {
       traceId,
       seq: seq++,
-      occurredAt: now.toISOString(),
+      // Stamp occurredAt per-event at emit time (NOT the single request-start `now`), so
+      // latency/time-windowing survives: accepted and terminal carry distinct instants (§8.3).
+      occurredAt: ctx.clock.now().toISOString(),
       ...e,
     };
     void ctx.ingest.emit(event).catch(() => {});
@@ -193,15 +195,50 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   try {
     upstream = await ctx.fetcher.fetch(upstreamReq);
   } catch (err) {
-    const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
-    const code = isTimeout ? "PROVIDER_TIMEOUT" : "PROVIDER_HTTP_5XX";
+    // undici throws TypeError('fetch failed') with the real reason on `err.cause` — an
+    // AbortSignal.timeout() surfaces as cause.name==='TimeoutError', NOT as a top-level
+    // DOMException. Check both the cause and the (spec) direct DOMException so
+    // AbortSignal.timeout maps to PROVIDER_TIMEOUT (504) rather than a generic 5xx.
+    const cause = (err as { cause?: { name?: string } }).cause;
+    const isTimeout =
+      (err instanceof DOMException && err.name === "TimeoutError") || cause?.name === "TimeoutError";
+    // The EgressFetcher performs a post-DNS SSRF recheck and throws Error('egress: …') when a
+    // hostname resolves to a private address (DNS-rebind defense, §14.4). Map that to
+    // SSRF_BLOCKED (403), not a provider 5xx — it is a safety block, not an upstream failure.
+    const isEgressBlocked = err instanceof Error && err.message.startsWith("egress:");
+    const code = isEgressBlocked
+      ? "SSRF_BLOCKED"
+      : isTimeout
+        ? "PROVIDER_TIMEOUT"
+        : "PROVIDER_HTTP_5XX";
+    const message = isEgressBlocked
+      ? "egress blocked: destination not permitted"
+      : isTimeout
+        ? "upstream timed out"
+        : "upstream request failed";
     emitTerminal(code, { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId });
-    return errorResponse(code, isTimeout ? "upstream timed out" : "upstream request failed", traceId);
+    return errorResponse(code, message, traceId);
   }
 
   // 8. Response started: emit the observation, then relay the stream with flat memory.
   emit({
     kind: "accepted",
+    profileId,
+    keyId: auth.key.id,
+    routeId: route.routeId,
+    offeringId: target.offeringId,
+    status: upstream.status,
+    reasonCodes: [],
+  });
+
+  // Terminal event for the success path. Observability's reduce() treats a trace with no
+  // terminal as incomplete (→ $0 cost), so EVERY request — including a 200 dispatch — MUST
+  // end with a terminal (§8.3). Status is the upstream HTTP status.
+  // TODO(§8.3): token counts + price come from the provider's streamed `usage` block, which is
+  // extracted by the streaming/observation consumer (out of scope for the passthrough core,
+  // which never buffers the response body). We emit the terminal with status only here.
+  emit({
+    kind: "terminal",
     profileId,
     keyId: auth.key.id,
     routeId: route.routeId,

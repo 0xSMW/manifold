@@ -76,7 +76,18 @@ export function decryptTargetSecret(
 export function makeSecretResolver(kek: Uint8Array): (target: SnapshotTarget) => Promise<string> {
   return async (target) => {
     if (target.credentialCiphertext && target.wrappedDek) {
-      return decryptTargetSecret(target, kek);
+      const secret = decryptTargetSecret(target, kek);
+      // An envelope that decrypts to EMPTY is NOT a real credential — returning "" would let
+      // handleRequest dispatch `x-api-key: ''` / `Authorization: Bearer ` upstream (fail-OPEN).
+      // Treat it as no-credential and THROW so the caller fails CLOSED (502), same as the env
+      // branch below which already rejects an empty value.
+      if (!secret) {
+        throw new Error(
+          `decrypted provider credential is empty for offering ${target.offeringId}: ` +
+            "an empty secret is not a credential (fail closed, §14.3)",
+        );
+      }
+      return secret;
     }
     if (target.secretEnv) {
       const fromEnv = process.env[target.secretEnv];
