@@ -11,8 +11,9 @@ import type {
   Snapshot,
   SnapshotTarget,
 } from "@manifold/ports";
+import type { ReasonCode } from "@manifold/contracts";
 import { authenticate } from "./authenticate.js";
-import { errorResponse } from "./errors.js";
+import { errorResponse, shapeForCode } from "./errors.js";
 import { headerAllowlist, sanitizeResponseHeaders } from "./headers.js";
 import { resolveProfile } from "./resolveProfile.js";
 import { resolveRoute } from "./resolveRoute.js";
@@ -67,12 +68,35 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     void ctx.ingest.emit(event).catch(() => {});
   };
 
+  // Single terminal-emit shape: HTTP status always derives from shapeForCode (the one status map,
+  // §0.3) and reasonCodes always carries the code — including synthetic guard codes
+  // (SSRF_BLOCKED / CREDENTIAL_UNAVAILABLE / PROFILE_UNKNOWN) that have no reason-registry entry.
+  const emitTerminal = (
+    code: string,
+    ids: {
+      profileId?: string;
+      keyId?: string | null;
+      routeId?: string | null;
+      offeringId?: string | null;
+    } = {},
+  ): void => {
+    emit({
+      kind: "terminal",
+      profileId: ids.profileId ?? "",
+      keyId: ids.keyId ?? null,
+      routeId: ids.routeId ?? null,
+      offeringId: ids.offeringId ?? null,
+      status: shapeForCode(code).status,
+      reasonCodes: [code as ReasonCode],
+    });
+  };
+
   // 1. resolveProfile — pre-auth, from the trusted Host (ADR-0001). Prefer the Host header;
   //    fall back to the URL authority (some runtimes drop the forbidden `host` header).
   const host = request.headers.get("host") ?? url.host;
   const resolved = resolveProfile(host, snapshot);
   if (!resolved) {
-    emit(rejectEvent(null, "PROFILE_UNKNOWN"));
+    emitTerminal("PROFILE_UNKNOWN");
     return errorResponse("PROFILE_UNKNOWN", "unknown host", traceId);
   }
   const { profileId } = resolved;
@@ -80,21 +104,21 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   // 2. authenticate — HMAC(key) → snapshot.keys, then revoked/expiry/profile guards.
   const auth = await authenticate(request, profileId, snapshot, ctx.crypto, ctx.pepper, now);
   if (!auth.ok) {
-    emit({ kind: "terminal", profileId, keyId: null, routeId: null, offeringId: null, status: shapeStatus(auth.reason), reasonCodes: [auth.reason] });
+    emitTerminal(auth.reason, { profileId });
     return errorResponse(auth.reason, auth.message, traceId);
   }
 
   // 3. resolveRoute — O(1) composite key lookup → ROUTE_UNKNOWN.
   const route = resolveRoute(profileId, path, snapshot);
   if (!route) {
-    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: null, offeringId: null, status: 404, reasonCodes: ["ROUTE_UNKNOWN"] });
+    emitTerminal("ROUTE_UNKNOWN", { profileId, keyId: auth.key.id });
     return errorResponse("ROUTE_UNKNOWN", `no route for '${path}' on this endpoint`, traceId);
   }
 
   // 4. selectTarget — ordered/weighted → ROUTE_NO_HEALTHY_TARGET.
   const target = selectTarget(route, ctx.rand);
   if (!target) {
-    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: null, status: 503, reasonCodes: ["ROUTE_NO_HEALTHY_TARGET"] });
+    emitTerminal("ROUTE_NO_HEALTHY_TARGET", { profileId, keyId: auth.key.id, routeId: route.routeId });
     return errorResponse("ROUTE_NO_HEALTHY_TARGET", "no healthy target for route", traceId);
   }
 
@@ -102,7 +126,7 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   const upstreamUrl = new URL(url.pathname + url.search, target.baseUrl).toString();
   const ssrf = ssrfCheck(upstreamUrl, target.allowedHosts, ctx.ssrfPolicy ?? STRICT_SSRF);
   if (!ssrf.ok) {
-    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, status: 403, reasonCodes: [] });
+    emitTerminal("SSRF_BLOCKED", { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId });
     return errorResponse("SSRF_BLOCKED", `egress blocked: ${ssrf.reason}`, traceId);
   }
 
@@ -114,7 +138,7 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   try {
     secret = await ctx.resolveSecret(target);
   } catch {
-    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, status: 502, reasonCodes: [] });
+    emitTerminal("CREDENTIAL_UNAVAILABLE", { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId });
     return errorResponse("CREDENTIAL_UNAVAILABLE", "provider credential could not be resolved", traceId);
   }
   injectProviderAuth(upstreamHeaders, target.authInject, secret);
@@ -139,7 +163,7 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
   } catch (err) {
     const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
     const code = isTimeout ? "PROVIDER_TIMEOUT" : "PROVIDER_HTTP_5XX";
-    emit({ kind: "terminal", profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId, status: shapeStatus(code), reasonCodes: isTimeout ? ["PROVIDER_TIMEOUT"] : [] });
+    emitTerminal(code, { profileId, keyId: auth.key.id, routeId: route.routeId, offeringId: target.offeringId });
     return errorResponse(code, isTimeout ? "upstream timed out" : "upstream request failed", traceId);
   }
 
@@ -161,40 +185,4 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     statusText: upstream.statusText,
     headers: responseHeaders,
   });
-}
-
-function rejectEvent(
-  keyId: string | null,
-  code: string,
-): Omit<ObservationEvent, "seq" | "occurredAt" | "traceId"> {
-  return {
-    kind: "terminal",
-    profileId: "",
-    keyId,
-    routeId: null,
-    offeringId: null,
-    status: shapeStatus(code),
-    reasonCodes: [],
-  };
-}
-
-function shapeStatus(code: string): number {
-  switch (code) {
-    case "AUTH_KEY_UNKNOWN":
-    case "AUTH_KEY_REVOKED":
-    case "AUTH_KEY_EXPIRED":
-    case "AUTH_PROFILE_MISMATCH":
-      return 401;
-    case "ROUTE_UNKNOWN":
-    case "PROFILE_UNKNOWN":
-      return 404;
-    case "ROUTE_NO_HEALTHY_TARGET":
-      return 503;
-    case "PROVIDER_TIMEOUT":
-      return 504;
-    case "PROVIDER_HTTP_5XX":
-      return 502;
-    default:
-      return 400;
-  }
 }
