@@ -93,6 +93,14 @@ export interface OfferingRow {
 export interface PriceRow {
   id: string;
   fidelity: string;
+  // Per-mtok µ$ columns (int8 → decimal string over the driver, kept exact). Null when unpriced.
+  input_per_mtok_microusd: string | null;
+  output_per_mtok_microusd: string | null;
+  cache_read_per_mtok_microusd: string | null;
+  cache_write_per_mtok_microusd: string | null;
+  reasoning_per_mtok_microusd: string | null;
+  audio_in_per_mtok_microusd: string | null;
+  audio_out_per_mtok_microusd: string | null;
 }
 export interface EntitlementRow {
   policy_revision_id: string;
@@ -225,7 +233,11 @@ export async function readOffering(sql: PgSql, id: string): Promise<OfferingRow 
 
 export async function readPrice(sql: PgSql, id: string): Promise<PriceRow | null> {
   const rows = await sql<PriceRow[]>`
-    SELECT id, fidelity FROM provider_price_revision WHERE id = ${id} LIMIT 1`;
+    SELECT id, fidelity,
+           input_per_mtok_microusd, output_per_mtok_microusd,
+           cache_read_per_mtok_microusd, cache_write_per_mtok_microusd,
+           reasoning_per_mtok_microusd, audio_in_per_mtok_microusd, audio_out_per_mtok_microusd
+    FROM provider_price_revision WHERE id = ${id} LIMIT 1`;
   return rows[0] ?? null;
 }
 

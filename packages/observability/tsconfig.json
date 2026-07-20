@@ -6,5 +6,5 @@
     "tsBuildInfoFile": "tsconfig.tsbuildinfo"
   },
   "include": ["src/**/*.ts", "test/**/*.ts"],
-  "references": [{ "path": "../contracts" }, { "path": "../domain" }]
+  "references": [{ "path": "../contracts" }, { "path": "../domain" }, { "path": "../ports" }]
 }

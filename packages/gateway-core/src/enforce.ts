@@ -21,7 +21,7 @@ import type {
  * (no policy, no hard budget) ran: the body was never touched and the caller streams it through.
  */
 export type EnforceResult =
-  | { ok: true; forwardBody?: string }
+  | { ok: true; forwardBody?: string; reservationId?: string }
   | { ok: false; code: string; message: string };
 
 export interface EnforceArgs {
@@ -100,6 +100,9 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
 
   // Default: forward exactly what we buffered (unchanged unless a clamp rewrites it below).
   let forwardBody = rawBody;
+  // The hard-budget reservation to reconcile on the terminal event (§8.4); undefined unless a
+  // hard budget actually reserved below.
+  let reservationId: string | undefined;
 
   // ── Policy (deny-first) ──────────────────────────────────────────────────
   if (policy) {
@@ -132,7 +135,11 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
     if (!reservation.ok) {
       return { ok: false, code: "BUDGET_RESERVE_DENIED", message: "budget cap exceeded" };
     }
+    // Carry the reservation id out so the terminal event can reconcile reserved→committed with the
+    // ACTUAL cost once usage is known (§8.4). Without this the hold is only ever released by the
+    // expiry sweep and real spend is never committed.
+    reservationId = reservation.reservationId;
   }
 
-  return { ok: true, forwardBody };
+  return { ok: true, forwardBody, reservationId };
 }

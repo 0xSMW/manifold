@@ -12,6 +12,7 @@ import type {
   SnapshotBudgetAccount,
   SnapshotKey,
   SnapshotMeta,
+  SnapshotPrice,
   SnapshotRoute,
   SnapshotTarget,
 } from "@manifold/ports";
@@ -19,8 +20,29 @@ import type { Database } from "@manifold/database";
 import { randomBytes } from "node:crypto";
 import { computeContentHash } from "./canonical.js";
 import * as q from "./db.js";
-import type { PgSql } from "./db.js";
+import type { PgSql, PriceRow } from "./db.js";
 import type { ConfigOffering, ConfigPolicy, ConfigSnapshot } from "./types.js";
+
+/**
+ * Map a `provider_price_revision` row's per-mtok µ$ columns (decimal strings over the driver) into
+ * the snapshot's `SnapshotPrice` (SPEC §6.10). A `null` column stays absent — "no price for that
+ * token class", treated as µ$0 by `computeCost`. Only non-null classes are carried so the canonical
+ * hash is stable regardless of how many optional columns a price revision populates.
+ */
+function priceFromRow(row: PriceRow): SnapshotPrice {
+  const out: SnapshotPrice = {};
+  const set = (k: keyof SnapshotPrice, v: string | null): void => {
+    if (v !== null) out[k] = v;
+  };
+  set("inputPerMtokMicroUsd", row.input_per_mtok_microusd);
+  set("outputPerMtokMicroUsd", row.output_per_mtok_microusd);
+  set("cacheReadPerMtokMicroUsd", row.cache_read_per_mtok_microusd);
+  set("cacheWritePerMtokMicroUsd", row.cache_write_per_mtok_microusd);
+  set("reasoningPerMtokMicroUsd", row.reasoning_per_mtok_microusd);
+  set("audioInPerMtokMicroUsd", row.audio_in_per_mtok_microusd);
+  set("audioOutPerMtokMicroUsd", row.audio_out_per_mtok_microusd);
+  return out;
+}
 
 /** Prefixed-ULID-ish id (§6.1 convention: prefixed text). Monotonic-ish for readability. */
 export function genId(prefix: string): string {
@@ -209,7 +231,7 @@ export async function assembleSnapshot(
         authInject: authInjectFor(cred.provider),
         secretEnv: null,
       });
-      // offerings section (budget eligibility, §7.1)
+      // offerings section (budget eligibility + dispatch-time price, §7.1/§6.10)
       if (offering && !offerings[offering.id]) {
         const price = offering.active_price_revision_id
           ? await q.readPrice(sql, offering.active_price_revision_id)
@@ -221,6 +243,8 @@ export async function assembleSnapshot(
           region: offering.region,
           priceRevisionId: offering.active_price_revision_id,
           priceFidelity: price?.fidelity ?? null,
+          // The per-mtok µ$ prices the gateway stamps onto the terminal observation for cost.
+          ...(price ? { price: priceFromRow(price) } : {}),
           capabilities: offering.capabilities ?? null,
           baseUrl,
         };

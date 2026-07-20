@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "@manifold/contracts": "*",
-    "@manifold/domain": "*"
+    "@manifold/domain": "*",
+    "@manifold/ports": "*"
   },
   "devDependencies": {
     "typescript": "^5.6.3"

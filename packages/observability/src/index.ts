@@ -7,3 +7,4 @@ export * from "./events.js";
 export * from "./observation.js";
 export * from "./reduce.js";
 export * from "./project.js";
+export * from "./mapPortsEvent.js";

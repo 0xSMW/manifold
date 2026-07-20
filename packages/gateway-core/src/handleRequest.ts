@@ -9,6 +9,7 @@ import type {
   Fetcher,
   IngestSink,
   ObservationEvent,
+  ObservationUsage,
   Snapshot,
   SnapshotTarget,
 } from "@manifold/ports";
@@ -55,6 +56,65 @@ function injectProviderAuth(headers: Headers, authInject: AuthInject, secret: st
   for (const [name, template] of Object.entries(authInject.headers)) {
     headers.set(name.toLowerCase(), template.replaceAll("${secret}", secret));
   }
+}
+
+/**
+ * Upper bound on a response body we will BUFFER to read its `usage` block. A small,
+ * declared-JSON, sub-limit response (a non-streamed chat/messages completion) is buffered so the
+ * terminal observation carries real token counts (§8.3). Anything larger or non-JSON — including a
+ * streamed SSE completion or a 1GB passthrough — is relayed with flat memory and NOT parsed here;
+ * SSE final-usage capture (reading the terminal `message_delta` / `[DONE]` usage frame off the
+ * stream) is the documented FOLLOW-UP. 256 KiB comfortably covers a JSON completion envelope.
+ */
+const USAGE_CAPTURE_MAX_BYTES = 256 * 1024;
+
+/** True iff `upstream` is a small, self-described-JSON body we may buffer to read `usage`. */
+function isBufferableJson(upstream: Response): boolean {
+  const ct = upstream.headers.get("content-type") ?? "";
+  if (!ct.toLowerCase().includes("application/json")) return false;
+  const lenHeader = upstream.headers.get("content-length");
+  if (lenHeader === null) return false; // unknown length ⇒ treat as a stream, never buffer
+  const len = Number(lenHeader);
+  return Number.isFinite(len) && len >= 0 && len <= USAGE_CAPTURE_MAX_BYTES;
+}
+
+/** Coerce a provider-usage field (number, or numeric string) to a non-negative integer, else undefined. */
+function usageNum(v: unknown): number | undefined {
+  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+}
+
+/**
+ * Extract token counts from a parsed completion body's `usage` block (§8.3). Provider-agnostic:
+ * accepts the Anthropic shape (`input_tokens`/`output_tokens`/`cache_*_input_tokens`) and the
+ * OpenAI shape (`prompt_tokens`/`completion_tokens` + `*_tokens_details`). Returns `undefined`
+ * when there is no recognizable usage, so the terminal simply carries no counts (cost µ$0).
+ */
+function parseUsageBlock(body: unknown): ObservationUsage | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const u = (body as { usage?: unknown }).usage;
+  if (!u || typeof u !== "object") return undefined;
+  const r = u as Record<string, unknown>;
+  const promptDetails = r.prompt_tokens_details as Record<string, unknown> | undefined;
+  const completionDetails = r.completion_tokens_details as Record<string, unknown> | undefined;
+  const usage: ObservationUsage = {};
+  const set = (k: keyof ObservationUsage, v: number | undefined): void => {
+    if (v !== undefined) usage[k] = v;
+  };
+  set("inputTokens", usageNum(r.input_tokens) ?? usageNum(r.prompt_tokens));
+  set("outputTokens", usageNum(r.output_tokens) ?? usageNum(r.completion_tokens));
+  set(
+    "cachedTokens",
+    usageNum(r.cache_read_input_tokens) ?? usageNum(promptDetails?.cached_tokens),
+  );
+  set("cacheWriteTokens", usageNum(r.cache_creation_input_tokens));
+  set(
+    "reasoningTokens",
+    usageNum(r.reasoning_tokens) ?? usageNum(completionDetails?.reasoning_tokens),
+  );
+  set("audioInputTokens", usageNum(r.audio_input_tokens));
+  set("audioOutputTokens", usageNum(r.audio_output_tokens));
+  return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
 export async function handleRequest(ctx: GatewayContext, request: Request): Promise<Response> {
@@ -220,7 +280,8 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     return errorResponse(code, message, traceId);
   }
 
-  // 8. Response started: emit the observation, then relay the stream with flat memory.
+  // 8. Response started: emit the observation, then relay the body (flat memory unless we buffer
+  //    a SMALL json completion to capture usage — see below).
   emit({
     kind: "accepted",
     profileId,
@@ -231,12 +292,39 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     reasonCodes: [],
   });
 
-  // Terminal event for the success path. Observability's reduce() treats a trace with no
-  // terminal as incomplete (→ $0 cost), so EVERY request — including a 200 dispatch — MUST
-  // end with a terminal (§8.3). Status is the upstream HTTP status.
-  // TODO(§8.3): token counts + price come from the provider's streamed `usage` block, which is
-  // extracted by the streaming/observation consumer (out of scope for the passthrough core,
-  // which never buffers the response body). We emit the terminal with status only here.
+  // Dispatch-time price + provenance the terminal stamps for cost (§6.10): resolved from the
+  // snapshot's offerings section for THIS offering, so cost uses the price in force when the
+  // request ran (absent ⇒ no price → projected µ$0, unknown fidelity).
+  const offering = snapshot.offerings?.[target.offeringId];
+  const price = offering?.price;
+  const priceRevisionId = offering?.priceRevisionId ?? null;
+  const budgetAccountId = auth.key.budgetAccountId;
+  const reservationId = enforcement.reservationId ?? null;
+
+  // USAGE CAPTURE (§8.3): buffer ONLY a small, self-described-JSON completion to read its `usage`
+  // block. A streamed / large / non-JSON body is relayed straight through with flat memory and the
+  // terminal carries no usage — its reservation is released by the expiry sweep (§8.4) and SSE
+  // final-usage capture is the documented follow-up. This preserves the 1GB flat-memory guarantee.
+  let responseBody: BodyInit | null = upstream.body;
+  let usage: ObservationUsage | undefined;
+  let reconcileId: string | null = null;
+  if (isBufferableJson(upstream)) {
+    const bodyText = await upstream.text(); // bounded by content-length ≤ USAGE_CAPTURE_MAX_BYTES
+    responseBody = bodyText; // re-emit the buffered bytes; the client sees the identical body
+    try {
+      usage = parseUsageBlock(JSON.parse(bodyText) as unknown);
+    } catch {
+      usage = undefined; // unparseable JSON ⇒ no usage, still a clean passthrough
+    }
+    // Only reconcile the reservation once we actually have measured usage → an ACTUAL cost.
+    if (usage) reconcileId = reservationId;
+  }
+
+  // Terminal event for the success path. Observability's reduce() treats a trace with no terminal
+  // as incomplete (→ $0 cost), so EVERY request — including a 200 dispatch — MUST end with a
+  // terminal (§8.3). When usage was captured it carries the token counts + dispatch price +
+  // price-revision + reservation, so the projection writes a real cost_ledger row and reconciles
+  // the hold reserved→committed (§6.9/§8.4).
   emit({
     kind: "terminal",
     profileId,
@@ -245,11 +333,16 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     offeringId: target.offeringId,
     status: upstream.status,
     reasonCodes: [],
+    ...(usage ? { usage } : {}),
+    ...(usage && price ? { price } : {}),
+    ...(usage ? { priceRevisionId } : {}),
+    budgetAccountId,
+    ...(reconcileId ? { reservationId: reconcileId } : {}),
   });
 
   const responseHeaders = sanitizeResponseHeaders(upstream.headers);
   responseHeaders.set("x-trace-id", traceId);
-  return new Response(upstream.body, {
+  return new Response(responseBody, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers: responseHeaders,

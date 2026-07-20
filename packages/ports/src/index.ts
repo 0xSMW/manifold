@@ -147,6 +147,35 @@ export interface SnapshotRoute {
   capturePolicyId: string;
 }
 
+/**
+ * Per-mtok µ$ prices resolved at dispatch (SPEC §6.10, §6.4 `provider_price_revision`). Each
+ * field is a DECIMAL STRING of integer µ$ per 1,000,000 tokens — a string (not a bigint) so the
+ * whole snapshot stays plain JSON/signature-verifiable while remaining bigint-exact once parsed
+ * (mirrors `SnapshotBudgetAccount.limit`, which is likewise a decimal string). A `null`/absent
+ * field means "no price for that token class" (treated as µ$0 by `computeCost`).
+ */
+export interface SnapshotPrice {
+  inputPerMtokMicroUsd?: string | null;
+  outputPerMtokMicroUsd?: string | null;
+  cacheReadPerMtokMicroUsd?: string | null;
+  cacheWritePerMtokMicroUsd?: string | null;
+  reasoningPerMtokMicroUsd?: string | null;
+  audioInPerMtokMicroUsd?: string | null;
+  audioOutPerMtokMicroUsd?: string | null;
+}
+
+/**
+ * §7.1 `offerings`: the price the gateway resolves AT DISPATCH and stamps onto the terminal
+ * observation (so cost is computed from the price in force when the request ran, not whatever is
+ * current at projection time). Keyed by `SnapshotTarget.offeringId` under `Snapshot.offerings`.
+ * `config.buildSnapshot` emits a structural superset (`ConfigOffering`); gateway-core reads only
+ * these two fields.
+ */
+export interface SnapshotOffering {
+  priceRevisionId?: string | null;
+  price?: SnapshotPrice;
+}
+
 export interface Snapshot {
   meta: SnapshotMeta;
   /** host → profile (§7.2). Resolved pre-auth from the trusted host (ADR-0001). */
@@ -165,6 +194,12 @@ export interface Snapshot {
    * account is absent or `soft` is not reserved pre-dispatch; a `hard` account is (deny-first).
    */
   budgets?: Record<string, SnapshotBudgetAccount>;
+  /**
+   * Offerings by id (§7.1). `SnapshotTarget.offeringId` indexes this. Carries the dispatch-time
+   * price the gateway stamps onto the terminal observation for cost (§6.10). Absent ⇒ the gateway
+   * emits the terminal with no price and the projected cost is µ$0 (unknown fidelity).
+   */
+  offerings?: Record<string, SnapshotOffering>;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -173,6 +208,21 @@ export interface Snapshot {
 // ────────────────────────────────────────────────────────────────────────────
 
 export type ObservationEventKind = "accepted" | "provider_attempt" | "terminal";
+
+/**
+ * Provider-reported token usage on a terminal event (SPEC §8.3). Plain `number`s (token counts
+ * are small integers, exactly representable) so the flat event stays JSON-serializable through the
+ * ingest transport; the observability mapper widens them to `bigint` for the §6.10 cost math.
+ */
+export interface ObservationUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  reasoningTokens?: number;
+  cacheWriteTokens?: number;
+  audioInputTokens?: number;
+  audioOutputTokens?: number;
+}
 
 export interface ObservationEvent {
   /** Idempotency anchor for the trace (§8.1). */
@@ -189,6 +239,18 @@ export interface ObservationEvent {
   status: number | null;
   /** Reason codes attached to this event (§0.2). */
   reasonCodes: ReasonCode[];
+  // ── Terminal-only billing fields (SPEC §8.3, §6.9/§6.10). All optional so non-terminal events
+  //    and the pre-usage-capture path (streamed responses) omit them and reduce to µ$0. ──────────
+  /** Provider-reported token counts, parsed from the response `usage` block. */
+  usage?: ObservationUsage;
+  /** Dispatch-time per-mtok price (from `snapshot.offerings[offeringId]`) — the §6.10 cost input. */
+  price?: SnapshotPrice;
+  /** The `provider_price_revision` id the `price` came from (cost_ledger provenance, §6.9). */
+  priceRevisionId?: string | null;
+  /** Budget account this trace billed against (cost_ledger dim + reconcile target, §6.9/§8.4). */
+  budgetAccountId?: string | null;
+  /** The hard-budget reservation to reconcile reserved→committed with the actual cost (§8.4). */
+  reservationId?: string | null;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
