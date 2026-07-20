@@ -8,7 +8,6 @@
 //                                  active route/policy revision and publish (expedited path).
 import { ReasonCode } from "@manifold/contracts";
 import type { Database } from "@manifold/database";
-import type { Snapshot } from "@manifold/ports";
 import { assembleSnapshot, buildKeysSection, genId, stampMeta } from "./build.js";
 import { computeContentHash, stableStringify } from "./canonical.js";
 import * as q from "./db.js";
@@ -178,7 +177,7 @@ export async function apply(
     const published = await store.publish(
       plan.installationId,
       committed.publish.revisionId,
-      committed.publish.snap as unknown as Snapshot /* publish serializes JSON; policy shape divergence is at rest, GROK_DRY #21 */,
+      committed.publish.snap /* ConfigSnapshot IS a ports.Snapshot (evaluator-shaped policies) */,
     );
     committed.op.edgeConfigVersion = published.version;
   }
@@ -215,7 +214,7 @@ export async function rollback(
     }
 
     const priorSnap = target.snapshot as ConfigSnapshot;
-    const published = await store.publish(target.installation_id, target.id, priorSnap as unknown as Snapshot);
+    const published = await store.publish(target.installation_id, target.id, priorSnap);
     await tx`
       UPDATE gateway_installation SET applied_config_revision = ${target.id}
       WHERE id = ${target.installation_id}`;

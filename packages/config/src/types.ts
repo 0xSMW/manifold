@@ -9,7 +9,7 @@
 // extra sections. This keeps the built blob loadable + signature-verifiable by gateway-core
 // while still carrying everything §7 asks for.
 import type { ReasonCode } from "@manifold/contracts";
-import type { Snapshot } from "@manifold/ports";
+import type { Snapshot, SnapshotPolicyRevision } from "@manifold/ports";
 
 /** SPEC §7.1 `offerings`: offering id → provider/codec/price metadata for budget eligibility. */
 export interface ConfigOffering {
@@ -33,18 +33,23 @@ export interface ConfigEntitlement {
   effect: "allow" | "deny";
 }
 
-/** SPEC §7.1 `policy`: policy revision id → entitlements + request/data constraints. */
-export interface ConfigPolicy {
-  entitlements: ConfigEntitlement[];
+/**
+ * SPEC §7.1 `policy`: policy revision id → entitlements + request/data constraints.
+ *
+ * ConfigPolicy is a STRUCTURAL SUPERSET of ports' `SnapshotPolicyRevision`: it carries the exact
+ * EVALUATOR shape the gateway reads (`modelEntitlements` + NUMERIC-bound `requestConstraints`, keyed
+ * by policy revision id under `snapshot.policies`, indexed by `SnapshotProfile.policyRevision`) so a
+ * config-built snapshot drives gateway policy enforcement end-to-end (operator DB deny → emission →
+ * enforce.ts → 403). On top of the evaluator fields it keeps the §7.1 TRANSPORT extras
+ * (`entitlements` projection, precomputed `entitlementIndex`, `dataHandling`) as optional additions.
+ */
+export interface ConfigPolicy extends SnapshotPolicyRevision {
+  /** Full entitlement projection incl. `offeringId` (§6.6). Drives plan()'s entitlement-removal
+   *  tripwire; the evaluator uses only `modelEntitlements` (from the base interface). */
+  entitlements?: ConfigEntitlement[];
   /** subject → allowed model/offering refs, precomputed index (§7.1 "entitlements index"). */
-  entitlementIndex: Record<string, string[]>;
-  requestConstraints: Array<{
-    param: string;
-    maxValue: string | null;
-    minValue: string | null;
-    onViolation: string;
-  }>;
-  dataHandling: Array<{
+  entitlementIndex?: Record<string, string[]>;
+  dataHandling?: Array<{
     captureMode: string;
     redaction: unknown;
     allowedRegions: unknown;
@@ -56,14 +61,13 @@ export interface ConfigPolicy {
  * the two additional §7 sections. Everything under here is canonicalized + hashed except
  * `meta.signature` (§7.3).
  */
-// NOTE (integration seam, GROK_DRY #21): config emits the TRANSPORT policy shape (ConfigPolicy:
-// entitlementIndex + string constraint bounds + dataHandling), while the gateway enforcement path
-// reads the EVALUATOR shape (ports SnapshotPolicyRevision: modelEntitlements + numeric constraints).
-// These are legitimately different; we Omit `policies` from the base so the two don't false-unify.
-// Wiring config to ALSO emit the evaluator-shaped policy (so config-built snapshots drive gateway
-// policy enforcement end-to-end) is tracked as a follow-up — today the gateway enforces whatever
-// evaluator-shaped policy is present in the loaded snapshot (proven by the enforcement tests).
-export interface ConfigSnapshot extends Omit<Snapshot, "policies"> {
+// INTEGRATION SEAM (closed): config now emits `policies` in the EVALUATOR shape the gateway reads.
+// `ConfigPolicy` extends ports' `SnapshotPolicyRevision`, so `Record<string, ConfigPolicy>` IS a
+// valid `Snapshot["policies"]` — `ConfigSnapshot extends Snapshot` directly (no `Omit`, no
+// `as unknown as Snapshot`). A snapshot built by `assembleSnapshot` carries the operator's DB
+// entitlements/constraints straight into `enforce.ts` → `evaluate()` (end-to-end, proven by
+// config/test/policy-e2e-pg.test.ts). The extra §7.1 transport fields ride along as optional adds.
+export interface ConfigSnapshot extends Snapshot {
   offerings: Record<string, ConfigOffering>;
   policies: Record<string, ConfigPolicy>;
 }

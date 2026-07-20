@@ -4,7 +4,16 @@
 // (`${profileId}:${path}`→targets with ciphertext + wrappedDek + authInject), offerings,
 // policies. Canonicalizes and stamps `contentHash`. The result is a `ports.Snapshot` superset
 // (§7.1 offerings/policies added), so gateway-core loads and routes it unchanged.
-import type { AuthInject, Snapshot, SnapshotKey, SnapshotMeta, SnapshotRoute, SnapshotTarget } from "@manifold/ports";
+import type {
+  AuthInject,
+  PolicyOnViolation,
+  PolicySubjectKind,
+  Snapshot,
+  SnapshotKey,
+  SnapshotMeta,
+  SnapshotRoute,
+  SnapshotTarget,
+} from "@manifold/ports";
 import type { Database } from "@manifold/database";
 import { randomBytes } from "node:crypto";
 import { computeContentHash } from "./canonical.js";
@@ -271,6 +280,27 @@ export async function assembleSnapshot(
       (entitlementIndex[subject] ??= []).push(model);
     }
     policies[prid] = {
+      // EVALUATOR shape (SPEC §6.6, §11) — the exact fields gateway-core/enforce.ts hands to
+      // `@manifold/gateway-policy`.evaluate(). `snapshot.policies` is keyed by policy revision id
+      // (`prid`), which is precisely what `SnapshotProfile.policyRevision` (= gateway_ingress_profile
+      // .policy_revision_id) indexes in enforce.ts — so an operator's DB deny reaches the gateway.
+      // A deny-first model_entitlement (effect 'deny' on canonical model M) denies M here.
+      modelEntitlements: ents.map((e) => ({
+        subjectKind: e.subject_kind as PolicySubjectKind,
+        subjectRef: e.subject_ref,
+        canonicalModelId: e.canonical_model_id,
+        effect: e.effect,
+      })),
+      // NUMERIC bounds: `numeric` columns arrive from postgres-js as strings; the evaluator compares
+      // `value > maxValue` numerically, so a string bound would coerce/compare wrong. Parse to number.
+      requestConstraints: reqs.map((r) => ({
+        param: r.param,
+        maxValue: r.max_value === null ? null : Number(r.max_value),
+        minValue: r.min_value === null ? null : Number(r.min_value),
+        onViolation: r.on_violation as PolicyOnViolation,
+      })),
+      // TRANSPORT extras (§7.1): full entitlement projection (offering-aware, drives plan()'s
+      // entitlement-removal tripwire), precomputed allow index, and data-handling constraints.
       entitlements: ents.map((e) => ({
         subjectKind: e.subject_kind,
         subjectRef: e.subject_ref,
@@ -279,12 +309,6 @@ export async function assembleSnapshot(
         effect: e.effect,
       })),
       entitlementIndex,
-      requestConstraints: reqs.map((r) => ({
-        param: r.param,
-        maxValue: r.max_value,
-        minValue: r.min_value,
-        onViolation: r.on_violation,
-      })),
       dataHandling: dh.map((d) => ({
         captureMode: d.capture_mode,
         redaction: d.redaction ?? null,
