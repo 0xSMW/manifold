@@ -4,7 +4,8 @@ An OpenAI-compatible, self-hostable AI gateway that is also its own logging and 
 
 **Status:** Implementation-ready spec (supersedes the pre-Phase-0 build spec). Name "Manifold" is a working name pending a trademark and npm check (see ADR-0002).
 **Audience:** The engineering team that will build this without inventing product, security, data, deployment, or operational decisions along the way.
-**Source rules:** Reuses the Pulse Uptime stack and design system; imports Klu's own `ai-gateway` as the gateway core.
+**Source rules:** Reuses the Pulse Uptime stack and design system; the gateway core (request pipeline, codecs, streaming) is **written fresh** — no legacy gateway is imported (§4.6, ADR-0015).
+**Ownership & non-association (normative):** This project belongs to **github.com/0xsmw**. It is **not** a Klu product and has no association with Klu. Nothing in Manifold is ever created, deployed, published, or stored under any Klu account, Klu Vercel scope/team, or Klu GitHub org/repo. The canonical GitHub org is `github.com/0xsmw`; the npm scope is `@manifold/*`; test and production deploys use a non-Klu Vercel team (test deploys: `ai-marketing`). Any `klu`/`klu-ai` target is out of bounds.
 
 ---
 
@@ -191,13 +192,13 @@ Decision: producers write `ObservationEvent`s (idempotency key + producer sequen
 Decision: `enterprise_egress` requests against a hard budget take one Neon transaction to reserve before dispatch and reconcile at completion. `public_app` requests take zero DB reads unless a key opts into per-user budgets. Consequences: enterprise egress tolerates one round-trip of added latency (budgeted in §2.6 SLOs); Edge Config is never used for spend enforcement (it would oversell).
 
 **ADR-0013 — CLI user-facing command is `manifold`. Accepted.**
-Decision: the binary and command is `manifold` (§12). `mfctl` is a deprecated alias that prints a deprecation notice and forwards, kept for one minor series for anyone who scripted the Pulse-era name. Consequences: docs, completion, and examples use `manifold`; the Go module is `github.com/<org>/manifold/cli`.
+Decision: the binary and command is `manifold` (§12). `mfctl` is a deprecated alias that prints a deprecation notice and forwards, kept for one minor series for anyone who scripted the Pulse-era name. Consequences: docs, completion, and examples use `manifold`; the Go module is `github.com/0xsmw/manifold/cli`.
 
 **ADR-0014 — Storage-bounded mode with a hard, operator-selected 500 MB ceiling. Accepted.**
 Decision: an operator-selectable durable-size ceiling (default 500 MB) with configurable warning/emergency thresholds drives retention, compaction, sampling, and shedding (§13), preserving usage/cost/budget/security/audit truth while compacting request detail. Consequences: every high-volume table has a retention tier and a compaction path; the system computes live footprint, forecasts exhaustion, and reserves headroom for indexes and migrations; behavior at 70/85/95/100 % is specified and tested deterministically.
 
-**ADR-0015 — Reuse Pulse's design system and config engine; import the cleaned `ai-gateway` core. Accepted.**
-Decision: copy Pulse's tokens/components/charts, `lib/config` + `config-service`, `lib/api` kit, `lib/auth`, `lib/db` conventions, device-auth CLI, and onboarding; import `ai-gateway`'s edge-adapter model, provider selection, OpenAI passthrough/codecs, and Web-Streams/SSE utilities. Strip on import: the hard-coded `https://api.klu.ai/v1/data/` logging sink, forward-all-headers, the in-memory full-response tee, and stale model→provider tables (replaced by the registry). Consequences: §4 maps what is reused from Pulse, imported from `ai-gateway`, and written fresh.
+**ADR-0015 — Reuse Pulse's design system and config engine; write the gateway core fresh. Accepted (revised: the gateway core is written fresh, not imported).**
+Decision: copy Pulse's tokens/components/charts, `lib/config` + `config-service`, `lib/api` kit, `lib/auth`, `lib/db` conventions, device-auth CLI, and onboarding. The gateway core — edge-adapter model, provider selection, OpenAI-compatible codecs, and Web-Streams/SSE utilities — is **written fresh** in `packages/gateway-core`. No prior gateway codebase is imported or forked; the legacy `ai-gateway` is ~3 years old and is not a basis for this system. OpenAI-compatible request/response *shapes* follow the public braintrust-proxy repo as a shape reference only (§26), never as copied code. Consequences: §4 maps what is reused from Pulse and what is written fresh; the gateway core carries no inherited legacy behavior — no hard-coded external logging sink, no forward-all-headers, no in-memory full-response tee (those are simply never written).
 
 **ADR-0016 — Keyed hashes for keys/tokens; application-layer encryption for provider secrets. Accepted.**
 Decision: virtual keys and API tokens store a keyed hash (HMAC-SHA-256 with a server pepper) plus a display prefix; provider credentials are encrypted with envelope encryption (§14.3) and decrypt only inside the gateway process. Consequences: no plaintext key/token/secret is ever stored, logged, put in a header, snapshot, crash report, or metric; the snapshot carries key *hashes*, not keys.
@@ -313,7 +314,7 @@ Cron routes are not public: they require the internal job secret header and run 
 ### 2.8 Networking and egress safety
 
 - The gateway enforces an **outbound URL policy** before any provider call: only `https`, only hosts on the resolved provider offering's allowlist (from the registry/snapshot), no link-local/loopback/RFC-1918 targets, DNS re-resolution pinned to the validated host (SSRF defense, §14.4). Operator-configured private deployments (Azure, self-hosted vLLM) are allowlisted explicitly per `ProviderCredential`.
-- A **header allowlist** governs what forwards upstream; the stripped `ai-gateway` forward-all behavior is replaced (ADR-0015). Hop-by-hop and auth headers never forward; provider auth is injected fresh from the decrypted credential.
+- A **header allowlist** governs what forwards upstream; there is no forward-all behavior — the gateway forwards only an explicit allowlist (ADR-0015). Hop-by-hop and auth headers never forward; provider auth is injected fresh from the decrypted credential.
 - Enterprise egress MAY additionally restrict source networks (allowed CIDRs / mTLS) per profile; this is policy metadata in the snapshot, enforced at the edge.
 
 ### 2.9 Rollback and promotion
@@ -415,7 +416,7 @@ The host→profile binding lives in `MANIFOLD_PROFILE_BINDINGS` here and in the 
 ---
 ## §4 — Monorepo and package boundaries
 
-npm workspaces, one root lockfile. Copy Pulse's design system and config engine; import Klu's `ai-gateway` as the gateway core (ADR-0015). The boundary rule (ADR-0004) is enforced, not aspirational: platform-specific code lives only in `apps/*` and `packages/adapters-*`.
+npm workspaces, one root lockfile. Copy Pulse's design system and config engine; write the gateway core fresh in `packages/gateway-core` (ADR-0015) — no legacy gateway is imported. The boundary rule (ADR-0004) is enforced, not aspirational: platform-specific code lives only in `apps/*` and `packages/adapters-*`.
 
 ### 4.1 Layout
 
@@ -425,7 +426,7 @@ manifold/
     control-plane/          Next.js 16: UI + /api/v1 + ingest. Seeded from Pulse (app/, components/, lib/).
     gateway/                Vercel Node/Fluid entry. Thin: wires adapters-vercel to gateway-core.
     gateway-cf/             Cloudflare Worker entry. Thin: wires adapters-cloudflare to gateway-core.
-    cli/                    Go `manifold` (module github.com/<org>/manifold/cli).
+    cli/                    Go `manifold` (module github.com/0xsmw/manifold/cli).
   packages/
     contracts/              Zod schemas + generated TS types; reason-codes; error envelopes; schema version. NO runtime deps.
     domain/                 Pure domain types + state machines + invariants. Depends only on contracts.
@@ -529,13 +530,13 @@ export interface Fetcher { fetch(req: Request): Promise<Response>; }  // provide
 - **`import/no-restricted-paths`** blocks deep imports; packages consume each other only through their published entrypoints.
 - A CI check greps `gateway-core` for `process.env` and platform globals and fails on any hit not routed through a port.
 
-### 4.6 Reuse map: Pulse, `ai-gateway`, and fresh code
+### 4.6 Reuse map: Pulse and fresh code
 
-| From Pulse (yours, MIT → relicensed Apache-2.0) | From `ai-gateway` (yours) | Written fresh |
-|---|---|---|
-| `ui/` tokens, components, charts; `lib/config` + `config-service` → `config/`; `lib/api` kit; `lib/auth` (argon2, sessions); `lib/db` conventions; device-auth CLI; onboarding/readiness; `/api/v1` pattern | edge-adapter model; provider selection + base-URL resolution; OpenAI passthrough + provider codecs; Web-Streams/SSE utils → `gateway-core` (stripped per ADR-0015) | `ports/` + both adapters; `provider-registry` importer (models.dev); `observability` events/reducers/compaction; storage-bounded mode; two-profile authorizer; budget reservation; `domain` state machines |
+| From Pulse (yours, MIT → relicensed Apache-2.0) | Written fresh (all gateway/data-plane code) |
+|---|---|
+| `ui/` tokens, components, charts; `lib/config` + `config-service` → `config/`; `lib/api` kit; `lib/auth` (argon2, sessions); `lib/db` conventions; device-auth CLI; onboarding/readiness; `/api/v1` pattern | **`gateway-core` written fresh:** edge-adapter model, provider selection + base-URL resolution, OpenAI-compatible codecs, Web-Streams/SSE streaming tee; plus `ports/` + both adapters; `provider-registry` importer (models.dev); `observability` events/reducers/compaction; storage-bounded mode; two-profile authorizer; budget reservation; `domain` state machines |
 
-Concepts drawn from `klu-gateway_DEPRECATED` and `proxy`: weighted selection, ordered fallback, retry/attempt-header contracts, Azure multi-endpoint failover.
+The gateway core is not derived from any prior gateway. Standard gateway patterns — weighted selection, ordered fallback, retry/attempt-header contracts, Azure multi-endpoint failover — are implemented fresh; OpenAI-compatible wire *shapes* follow the public braintrust-proxy repo as a shape reference only (§26).
 
 ---
 
@@ -2380,7 +2381,7 @@ The instruction-source boundary from the platform applies to the *product* too: 
 
 ### 14.4 SSRF and egress policy
 
-Before any provider call the gateway enforces: scheme `https` only; destination host ∈ the offering/credential allowlist (from the snapshot); no loopback/link-local/RFC-1918/unique-local addresses; DNS resolved once and pinned to the validated address (no rebinding); redirects not followed to non-allowlisted hosts; a request-body size cap and an overall timeout. Operator private deployments (Azure endpoints, self-hosted vLLM) are allowlisted per `provider_credential.allowed_hosts`. The header allowlist forwards only safe request headers; hop-by-hop and inbound `Authorization` never forward; provider auth is injected fresh. This replaces `ai-gateway`'s forward-all behavior (ADR-0015).
+Before any provider call the gateway enforces: scheme `https` only; destination host ∈ the offering/credential allowlist (from the snapshot); no loopback/link-local/RFC-1918/unique-local addresses; DNS resolved once and pinned to the validated address (no rebinding); redirects not followed to non-allowlisted hosts; a request-body size cap and an overall timeout. Operator private deployments (Azure endpoints, self-hosted vLLM) are allowlisted per `provider_credential.allowed_hosts`. The header allowlist forwards only safe request headers; hop-by-hop and inbound `Authorization` never forward; provider auth is injected fresh. The gateway is written fresh with no forward-all behavior (ADR-0015).
 
 ### 14.5 Bounded capture
 
@@ -2704,9 +2705,9 @@ Kill the ingest sink mid-stream (assert provider traffic unaffected, events land
 
 Five phases, each ending in a deployable milestone. Exit criteria are executable, not aspirational.
 
-**Phase 0 — Provenance and foundations (1–2 wks).** Analyze `ai-gateway`, `klu-gateway_DEPRECATED`, `proxy`, Pulse. Write `LICENSE` (Apache-2.0, ADR-0003) and `NOTICE` (§26). Analyze LiteLLM and braintrust-proxy for OpenAI-compatible shapes. Stand up the monorepo skeleton (§4.1), boundary lint (§4.5), CI. **Exit:** repo builds empty packages; boundary lint runs; `NOTICE` merged; license scan green.
+**Phase 0 — Provenance and foundations (1–2 wks).** Analyze Pulse for what to reuse; design the gateway core fresh (no legacy gateway import). Write `LICENSE` (Apache-2.0, ADR-0003) and `NOTICE` (§26). Analyze LiteLLM and braintrust-proxy for OpenAI-compatible shapes. Stand up the monorepo skeleton (§4.1), boundary lint (§4.5), CI. **Exit:** repo builds empty packages; boundary lint runs; `NOTICE` merged; license scan green.
 
-**Phase 1 — Monorepo foundation + data spine (2–3 wks).** Seed `apps/control-plane` from Pulse. Land `contracts`, `domain`, `database` (§6 schema + migrations + RLS + immutability triggers), `ports` + `adapters-vercel`. Import cleaned `ai-gateway` into `gateway-core`. Build `provider-registry` importer + first models.dev catalog + golden tests (§11.6). Wire Vercel projects, pooled Neon, Edge Config, the `job_ledger`. **Exit:** one `npm install` type-checks and tests every workspace; control plane + gateway deploy to Vercel previews with a Neon branch; a seed catalog loads; §21.9 CI gates active.
+**Phase 1 — Monorepo foundation + data spine (2–3 wks).** Seed `apps/control-plane` from Pulse. Land `contracts`, `domain`, `database` (§6 schema + migrations + RLS + immutability triggers), `ports` + `adapters-vercel`. Write `gateway-core` fresh (request pipeline, codecs, streaming tee). Build `provider-registry` importer + first models.dev catalog + golden tests (§11.6). Wire Vercel projects, pooled Neon, Edge Config, the `job_ledger`. **Exit:** one `npm install` type-checks and tests every workspace; control plane + gateway deploy to Vercel previews with a Neon branch; a seed catalog loads; §21.9 CI gates active.
 
 **Phase 2 — Gateway + logging (3–4 wks).** Implement `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, `/v1/models` with endpoint codecs + conformance fixtures (§21.6). Virtual keys, provider credentials (envelope encryption), routes + immutable revisions, the snapshot builder + Edge Config publisher (§7, §8.2). Append-only observation journal, reducer, trace summaries, async ingest via `after()`+ledger (§8.3). The base-URL-swap onboarding (§11 first-run). **Exit:** a base-URL swap routes and logs a real provider call end-to-end with a trace and usage, **zero DB reads on the routing path** (asserted); flat-memory stream test passes (§21.7); cross-tenant negatives pass (§15.5).
 
@@ -2810,15 +2811,14 @@ Critical path: E1→E2→E3→{E8,E9,E10}→E11→E12/E13→E18, with E4/E5/E6/E
 
 ## §26 — Provenance and licensing
 
-Everything shipped is one of: (a) first-party code Klu owns (Pulse, `ai-gateway`, `klu-gateway_DEPRECATED`, `proxy`), relicensed Apache-2.0; (b) a permissively-licensed input imported through a pinned, reviewed transform with attribution; (c) written fresh.
+Everything shipped is one of: (a) first-party code the maintainer (github.com/0xsmw) owns — the Pulse design system / config engine / auth / api kit — relicensed Apache-2.0; (b) a permissively-licensed input imported through a pinned, reviewed transform with attribution; (c) written fresh (the entire gateway core and data plane, ports/adapters, registry importer, observability, storage-bounded mode). No prior gateway codebase (`ai-gateway` or any deprecated gateway) is imported, forked, or shipped.
 
 **Provenance ledger.**
 
 | Source | License | Use | Boundary |
 |---|---|---|---|
 | Pulse | yours | design system, config engine, api kit, auth, db conventions, device-auth CLI, onboarding → copied (§4.6) | relicensed Apache-2.0 |
-| `ai-gateway` | yours | gateway core: edge adapter, provider selection, codecs, streaming → imported, cleaned (ADR-0015) | strip klu.ai sink, forward-all-headers, full-response tee, stale model tables |
-| `klu-gateway_DEPRECATED`, `proxy` | yours | concepts only: weighted selection, ordered fallback, retry/attempt headers, Azure failover | reference, not copy |
+| gateway core + data plane | written fresh | request pipeline, provider selection, OpenAI-compatible codecs, streaming tee, authorizer, budgets, observability | not derived from any prior gateway (ADR-0015) |
 | models.dev | MIT | primary catalog: providers, models, capabilities, prices → imported via transform | attribute in NOTICE; hash+license gated (§11.6) |
 | LiteLLM catalog | MIT | secondary cross-check for divergence | attribute; never the Python proxy |
 | braintrust-proxy (public repo) | MIT | OpenAI-compatible request/response *shapes* for codecs + fixtures only | shape reference, not a catalog/pricing source |
@@ -2876,7 +2876,7 @@ Work packages are engineer-sized (≈1–5 days). Each: **Deps · Deliverables �
 - **WP-015 registry importer (models.dev).** Deps: WP-010, WP-012. Deliverables: `provider-registry` schema, `importFromModelsDev`, price µ$ conversion, capability tri-state, `applyCatalog`, evidence rows, golden tests. Tests: mapping golden (the §11.6 sample → expected rows); absent boolean → `unknown`; `$3.00→3_000_000`. Acceptance: a seed catalog loads to the measured counts (167 providers / ~5,696 models) in preview. M1.
 - **WP-016 registry-sync tool.** Deps: WP-015. Deliverables: `tools/registry-sync` pinned fetch + hash/license gate + transform + LiteLLM cross-check + PR opener; weekly Cron. Tests: hash mismatch fails; cross-check emits a diff. Acceptance: a dry run opens a PR with a field-level diff; never auto-merges. M1.
 - **WP-017 control-plane seed from Pulse.** Deps: WP-001. Deliverables: `apps/control-plane` app shell, `lib/api` kit, auth/sessions, `ui` design system copied. Tests: a protected route requires auth. Acceptance: console boots on a Vercel preview. M1.
-- **WP-018 gateway-core import + clean.** Deps: WP-013, WP-015. Deliverables: import `ai-gateway`; strip klu.ai sink, forward-all-headers, full-response tee, stale tables; wire to ports; profile resolver. Tests: no stripped behavior remains (grep gates); profile from host. Acceptance: core compiles with zero platform imports (boundary lint). M1.
+- **WP-018 gateway-core (written fresh).** Deps: WP-013, WP-015. Deliverables: write `gateway-core` from scratch — request pipeline, provider selection/base-URL resolution, OpenAI-compatible codecs, bounded streaming tee, profile resolver; no legacy import, no forward-all-headers, no full-response tee, no external logging sink. Tests: profile-from-host; codec conformance fixtures; flat-memory stream. Acceptance: core compiles with zero platform imports (boundary lint). M1.
 
 **M2 — Gateway & logging**
 
@@ -2981,6 +2981,7 @@ This section is the **live working log** for the review-driven revision of this 
 ### 29.6 Round log
 
 - **Round 1 (2026-07-20):** Closed B1–B4 and H1–H10 in the sections above; folded M13/M14/M19/L11/L1. Next: adversarial re-review of the revised spec (multi-agent) → triage mediums → fix → commit.
+- **Round 3 (2026-07-20) — identity correction (user-directed).** klu is dead; this is **not** a Klu product. Purged all klu/klu-ai references from spec and code; set the GitHub org to **github.com/0xsmw**; added a normative Ownership & non-association statement (intro §0) forbidding any klu account/scope/repo. **ai-gateway is not imported** — it is ~3 years old and not a basis for the system; the gateway core is now specified as **written fresh** (ADR-0015 revised, §4.6 reuse table collapsed, §26 provenance, WP-018, Phases 0–1). Go CLI module renamed `github.com/klu-ai/manifold/cli` → `github.com/0xsmw/manifold/cli` (builds clean). Deleted a `control-plane` Vercel project I had mistakenly deployed to the klu scope. Test deploys target the `ai-marketing` Vercel team, never klu.
 - **Round 2 (2026-07-20):** Two-agent (opus×2) adversarial re-review found Round-1 regressions and structural ADR-0021 effects. **Fixed this round:** NEW-3 (§8.3 `ON CONFLICT` now includes `created_at`); NEW-2/A1 (`rolling_30d`/`total` headroom sourced from never-shed `budget_window_state`, not partition-dropped `cost_ledger` — money blocker); NEW-1/A6 (ADR-0023 durability scoped to enterprise/money path; public path stays DB-free via the platform queue — ADR-0012 preserved); A2 (added `data_encryption_key` table + `wrappedDek` in the snapshot so the DEK-unwrap input exists without a DB read); A5/M7 (added `cache_write_tokens`/`audio_input_tokens`/`audio_output_tokens` columns to `observation` + `usage_record` and the three missing cost terms to §6.10). **Deferred to the build phase (structural, need design, tracked below):** A3 (control-plane directory DB for identity/workspace-switcher under ADR-0021), A4 (registry-catalog fan-out into N per-workspace DBs), A8 (per-installation connection model), H2-oversell-disclosure (document sharded-budget overshoot bound or restrict hard budgets to N=1). Remaining triaged mediums/lows from Round-2 agent B still open per §29.5.
 
 ### 29.7 Structural items to resolve during scaffolding (ADR-0021 second-order)
