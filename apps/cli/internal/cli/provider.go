@@ -5,7 +5,7 @@ import "github.com/spf13/cobra"
 func newProviderCmd() *cobra.Command {
 	c := branch("provider", "provider credentials (SPEC.md §12.2)")
 	c.AddCommand(
-		leafList("provider", "list providers"),
+		apiLeafList("provider", "/providers", "list providers"), // REAL: GET /api/v1/providers
 		leafGet("provider", "get a provider"),
 		buildLeaf(cmdSpec{
 			Use:   "create",

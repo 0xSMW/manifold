@@ -97,3 +97,37 @@ func TestKeyList_NoBaseURL_UsageError(t *testing.T) {
 		t.Fatalf("no base URL must be ExitUsage(2); got %v", err)
 	}
 }
+
+// The apiLeafList wiring maps each noun's `list` to the right control-plane path. The client itself is
+// verified above; this proves provider/route/key list each hit the correct GET path with bearer auth.
+func TestListCommands_HitCorrectPaths(t *testing.T) {
+	cases := []struct {
+		args []string
+		path string
+	}{
+		{[]string{"key", "list"}, "/api/v1/keys"},
+		{[]string{"provider", "list"}, "/api/v1/providers"},
+		{[]string{"route", "list"}, "/api/v1/routes"},
+	}
+	for _, tc := range cases {
+		var gotPath, gotAuth string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			gotPath = req.URL.Path
+			gotAuth = req.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[],"nextCursor":null}`))
+		}))
+		args := append(append([]string{}, tc.args...), "--base-url", srv.URL, "--token", "tk", "--json")
+		if _, err := runCLI(t, args...); err != nil {
+			srv.Close()
+			t.Fatalf("%v returned error: %v", tc.args, err)
+		}
+		srv.Close()
+		if gotPath != tc.path {
+			t.Fatalf("%v hit %q, want %q", tc.args, gotPath, tc.path)
+		}
+		if gotAuth != "Bearer tk" {
+			t.Fatalf("%v did not send bearer auth: %q", tc.args, gotAuth)
+		}
+	}
+}
