@@ -1,15 +1,38 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/contracts" },
-    { "path": "packages/domain" },
-    { "path": "packages/ports" },
-    { "path": "packages/gateway-core" },
-    { "path": "packages/database" },
-    { "path": "packages/config" },
-    { "path": "packages/crypto" },
-    { "path": "packages/gateway-policy" },
-    { "path": "packages/observability" },
-    { "path": "packages/provider-registry" }
+    {
+      "path": "packages/contracts"
+    },
+    {
+      "path": "packages/domain"
+    },
+    {
+      "path": "packages/ports"
+    },
+    {
+      "path": "packages/gateway-core"
+    },
+    {
+      "path": "packages/database"
+    },
+    {
+      "path": "packages/config"
+    },
+    {
+      "path": "packages/crypto"
+    },
+    {
+      "path": "packages/gateway-policy"
+    },
+    {
+      "path": "packages/observability"
+    },
+    {
+      "path": "packages/provider-registry"
+    },
+    {
+      "path": "packages/budget"
+    }
   ]
 }

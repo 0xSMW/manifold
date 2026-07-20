@@ -1,0 +1,29 @@
+{
+  "name": "@manifold/budget",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Hard-budget reservation service (SPEC §6.7, §8.4, §16.3): the atomic reserve/commit/rollback/sweep transactions that make a hard money cap un-oversellable under concurrency.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "test": "node --experimental-strip-types --test test/budget-attacks.test.ts"
+  },
+  "dependencies": {
+    "@manifold/contracts": "*",
+    "@manifold/database": "*",
+    "@manifold/domain": "*"
+  },
+  "devDependencies": {
+    "postgres": "^3.4.5",
+    "typescript": "^5.6.3"
+  }
+}
