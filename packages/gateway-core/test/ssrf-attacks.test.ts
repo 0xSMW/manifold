@@ -39,6 +39,7 @@ const mustBlock = [
   "https://100.100.100.200/", // CGNAT 100.64.0.0/10 (cloud metadata on some providers)
   "https://100.64.0.1/", // CGNAT lower bound
   "https://100.127.255.255/", // CGNAT upper bound
+  "https://[64:ff9b::a9fe:a9fe]/", // NAT64 64:ff9b::/96 embedding 169.254.169.254 (metadata)
 ];
 
 for (const url of mustBlock) {
@@ -91,6 +92,10 @@ const privateIps = [
   "100.64.0.0", // lower bound
   "100.100.100.200",
   "100.127.255.255", // upper bound
+  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052) embedding a private/metadata v4.
+  "64:ff9b::a9fe:a9fe", // 169.254.169.254 (cloud metadata) via NAT64
+  "64:ff9b::7f00:1", // 127.0.0.1 (loopback) via NAT64
+  "64:ff9b::a00:1", // 10.0.0.1 (RFC-1918) via NAT64
 ];
 for (const ip of privateIps) {
   test(`isPrivateIp('${ip}') === true`, () => assert.equal(isPrivateIp(ip), true));
@@ -103,6 +108,7 @@ const publicIps = [
   "100.63.255.255", // one below CGNAT (100.64.0.0/10)
   "100.128.0.1", // one above CGNAT
   "99.64.0.1", // shares the second octet but not the first
+  "64:ff9b::808:808", // NAT64-wrapped 8.8.8.8 — a wrapped PUBLIC v4 must stay public (no false block)
 ]; // real public v4/v6
 for (const ip of publicIps) {
   test(`isPrivateIp('${ip}') === false`, () => assert.equal(isPrivateIp(ip), false));

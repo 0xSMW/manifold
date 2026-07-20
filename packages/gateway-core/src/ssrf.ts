@@ -92,6 +92,14 @@ function isPrivateIpv6Groups(g: number[]): boolean {
   if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
     return isPrivateIpv4([g[6]! >> 8, g[6]! & 0xff, g[7]! >> 8, g[7]! & 0xff]);
   }
+  // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052): the low 32 bits are an embedded IPv4, so in a
+  // NAT64/DNS64 environment 64:ff9b::a9fe:a9fe reaches 169.254.169.254 (cloud metadata) and
+  // 64:ff9b::7f00:1 reaches 127.0.0.1. Classify by the embedded IPv4 so private/metadata targets
+  // can't slip through the translation. A wrapped PUBLIC v4 (e.g. 64:ff9b::808:808 = 8.8.8.8) stays
+  // public — isPrivateIpv4 returns false — which is correct.
+  if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+    return isPrivateIpv4([g[6]! >> 8, g[6]! & 0xff, g[7]! >> 8, g[7]! & 0xff]);
+  }
   return false;
 }
 
