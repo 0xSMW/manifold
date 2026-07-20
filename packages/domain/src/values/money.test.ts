@@ -1,7 +1,7 @@
 // packages/domain/src/values/money.test.ts — banker's rounding + cost computation fixtures (SPEC §6.10).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeCost, costMicroUsd, roundHalfEven } from "./money.js";
+import { computeCost, computeCostChecked, costMicroUsd, roundHalfEven } from "./money.js";
 import { ZERO_TOKEN_COUNTS } from "./tokenCounts.js";
 
 test("roundHalfEven: exhaustive x.5 ties round to nearest even integer", () => {
@@ -112,4 +112,51 @@ test("computeCost: missing price fields default to zero cost for that class", ()
     inputTokens: 1_000_000n,
   };
   assert.equal(computeCost(tokens, { inputPerMtokMicroUsd: 1_000_000n }), 1_000_000n);
+});
+
+test("computeCostChecked: every needed price present ⇒ priceComplete true, cost == computeCost", () => {
+  const tokens = { ...ZERO_TOKEN_COUNTS, inputTokens: 1_000_000n, outputTokens: 500_000n };
+  const price = { inputPerMtokMicroUsd: 3_000_000n, outputPerMtokMicroUsd: 15_000_000n };
+  const checked = computeCostChecked(tokens, price);
+  assert.equal(checked.priceComplete, true);
+  assert.equal(checked.microUsd, computeCost(tokens, price));
+  assert.equal(checked.microUsd, 10_500_000n); // 3_000_000 (input) + 7_500_000 (output)
+});
+
+test("computeCostChecked: null output price WITH output tokens ⇒ priceComplete false (fail-closed signal)", () => {
+  // The bug: a null per-class price is billed as µ$0, so real output tokens cost nothing and
+  // the hard budget under-counts. The checked variant must FLAG this so callers fail closed.
+  const tokens = { ...ZERO_TOKEN_COUNTS, inputTokens: 1_000_000n, outputTokens: 500_000n };
+  const price = { inputPerMtokMicroUsd: 3_000_000n, outputPerMtokMicroUsd: null };
+  const checked = computeCostChecked(tokens, price);
+  assert.equal(checked.priceComplete, false, "a null price for billed output tokens is unknown, not free");
+  // Same silently-cheap total computeCost would produce — the caller must not trust it.
+  assert.equal(checked.microUsd, computeCost(tokens, price));
+  assert.equal(checked.microUsd, 3_000_000n); // output tokens contributed µ$0
+});
+
+test("computeCostChecked: missing (undefined) output price WITH output tokens ⇒ priceComplete false", () => {
+  const tokens = { ...ZERO_TOKEN_COUNTS, outputTokens: 500_000n };
+  const checked = computeCostChecked(tokens, { inputPerMtokMicroUsd: 3_000_000n });
+  assert.equal(checked.priceComplete, false);
+});
+
+test("computeCostChecked: null price for a class with ZERO tokens ⇒ priceComplete true (no cost lost)", () => {
+  const tokens = { ...ZERO_TOKEN_COUNTS, inputTokens: 1_000_000n };
+  const checked = computeCostChecked(tokens, {
+    inputPerMtokMicroUsd: 3_000_000n,
+    outputPerMtokMicroUsd: null, // no output tokens → this gap costs nothing
+  });
+  assert.equal(checked.priceComplete, true);
+  assert.equal(checked.microUsd, 3_000_000n);
+});
+
+test("computeCostChecked: explicit 0n price is a KNOWN price (free tier), not a gap ⇒ priceComplete true", () => {
+  const tokens = { ...ZERO_TOKEN_COUNTS, inputTokens: 1_000_000n, outputTokens: 500_000n };
+  const checked = computeCostChecked(tokens, {
+    inputPerMtokMicroUsd: 3_000_000n,
+    outputPerMtokMicroUsd: 0n,
+  });
+  assert.equal(checked.priceComplete, true, "0n is a known zero price, not an unknown one");
+  assert.equal(checked.microUsd, 3_000_000n);
 });

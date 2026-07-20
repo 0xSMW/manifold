@@ -171,6 +171,50 @@ test("a constraint whose param is absent from the request is inert ⇒ allow", (
 });
 
 // ============================================================================================
+// Rule 2 — non-finite params must never slip past a numeric ceiling (NaN/Infinity guard)
+// ============================================================================================
+// Attack: `NaN > 4096` and `NaN < min` are BOTH false, so a raw comparison would report the
+// value in-range and `allow` — a hard param ceiling that never fires for a poisoned value.
+
+test("max_tokens = NaN against a max ceiling ⇒ NOT allowed (clamped to the bound)", () => {
+  const policy = allowedPolicy([constraint("max_tokens", { max: 4096 }, "clamp")]);
+  const d = evaluate(baseInput({ params: { max_tokens: Number.NaN } }), policy);
+  assert.notEqual(d.outcome, "allow", "a NaN param must never pass a numeric ceiling");
+  assert.equal(d.outcome, "clamp");
+  assert.deepEqual(d.reasonCodes, ["POLICY_PARAM_CLAMPED"]);
+  assert.deepEqual(d.clamps, { max_tokens: 4096 });
+});
+
+test("max_tokens = NaN against a reject ceiling ⇒ rejected (deny)", () => {
+  const policy = allowedPolicy([constraint("max_tokens", { max: 4096 }, "reject")]);
+  const d = evaluate(baseInput({ params: { max_tokens: Number.NaN } }), policy);
+  assert.equal(d.outcome, "deny");
+  assert.deepEqual(d.reasonCodes, ["POLICY_PARAM_REJECTED"]);
+});
+
+test("max_tokens = Infinity against a max ceiling ⇒ NOT allowed (clamped to the bound)", () => {
+  const policy = allowedPolicy([constraint("max_tokens", { max: 4096 }, "clamp")]);
+  const d = evaluate(baseInput({ params: { max_tokens: Number.POSITIVE_INFINITY } }), policy);
+  assert.notEqual(d.outcome, "allow", "an Infinity param must never pass a numeric ceiling");
+  assert.equal(d.outcome, "clamp");
+  assert.deepEqual(d.clamps, { max_tokens: 4096 });
+});
+
+test("max_tokens = Infinity against a reject ceiling ⇒ rejected (deny)", () => {
+  const policy = allowedPolicy([constraint("max_tokens", { max: 4096 }, "reject")]);
+  const d = evaluate(baseInput({ params: { max_tokens: Number.POSITIVE_INFINITY } }), policy);
+  assert.equal(d.outcome, "deny");
+  assert.deepEqual(d.reasonCodes, ["POLICY_PARAM_REJECTED"]);
+});
+
+test("non-finite param against a min-only ceiling is still caught (clamped up to the min)", () => {
+  const policy = allowedPolicy([constraint("top_p", { min: 0.1 }, "clamp")]);
+  const d = evaluate(baseInput({ params: { top_p: Number.NaN } }), policy);
+  assert.notEqual(d.outcome, "allow");
+  assert.deepEqual(d.clamps, { top_p: 0.1 });
+});
+
+// ============================================================================================
 // Multiple constraints + rule interaction (deny-first across the whole verdict)
 // ============================================================================================
 

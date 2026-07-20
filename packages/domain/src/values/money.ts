@@ -92,3 +92,57 @@ export function computeCost(tokens: TokenCounts, price: PriceMicroUsd): MicroUsd
     term(tokens.audioOutputTokens, price.audioOutPerMtokMicroUsd)
   );
 }
+
+/**
+ * Result of {@link computeCostChecked}: the µ$ cost plus whether every per-class price that
+ * was actually NEEDED (a class with a positive token count) was present.
+ *
+ * `priceComplete === false` means at least one billed token class had a `null`/absent price,
+ * so `microUsd` UNDER-counts (that class contributed µ$0 rather than its true cost). Hard-budget
+ * and reservation callers MUST fail closed on this (e.g. `BUDGET_PRICE_UNKNOWN`) instead of
+ * trusting a silently-cheap total; soft/observability callers may still record `microUsd`.
+ */
+export interface CheckedCost {
+  microUsd: MicroUsd;
+  priceComplete: boolean;
+}
+
+// The seven SPEC §6.10 token classes paired with the price field each one is billed at.
+// Iterated by both computeCost's shape and the completeness check so they can never diverge.
+function pricePairs(
+  tokens: TokenCounts,
+  price: PriceMicroUsd,
+): Array<[bigint | null | undefined, bigint | null | undefined]> {
+  return [
+    [tokens.inputTokens, price.inputPerMtokMicroUsd],
+    [tokens.outputTokens, price.outputPerMtokMicroUsd],
+    [tokens.cachedTokens, price.cacheReadPerMtokMicroUsd],
+    [tokens.reasoningTokens, price.reasoningPerMtokMicroUsd],
+    [tokens.cacheWriteTokens, price.cacheWritePerMtokMicroUsd],
+    [tokens.audioInputTokens, price.audioInPerMtokMicroUsd],
+    [tokens.audioOutputTokens, price.audioOutPerMtokMicroUsd],
+  ];
+}
+
+/**
+ * Strict variant of {@link computeCost} for fail-closed callers (hard budget, reservations).
+ *
+ * Returns the SAME µ$ total `computeCost` would (a `null` price still contributes µ$0), but
+ * ALSO reports `priceComplete`: `false` when any token class with a positive count has a
+ * `null`/absent price — i.e. real tokens were billed at an UNKNOWN (silently zero) price and
+ * the total is an under-count. A class with zero tokens never trips it (a missing price for a
+ * class that produced no tokens costs nothing regardless). An explicit `0n` price is a KNOWN
+ * price (free tier), not a gap, so it keeps `priceComplete === true`.
+ *
+ * `computeCost` is intentionally left unchanged so existing (soft) callers keep their behavior.
+ */
+export function computeCostChecked(tokens: TokenCounts, price: PriceMicroUsd): CheckedCost {
+  let priceComplete = true;
+  for (const [tok, p] of pricePairs(tokens, price)) {
+    if ((tok ?? 0n) > 0n && (p === null || p === undefined)) {
+      priceComplete = false;
+      break;
+    }
+  }
+  return { microUsd: computeCost(tokens, price), priceComplete };
+}

@@ -83,16 +83,34 @@ export function evaluate(input: PolicyInput, policy: PolicyRevision): PolicyDeci
     const value = input.params[c.param];
     if (value === undefined) continue; // constraint does not apply to this request
 
+    // A non-finite param value (NaN / ±Infinity) can NEVER be proven in-range against a
+    // numeric ceiling: `NaN > max` and `NaN < min` are both false, so a raw `>`/`<` check
+    // would silently pass it through as `allow` — a hard param ceiling that never fires.
+    // Fail closed: whenever the constraint bounds this param at all, a non-finite value is a
+    // violation (clamped to a finite bound or rejected per `onViolation`), same as an
+    // out-of-range finite value. (`Infinity` already trips `overMax` on a max ceiling, but a
+    // min-only or NaN case would slip through without this guard.)
+    const nonFinite = !Number.isFinite(value);
+    const bounded = c.maxValue !== null || c.minValue !== null;
+
     const overMax = c.maxValue !== null && value > c.maxValue;
     const underMin = c.minValue !== null && value < c.minValue;
-    if (!overMax && !underMin) continue; // in range (boundary values included) — untouched
+    if (!overMax && !underMin && !(nonFinite && bounded)) continue; // in range — untouched
 
     if (c.onViolation === "reject") {
       rejected = true;
       if (!reasonCodes.includes(POLICY_PARAM_REJECTED)) reasonCodes.push(POLICY_PARAM_REJECTED);
     } else {
-      // clamp to the violated bound (over→max, under→min)
-      const bound = overMax ? (c.maxValue as number) : (c.minValue as number);
+      // Clamp to the violated bound (over→max, under→min). A non-finite value has no
+      // meaningful "side", so clamp it to whichever finite bound exists (prefer the max
+      // ceiling) — it must land on a finite, in-range value.
+      const bound = overMax
+        ? (c.maxValue as number)
+        : underMin
+          ? (c.minValue as number)
+          : c.maxValue !== null
+            ? c.maxValue
+            : (c.minValue as number);
       clamps[c.param] = bound;
       clamped = true;
       if (!reasonCodes.includes(POLICY_PARAM_CLAMPED)) reasonCodes.push(POLICY_PARAM_CLAMPED);
