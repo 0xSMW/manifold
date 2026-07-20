@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500;600&family=Geist:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root,[data-theme="dark"]{
+  color-scheme:dark;
+  /* ── PRIMITIVES ── theme-agnostic raw palette */
+  --white:#ffffff; --black:#000000;
+  --gray-25:#fafafa; --gray-50:#f6f6f6; --gray-75:#f2f2f2; --gray-100:#ececec; --gray-150:#ebebeb;
+  --gray-200:#e0e0e0; --gray-300:#c9c9c9; --gray-400:#a1a1a1; --gray-500:#8f8f8f; --gray-600:#6e6e6e;
+  --gray-700:#4d4d4d; --gray-800:#2e2e2e; --gray-900:#1a1a1a; --gray-950:#111111;
+  --white-a-4:rgba(255,255,255,.04); --white-a-7:rgba(255,255,255,.07); --white-a-9:rgba(255,255,255,.09);
+  --white-a-14:rgba(255,255,255,.14); --white-a-24:rgba(255,255,255,.24); --black-a-5:rgba(0,0,0,.05);
+  --blue-400:#47a8ff; --blue-600:#006bff;
+  --green-400:#00ca50; --green-500:#00ac3a; --green-600:#28a948; --green-700:#107d32; --green-50:#ecfdec; --green-950:#002608;
+  --amber-500:#ffae00; --amber-600:#ff9300; --amber-800:#aa4d00; --amber-50:#fff6de; --amber-950:#2a1700;
+  --red-400:#ff565f; --red-500:#f13242; --red-600:#e2162a; --red-vivid:#fc0035; --red-700:#d8001b; --red-800:#ea001d; --red-50:#ffeeef; --red-100:#ffd7d6; --red-950:#330a11;
+  /* ── SEMANTIC (dark) ── purpose-named aliases */
+  --bg:var(--black); --surface:var(--black);
+  --fg:var(--gray-100); --fg-muted:var(--gray-400); --fg-faint:var(--gray-500);
+  --hover:var(--white-a-7); --border:var(--white-a-9); --border-strong:var(--white-a-14); --border-hover:var(--white-a-24);
+  --chip:var(--white-a-7); --code-bg:var(--white-a-7); --focus:var(--blue-400);
+  --success:var(--green-500); --success-fg:var(--green-400); --success-bg:var(--green-950);
+  --warning:var(--amber-500); --warning-fg:var(--amber-600); --warning-bg:var(--amber-950);
+  --danger:var(--red-500); --danger-fg:var(--red-400); --danger-bg:var(--red-950); --danger-border:var(--red-600);
+  --neutral:var(--gray-500);
+  --shadow-card:0 1px 2px rgb(0 0 0/16%);
+  --shadow-popover:0 1px 1px rgb(0 0 0/2%),0 4px 8px -4px rgb(0 0 0/4%),0 16px 24px -8px rgb(0 0 0/6%);
+  --shadow-modal:0 1px 1px rgb(0 0 0/2%),0 8px 16px -4px rgb(0 0 0/4%),0 24px 32px -8px rgb(0 0 0/6%);
+}
+[data-theme="light"]{
+  color-scheme:light;
+  --bg:var(--white); --surface:var(--white);
+  --fg:var(--gray-900); --fg-muted:var(--gray-700); --fg-faint:var(--gray-500);
+  --hover:var(--black-a-5); --border:var(--gray-150); --border-strong:var(--gray-150); --border-hover:var(--gray-300);
+  --chip:var(--gray-75); --code-bg:var(--gray-25); --focus:var(--blue-600);
+  --success:var(--green-600); --success-fg:var(--green-700); --success-bg:var(--green-50);
+  --warning:var(--amber-500); --warning-fg:var(--amber-800); --warning-bg:var(--amber-50);
+  --danger:var(--red-vivid); --danger-fg:var(--red-700); --danger-bg:var(--red-50); --danger-border:var(--red-100);
+  --neutral:var(--gray-400);
+  --shadow-card:0 2px 2px rgb(0 0 0/4%);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font-family:Geist,-apple-system,Arial,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+code{font-family:'Geist Mono',ui-monospace,SFMono-Regular,monospace;font-variant-numeric:tabular-nums}
+kbd{font-family:'Geist Mono',ui-monospace,monospace;font-size:11px;color:var(--fg-faint);border:1px solid var(--border-strong);border-radius:5px;padding:2px 6px;line-height:1}
+a{color:var(--fg-muted);text-decoration:none;cursor:pointer} a:hover{color:var(--fg)}
+::selection{background:var(--white-a-14)}
+[data-scroll]::-webkit-scrollbar{width:9px;height:9px} [data-scroll]::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:9px} [data-scroll]::-webkit-scrollbar-track{background:transparent}
+@keyframes ds-pulse{0%{opacity:.55;transform:scale(1)}75%,100%{opacity:0;transform:scale(3)}}
+@keyframes ds-blink{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes ds-spin{to{transform:rotate(360deg)}}
+@keyframes ds-shimmer{0%{background-position:-320px 0}100%{background-position:320px 0}}
+@keyframes ds-caret{0%,100%{opacity:0}50%{opacity:1}}
+</style>
+</helmet>
+
+<div data-theme="{{ theme }}" style="height:100vh;display:grid;grid-template-columns:264px 1fr;background:var(--bg);color:var(--fg);overflow:hidden;font-family:Geist,-apple-system,Arial,sans-serif">
+
+  <!-- ══ SIDEBAR ══ -->
+  <aside data-scroll style="height:100vh;overflow:auto;border-right:1px solid var(--border);display:flex;flex-direction:column;padding:16px 12px 12px">
+    <div style="display:flex;align-items:center;gap:10px;padding:4px 8px 2px">
+      <span style="width:11px;height:11px;border-radius:999px;background:var(--fg);box-shadow:0 0 0 4px var(--hover)"></span>
+      <div style="line-height:1.1">
+        <div style="font-weight:600;font-size:15px;letter-spacing:-.02em">Manifold</div>
+        <div style="font-family:'Geist Mono',monospace;font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--fg-faint);margin-top:3px">Design System</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:3px;padding:4px;border:1px solid var(--border-strong);border-radius:9px;margin:14px 4px 8px">
+      <button onClick="{{ setDark }}" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:5px 0;border:0;border-radius:6px;background:{{ seg.dark }};color:{{ seg.darkFg }};font:inherit;font-size:12px;font-weight:500;cursor:pointer">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M13 9.3A5.3 5.3 0 0 1 6.7 3 5.5 5.5 0 1 0 13 9.3Z" stroke-linejoin="round"/></svg>Dark</button>
+      <button onClick="{{ setLight }}" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;padding:5px 0;border:0;border-radius:6px;background:{{ seg.light }};color:{{ seg.lightFg }};font:inherit;font-size:12px;font-weight:500;cursor:pointer">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="3.1"/><path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1" stroke-linecap="round"/></svg>Light</button>
+    </div>
+
+    <nav onClick="{{ onNavClick }}" style="flex:1;padding-top:6px">
+      <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-faint);padding:12px 10px 6px">Foundations</div>
+      <div data-sec="overview" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.overview }};color:{{ navFg.overview }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>Overview</div>
+      <div data-sec="color" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.color }};color:{{ navFg.color }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="5.4" r="1.1" fill="currentColor" stroke="none"/><circle cx="5.5" cy="9" r="1.1" fill="currentColor" stroke="none"/><circle cx="10.5" cy="9" r="1.1" fill="currentColor" stroke="none"/></svg>Color</div>
+      <div data-sec="type" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.type }};color:{{ navFg.type }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 4V3h10v1M8 3v10M6 13h4"/></svg>Typography</div>
+      <div data-sec="space" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.space }};color:{{ navFg.space }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 8h12M2 8l2-2M2 8l2 2M14 8l-2-2M14 8l-2 2"/></svg>Space &amp; elevation</div>
+      <div data-sec="motion" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.motion }};color:{{ navFg.motion }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.4 1.4" stroke-linecap="round"/></svg>Motion</div>
+
+      <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-faint);padding:16px 10px 6px">Components</div>
+      <div data-sec="buttons" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.buttons }};color:{{ navFg.buttons }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="5.5" width="12" height="5" rx="2.5"/></svg>Buttons</div>
+      <div data-sec="forms" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.forms }};color:{{ navFg.forms }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="4" width="12" height="8" rx="2"/><path d="M4.5 8h4" stroke-linecap="round"/></svg>Forms &amp; inputs</div>
+      <div data-sec="status" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.status }};color:{{ navFg.status }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M5.5 8 7 9.5 10.5 6" stroke-linecap="round" stroke-linejoin="round"/></svg>Status &amp; feedback</div>
+      <div data-sec="data" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.data }};color:{{ navFg.data }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 6h12M6.5 6v7.5" stroke-width="1.1"/></svg>Data display</div>
+      <div data-sec="overlays" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.overlays }};color:{{ navFg.overlays }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="9" height="9" rx="1.5"/><rect x="5" y="6" width="9" height="7" rx="1.5" fill="var(--bg)"/></svg>Overlays</div>
+      <div data-sec="nav" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.nav }};color:{{ navFg.nav }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M6 2.5v11" stroke-width="1.1"/></svg>Navigation</div>
+
+      <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-faint);padding:16px 10px 6px">AI-gateway patterns</div>
+      <div data-sec="health" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.health }};color:{{ navFg.health }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.8 8h2.4l1.3-3 2 6 1.4-4 1 2h3.3"/></svg>Health &amp; status</div>
+      <div data-sec="cost" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.cost }};color:{{ navFg.cost }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6"/><path d="M8 4.6v6.8M6.4 6.2c0-.9.8-1.4 1.6-1.4s1.6.4 1.6 1.3c0 1.7-3.2 1-3.2 2.8 0 .9.8 1.4 1.6 1.4s1.6-.5 1.6-1.3" stroke-linecap="round"/></svg>Cost &amp; budgets</div>
+      <div data-sec="latency" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.latency }};color:{{ navFg.latency }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="8" height="2.6" rx="1.3"/><rect x="5" y="6.7" width="9" height="2.6" rx="1.3"/><rect x="2" y="10.4" width="6" height="2.6" rx="1.3"/></svg>Latency &amp; traces</div>
+      <div data-sec="streaming" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.streaming }};color:{{ navFg.streaming }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 5h9M2 8h12M2 11h6"/></svg>Tokens &amp; streaming</div>
+      <div data-sec="registry" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.registry }};color:{{ navFg.registry }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="4" rx="1"/><rect x="2" y="9" width="12" height="4" rx="1"/></svg>Providers &amp; models</div>
+      <div data-sec="config" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.config }};color:{{ navFg.config }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M4 3v10M12 3v10"/><circle cx="4" cy="6" r="1.6" fill="var(--bg)"/><circle cx="12" cy="10" r="1.6" fill="var(--bg)"/></svg>Config &amp; publish</div>
+      <div data-sec="states" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.states }};color:{{ navFg.states }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke-dasharray="2.4 2.2"/></svg>States: empty &amp; error</div>
+
+      <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.13em;text-transform:uppercase;color:var(--fg-faint);padding:16px 10px 6px">Showcase</div>
+      <div data-sec="console" style="display:flex;align-items:center;gap:10px;height:33px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;user-select:none;background:{{ navBg.console }};color:{{ navFg.console }}" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M4.5 6 6 7.5 4.5 9M8 9.5h3.5"/></svg>Console in use</div>
+    </nav>
+
+    <div style="border-top:1px solid var(--border);padding:10px 8px 2px;margin-top:10px;display:flex;align-items:center;justify-content:space-between">
+      <button onClick="{{ openPalette }}" style="display:flex;align-items:center;gap:8px;background:transparent;border:0;color:var(--fg-faint);font:inherit;font-size:12px;cursor:pointer" style-hover="color:var(--fg)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m11 11 3 3" stroke-linecap="round"/></svg>Search</button>
+      <kbd>⌘K</kbd>
+    </div>
+  </aside>
+
+  <!-- ══ MAIN ══ -->
+  <main id="ds-main" data-scroll style="height:100vh;overflow:auto">
+    <div style="position:sticky;top:0;z-index:30;height:52px;display:flex;align-items:center;gap:12px;padding:0 32px;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--bg) 82%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)">
+      <span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">{{ crumbGroup }}</span>
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4"><path d="m6 3 5 5-5 5" stroke-linecap="round"/></svg>
+      <span style="font-size:13px;font-weight:500">{{ crumbTitle }}</span>
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+        <button onClick="{{ openPalette }}" style="display:inline-flex;align-items:center;gap:8px;height:31px;padding:0 10px 0 11px;border-radius:7px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg-muted);font:inherit;font-size:12px;cursor:pointer" style-hover="border-color:var(--border-hover);color:var(--fg)"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m11 11 3 3" stroke-linecap="round"/></svg>Search<kbd style="margin-left:2px">⌘K</kbd></button>
+        <a href="https://vercel.com/geist" target="_blank" style="display:inline-flex;align-items:center;justify-content:center;width:31px;height:31px;border-radius:7px;border:1px solid var(--border-strong)" style-hover="border-color:var(--border-hover)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M8 2 3 4v3.5C3 10.5 5 12.6 8 14c3-1.4 5-3.5 5-6.5V4L8 2Z"/></svg></a>
+      </div>
+    </div>
+
+    <div style="padding:34px 32px 96px;max-width:1080px">
+
+      <!-- ░░ OVERVIEW ░░ -->
+      <sc-if value="{{ active.overview }}" hint-placeholder-val="{{ true }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">The system</div>
+        <h1 style="font-size:34px;line-height:1.1;font-weight:600;letter-spacing:-.03em;margin:12px 0 0;max-width:16ch">The Manifold design system</h1>
+        <p style="color:var(--fg-muted);font-size:16px;line-height:1.6;margin:16px 0 0;max-width:60ch;text-wrap:pretty">A dark-first operator language for an AI gateway. Layered tokens, a status system built for degradation, and dense data surfaces — codified so engineering and design ship the same product.</p>
+
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:28px">
+          <div style="background:var(--surface);padding:16px 18px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Tokens</div><div style="font-family:'Geist Mono',monospace;font-size:26px;font-weight:600;letter-spacing:-.01em;margin-top:6px">2 layers</div><div style="font-size:12px;color:var(--fg-muted);margin-top:2px">primitive → semantic</div></div>
+          <div style="background:var(--surface);padding:16px 18px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Components</div><div style="font-family:'Geist Mono',monospace;font-size:26px;font-weight:600;letter-spacing:-.01em;margin-top:6px">24</div><div style="font-size:12px;color:var(--fg-muted);margin-top:2px">buttons → command menu</div></div>
+          <div style="background:var(--surface);padding:16px 18px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Patterns</div><div style="font-family:'Geist Mono',monospace;font-size:26px;font-weight:600;letter-spacing:-.01em;margin-top:6px">7</div><div style="font-size:12px;color:var(--fg-muted);margin-top:2px">gateway-specific</div></div>
+          <div style="background:var(--surface);padding:16px 18px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Themes</div><div style="font-family:'Geist Mono',monospace;font-size:26px;font-weight:600;letter-spacing:-.01em;margin-top:6px">2</div><div style="font-size:12px;color:var(--fg-muted);margin-top:2px">dark-first, full parity</div></div>
+        </div>
+
+        <h2 style="font-size:14px;font-weight:600;letter-spacing:-.01em;margin:36px 0 0">Principles</h2>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:14px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:20px">
+            <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:999px;background:var(--danger)"></span><div style="font-weight:600;font-size:14px">Deny-first, fail-closed</div></div>
+            <p style="color:var(--fg-muted);font-size:13px;line-height:1.6;margin:10px 0 0">The UI defaults to the safe state. Unknown price blocks a hard budget; a removed entitlement is a tripwire, not a toggle. Destructive intent always shows its blast radius first.</p>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:20px">
+            <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:999px;background:var(--warning)"></span><div style="font-weight:600;font-size:14px">Status is a system</div></div>
+            <p style="color:var(--fg-muted);font-size:13px;line-height:1.6;margin:10px 0 0">Up · verifying · down · idle is one vocabulary — dot, badge, banner, row accent all derive from it. Amber means <em>unknown</em>, never merely warning. Live things pulse; settled things don't.</p>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:20px">
+            <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:999px;background:var(--success)"></span><div style="font-weight:600;font-size:14px">Density with clarity</div></div>
+            <p style="color:var(--fg-muted);font-size:13px;line-height:1.6;margin:10px 0 0">This is an operator tool. Tables are the primary surface; monospace tabular numerals keep columns scannable. Whitespace is earned by hierarchy, not sprinkled.</p>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:20px">
+            <div style="display:flex;align-items:center;gap:9px"><span style="width:8px;height:8px;border-radius:999px;background:var(--focus)"></span><div style="font-weight:600;font-size:14px">Two themes, one truth</div></div>
+            <p style="color:var(--fg-muted);font-size:13px;line-height:1.6;margin:10px 0 0">Every color is a semantic token. Components never name a hue — they name a role. Dark and light are two resolutions of the same table.</p>
+          </div>
+        </div>
+
+        <h2 style="font-size:14px;font-weight:600;letter-spacing:-.01em;margin:36px 0 0">Start here</h2>
+        <div onClick="{{ onNavClick }}" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px">
+          <div data-sec="color" style="border:1px solid var(--border-strong);border-radius:10px;padding:16px;cursor:pointer;background:var(--surface)" style-hover="border-color:var(--border-hover)"><div style="font-weight:500;font-size:13px">Color tokens →</div><div style="font-size:12px;color:var(--fg-muted);margin-top:4px">Primitive ramps and semantic aliases</div></div>
+          <div data-sec="status" style="border:1px solid var(--border-strong);border-radius:10px;padding:16px;cursor:pointer;background:var(--surface)" style-hover="border-color:var(--border-hover)"><div style="font-weight:500;font-size:13px">Status system →</div><div style="font-size:12px;color:var(--fg-muted);margin-top:4px">Dots, badges, banners, row accents</div></div>
+          <div data-sec="console" style="border:1px solid var(--border-strong);border-radius:10px;padding:16px;cursor:pointer;background:var(--surface)" style-hover="border-color:var(--border-hover)"><div style="font-weight:500;font-size:13px">Console in use →</div><div style="font-size:12px;color:var(--fg-muted);margin-top:4px">The system assembled into a screen</div></div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ COLOR ░░ -->
+      <sc-if value="{{ active.color }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Foundations</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Color</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Two layers. <strong style="color:var(--fg);font-weight:600">Primitives</strong> are the raw, theme-agnostic palette — you rarely touch them. <strong style="color:var(--fg);font-weight:600">Semantic</strong> tokens name a role and resolve per theme; components only ever reference these.</p>
+
+        <h2 style="font-size:13px;font-weight:600;margin:32px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>Neutral ramp <span style="font-weight:400;color:var(--fg-faint);font-size:12px">— structure, text, surfaces</span></h2>
+        <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-top:14px">
+          <sc-for list="{{ grayRamp }}" as="c" hint-placeholder-count="16">
+            <div>
+              <div style="height:52px;border-radius:8px;border:1px solid var(--border);background:{{ c.v }}"></div>
+              <div style="font-family:'Geist Mono',monospace;font-size:11px;margin-top:6px">{{ c.name }}</div>
+              <div style="font-family:'Geist Mono',monospace;font-size:10px;color:var(--fg-faint)">{{ c.v }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:30px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Transparency <span style="font-weight:400;color:var(--fg-faint);font-size:12px">— borders &amp; hovers that read on any surface</span></h2>
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:14px">
+          <sc-for list="{{ alphaRamp }}" as="c" hint-placeholder-count="6">
+            <div>
+              <div style="height:52px;border-radius:8px;border:1px solid var(--border);background:linear-gradient(45deg,var(--gray-500) 25%,transparent 25%,transparent 75%,var(--gray-500) 75%),linear-gradient(45deg,var(--gray-500) 25%,var(--bg) 25%,var(--bg) 75%,var(--gray-500) 75%);background-size:12px 12px;background-position:0 0,6px 6px;position:relative;overflow:hidden"><span style="position:absolute;inset:0;background:{{ c.v }}"></span></div>
+              <div style="font-family:'Geist Mono',monospace;font-size:11px;margin-top:6px">{{ c.name }}</div>
+              <div style="font-family:'Geist Mono',monospace;font-size:10px;color:var(--fg-faint)">{{ c.note }}</div>
+            </div>
+          </sc-for>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:30px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">03</span>Accent &amp; status hues</h2>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:14px">
+          <sc-for list="{{ hueGroups }}" as="g" hint-placeholder-count="4">
+            <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;background:var(--surface)">
+              <div style="padding:12px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px"><span style="width:9px;height:9px;border-radius:999px;background:{{ g.dot }}"></span><span style="font-weight:600;font-size:13px">{{ g.label }}</span></div>
+              <div style="padding:10px 14px 12px;display:flex;flex-direction:column;gap:6px">
+                <sc-for list="{{ g.steps }}" as="s" hint-placeholder-count="4">
+                  <div style="display:flex;align-items:center;gap:9px"><span style="width:18px;height:18px;border-radius:5px;border:1px solid var(--border);background:{{ s.v }};flex:0 0 auto"></span><code style="font-size:11px">{{ s.name }}</code><code style="font-size:10px;color:var(--fg-faint);margin-left:auto">{{ s.v }}</code></div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:34px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">04</span>Semantic tokens <span style="font-weight:400;color:var(--fg-faint);font-size:12px">— what components reference · resolved in the current theme</span></h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:14px">
+          <div style="display:grid;grid-template-columns:44px 1.1fr 1.5fr 1fr 1fr;align-items:center;height:38px;padding:0 16px;border-bottom:1px solid var(--border);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)"><div></div><div>token</div><div>role</div><div>dark →</div><div>light →</div></div>
+          <sc-for list="{{ semanticRows }}" as="r" hint-placeholder-count="13">
+            <div style="display:grid;grid-template-columns:44px 1.1fr 1.5fr 1fr 1fr;align-items:center;min-height:44px;padding:8px 16px;border-bottom:1px solid var(--border)" style-hover="background:var(--hover)">
+              <div><span style="display:block;width:22px;height:22px;border-radius:6px;border:1px solid var(--border-hover);background:{{ r.swatch }}"></span></div>
+              <code style="font-size:12px">{{ r.token }}</code>
+              <div style="font-size:13px;color:var(--fg-muted)">{{ r.use }}</div>
+              <code style="font-size:11px;color:var(--fg-faint)">{{ r.dark }}</code>
+              <code style="font-size:11px;color:var(--fg-faint)">{{ r.light }}</code>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px">
+          <div style="border:1px solid color-mix(in srgb,var(--success) 34%,transparent);background:var(--success-bg);border-radius:10px;padding:14px 16px"><div style="display:flex;align-items:center;gap:8px;color:var(--success-fg);font-weight:600;font-size:12px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 8.5 6.8 11 12 5" stroke-linecap="round" stroke-linejoin="round"/></svg>DO</div><div style="font-size:13px;color:var(--fg);margin-top:8px;line-height:1.55">Reference <code style="font-size:12px">var(--fg-muted)</code>, <code style="font-size:12px">var(--danger)</code>. Roles survive a theme flip and a palette change.</div></div>
+          <div style="border:1px solid var(--danger-border);background:var(--danger-bg);border-radius:10px;padding:14px 16px"><div style="display:flex;align-items:center;gap:8px;color:var(--danger-fg);font-weight:600;font-size:12px"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l6 6M11 5l-6 6" stroke-linecap="round"/></svg>DON'T</div><div style="font-size:13px;color:var(--fg);margin-top:8px;line-height:1.55">Hard-code <code style="font-size:12px">#f13242</code> or reach past a role into a primitive like <code style="font-size:12px">var(--red-500)</code> inside a component.</div></div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ TYPOGRAPHY ░░ -->
+      <sc-if value="{{ active.type }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Foundations</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Typography</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Two families. <strong style="color:var(--fg);font-weight:600">Geist</strong> carries all prose and UI; <strong style="color:var(--fg);font-weight:600">Geist Mono</strong> carries every identifier, number, and machine value — with tabular figures so columns align.</p>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px">
+            <div style="display:flex;align-items:baseline;justify-content:space-between"><div style="font-size:44px;line-height:1;font-weight:600;letter-spacing:-.03em">Ag</div><code style="font-size:11px;color:var(--fg-faint)">Geist</code></div>
+            <div style="font-size:13px;color:var(--fg-muted);margin-top:16px">Sans · UI &amp; prose</div>
+            <div style="font-size:15px;margin-top:6px">The quick brown fox routes 1,280,940 requests</div>
+            <div style="display:flex;gap:6px;margin-top:12px"><kbd style="font-family:Geist">400</kbd><kbd style="font-family:Geist">500</kbd><kbd style="font-family:Geist">600</kbd></div>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px">
+            <div style="display:flex;align-items:baseline;justify-content:space-between"><div style="font-family:'Geist Mono',monospace;font-size:44px;line-height:1;font-weight:500;letter-spacing:-.02em">Ag</div><code style="font-size:11px;color:var(--fg-faint)">Geist Mono</code></div>
+            <div style="font-size:13px;color:var(--fg-muted);margin-top:16px">Mono · identifiers &amp; numbers</div>
+            <code style="display:block;font-size:14px;margin-top:6px">tr_77b0e4 · sha256:8c41 · $0.0184</code>
+            <div style="display:flex;gap:6px;margin-top:12px"><kbd>0123456789</kbd><span style="font-size:11px;color:var(--fg-faint);align-self:center">tabular-nums</span></div>
+          </div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:32px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>Type scale</h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:14px">
+          <sc-for list="{{ typeScale }}" as="t" hint-placeholder-count="7">
+            <div style="display:grid;grid-template-columns:120px 1fr 130px;gap:16px;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)" style-hover="background:var(--hover)">
+              <div><div style="font-size:13px;font-weight:500">{{ t.role }}</div><code style="font-size:11px;color:var(--fg-faint)">{{ t.name }}</code></div>
+              <div style="font-size:{{ t.size }}px;line-height:{{ t.lh }}px;font-weight:{{ t.weight }};letter-spacing:-.01em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">Route resolved to provider target</div>
+              <code style="font-size:11px;color:var(--fg-faint);text-align:right">{{ t.size }}/{{ t.lh }} · {{ t.weight }}</code>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:14px;margin-top:24px">
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Weights</h2>
+            <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;background:var(--surface)">
+              <sc-for list="{{ weights }}" as="w" hint-placeholder-count="3">
+                <div style="display:flex;align-items:baseline;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border)"><span style="font-size:20px;font-weight:{{ w.w }};letter-spacing:-.01em">Manifold</span><code style="font-size:11px;color:var(--fg-faint)">{{ w.name }} · {{ w.w }}</code></div>
+              </sc-for>
+            </div>
+          </div>
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">03</span>The uppercase label</h2>
+            <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:20px;height:calc(100% - 27px)">
+              <div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Requests</div>
+              <div style="font-family:'Geist Mono',monospace;font-size:23px;font-weight:600;margin-top:6px">1.28M</div>
+              <p style="font-size:12px;color:var(--fg-muted);line-height:1.55;margin:14px 0 0">Eyebrow labels are 11px, <code style="font-size:11px">.05em</code> tracked, uppercase, <code style="font-size:11px">--fg-faint</code>. They caption a value — never a whole paragraph.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ SPACE & ELEVATION ░░ -->
+      <sc-if value="{{ active.space }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Foundations</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Space &amp; elevation</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">A 4px base grid keeps dense layouts on rhythm. Radii and elevation are small, closed sets — three shadows total, because a flat operator tool earns depth sparingly.</p>
+
+        <h2 style="font-size:13px;font-weight:600;margin:32px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>Spacing scale <span style="font-weight:400;color:var(--fg-faint);font-size:12px">— base 4px</span></h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:10px 18px;margin-top:14px">
+          <sc-for list="{{ spaceScale }}" as="sp" hint-placeholder-count="13">
+            <div style="display:grid;grid-template-columns:64px 60px 1fr;gap:14px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
+              <code style="font-size:12px">{{ sp.name }}</code>
+              <code style="font-size:11px;color:var(--fg-faint)">{{ sp.px }}px</code>
+              <span style="display:block;height:14px;width:{{ sp.px }}px;min-width:2px;background:var(--focus);border-radius:2px;opacity:.85"></span>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px">
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Radii</h2>
+            <div style="display:flex;gap:14px;flex-wrap:wrap">
+              <sc-for list="{{ radii }}" as="r" hint-placeholder-count="5">
+                <div style="text-align:center">
+                  <div style="width:66px;height:66px;background:var(--hover);border:1px solid var(--border-hover);border-top-left-radius:{{ r.px }}px;border-top-right-radius:{{ r.px }}px"></div>
+                  <code style="font-size:11px;display:block;margin-top:7px">{{ r.name }}</code>
+                  <code style="font-size:10px;color:var(--fg-faint)">{{ r.px }}px</code>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">03</span>Elevation</h2>
+            <div style="display:flex;flex-direction:column;gap:14px">
+              <sc-for list="{{ shadows }}" as="sh" hint-placeholder-count="3">
+                <div style="display:flex;align-items:center;gap:16px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:{{ sh.v }};padding:14px 16px">
+                  <code style="font-size:12px;width:64px">{{ sh.name }}</code>
+                  <span style="font-size:12px;color:var(--fg-muted)">{{ sh.use }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ MOTION ░░ -->
+      <sc-if value="{{ active.motion }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Foundations</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Motion</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Motion carries meaning, not decoration. Only <em>live</em> and <em>in-flight</em> states animate; a settled value is perfectly still. Durations are short — this is a tool, not a landing page.</p>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px">
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>Duration</h2>
+            <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;background:var(--surface)">
+              <sc-for list="{{ motionDur }}" as="d" hint-placeholder-count="3">
+                <div style="display:grid;grid-template-columns:70px 66px 1fr;gap:12px;align-items:center;padding:13px 18px;border-bottom:1px solid var(--border)"><code style="font-size:12px">{{ d.name }}</code><code style="font-size:11px;color:var(--fg-faint)">{{ d.v }}</code><span style="font-size:12px;color:var(--fg-muted)">{{ d.use }}</span></div>
+              </sc-for>
+            </div>
+            <h2 style="font-size:13px;font-weight:600;margin:24px 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Easing</h2>
+            <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;background:var(--surface)">
+              <sc-for list="{{ motionEase }}" as="e" hint-placeholder-count="2">
+                <div style="padding:13px 18px;border-bottom:1px solid var(--border)"><div style="display:flex;align-items:center;justify-content:space-between"><code style="font-size:12px">{{ e.name }}</code><span style="font-size:12px;color:var(--fg-muted)">{{ e.use }}</span></div><code style="font-size:10px;color:var(--fg-faint);display:block;margin-top:4px">{{ e.v }}</code></div>
+              </sc-for>
+            </div>
+          </div>
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">03</span>Signals</h2>
+            <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:20px;display:flex;flex-direction:column;gap:18px">
+              <div style="display:flex;align-items:center;gap:14px"><span style="position:relative;width:9px;height:9px;border-radius:999px;background:var(--warning);flex:0 0 auto"><span style="position:absolute;inset:0;border-radius:999px;background:var(--warning);animation:ds-pulse 2s ease-out infinite"></span></span><div><div style="font-size:13px;font-weight:500">Live pulse</div><div style="font-size:12px;color:var(--fg-muted)">Failover in progress, degraded provider, tailing logs</div></div></div>
+              <div style="display:flex;align-items:center;gap:14px"><span style="display:inline-flex;gap:2px;flex:0 0 auto;align-items:center;height:9px"><span style="width:3px;height:9px;background:var(--fg);border-radius:1px;animation:ds-blink 1s ease-in-out infinite"></span></span><div><div style="font-size:13px;font-weight:500">Streaming caret</div><div style="font-size:12px;color:var(--fg-muted)">Tokens still arriving from the model</div></div></div>
+              <div style="display:flex;align-items:center;gap:14px"><span style="width:16px;height:16px;border-radius:999px;border:2px solid var(--border-hover);border-top-color:var(--fg);animation:ds-spin .7s linear infinite;flex:0 0 auto"></span><div><div style="font-size:13px;font-weight:500">Spinner</div><div style="font-size:12px;color:var(--fg-muted)">Validating a credential, planning a revision</div></div></div>
+              <div style="display:flex;align-items:center;gap:14px"><span style="width:80px;height:12px;border-radius:4px;background:linear-gradient(90deg,var(--hover) 0%,var(--border-strong) 40%,var(--hover) 80%);background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite;flex:0 0 auto"></span><div><div style="font-size:13px;font-weight:500">Skeleton shimmer</div><div style="font-size:12px;color:var(--fg-muted)">First paint before data resolves</div></div></div>
+              <div style="border-top:1px solid var(--border);padding-top:16px">
+                <div style="font-size:12px;color:var(--fg-muted);margin-bottom:8px">Hover — the standard transition</div>
+                <button style="height:36px;padding:0 14px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;cursor:pointer;transition:border-color .18s cubic-bezier(.4,0,.2,1),background .18s cubic-bezier(.4,0,.2,1)" style-hover="border-color:var(--border-hover);background:var(--hover)">Hover me</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ BUTTONS ░░ -->
+      <sc-if value="{{ active.buttons }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Components</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Buttons</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">One 36px control height, 6px radius. Exactly one primary per view. Destructive actions get their own outline; irreversible ones go solid red only after confirmation.</p>
+
+        <h2 style="font-size:13px;font-weight:600;margin:30px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>Variants</h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px;margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:opacity .18s" style-hover="opacity:.88">Primary</button>
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:border-color .18s" style-hover="border-color:var(--border-hover)">Secondary</button>
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:background .18s" style-hover="background:var(--hover)">Tertiary</button>
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid var(--danger-border);background:var(--surface);color:var(--danger-fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:border-color .18s" style-hover="border-color:var(--danger-fg)">Danger outline</button>
+          <button style="display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--danger);color:#fff;font:inherit;font-size:13px;font-weight:500;cursor:pointer;transition:opacity .18s" style-hover="opacity:.9">Delete workspace</button>
+          <button disabled style="display:inline-flex;align-items:center;justify-content:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--fg-faint);font:inherit;font-size:13px;font-weight:500;opacity:.6;cursor:not-allowed">Disabled</button>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px">
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Sizes &amp; icons</h2>
+            <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+              <button onClick="{{ open.routeSheet }}" style="display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:pointer"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>New route</button>
+              <button style="display:inline-flex;align-items:center;gap:8px;height:30px;padding:0 10px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:12px;font-weight:500;cursor:pointer" style-hover="border-color:var(--border-hover)">Small</button>
+              <button aria-label="Settings" style="display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);cursor:pointer" style-hover="border-color:var(--border-hover)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4"/></svg></button>
+              <button style="display:inline-flex;align-items:center;gap:9px;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="border-color:var(--border-hover)"><span style="color:var(--fg-muted)">◆</span>Publish<span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--fg);color:var(--bg)"><code style="font-size:11px;font-weight:600">3</code></span></button>
+            </div>
+          </div>
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">03</span>Pending</h2>
+            <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+              <button style="display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:progress"><span style="width:13px;height:13px;border-radius:999px;border:2px solid color-mix(in srgb,var(--bg) 40%,transparent);border-top-color:var(--bg);animation:ds-spin .7s linear infinite"></span>Validating…</button>
+              <button style="display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 14px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg-muted);font:inherit;font-size:13px;font-weight:500;cursor:progress"><span style="width:13px;height:13px;border-radius:999px;border:2px solid var(--border-hover);border-top-color:var(--fg);animation:ds-spin .7s linear infinite"></span>Planning</button>
+            </div>
+            <p style="font-size:12px;color:var(--fg-muted);line-height:1.55;margin:12px 2px 0">Pending buttons keep their label and width — no layout shift while a request is in flight.</p>
+          </div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ FORMS ░░ -->
+      <sc-if value="{{ active.forms }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Components</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Forms &amp; inputs</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Inputs match button height. Machine values — keys, hosts, weights — use the mono input. The focus ring is the one place brand blue appears in the chrome.</p>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px;display:flex;flex-direction:column;gap:16px">
+            <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">public_name</label><input value="gpt-4o" style="width:100%;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font-family:'Geist Mono',monospace;font-size:13px;outline:none" style-focus="border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 26%,transparent)"></div>
+            <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">Description</label><input placeholder="What clients call this route" style="width:100%;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;outline:none" style-focus="border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 26%,transparent)"></div>
+            <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">Limit (USD)</label><input value="1500" aria-invalid="true" style="width:100%;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--danger-border);background:var(--surface);color:var(--fg);font-family:'Geist Mono',monospace;font-size:13px;outline:none"><span style="font-size:12px;color:var(--danger-fg);display:flex;align-items:center;gap:6px"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.5M8 10.6v.1" stroke-linecap="round"/></svg>Requires a verified price to enforce as hard.</span></div>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px;display:flex;flex-direction:column;gap:16px">
+            <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">Provider</label><div style="width:100%;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font-size:13px;display:flex;align-items:center;justify-content:space-between;cursor:pointer" style-hover="border-color:var(--border-hover)">OpenAI<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4" stroke-linecap="round"><path d="m4 6 4 4 4-4"/></svg></div></div>
+            <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">Search</label><div style="position:relative"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4" style="position:absolute;left:11px;top:11px"><circle cx="7" cy="7" r="4.5"/><path d="m11 11 3 3" stroke-linecap="round"/></svg><input placeholder="Search routes" style="width:100%;height:36px;padding:0 12px 0 34px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;outline:none" style-focus="border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 26%,transparent)"></div></div>
+            <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">Mode</label><div style="display:inline-flex;padding:3px;border:1px solid var(--border-strong);border-radius:8px;gap:2px;width:max-content"><button style="padding:5px 12px;border-radius:6px;border:0;background:var(--hover);color:var(--fg);font:inherit;font-size:12px;font-weight:500;cursor:pointer">weighted</button><button style="padding:5px 12px;border-radius:6px;border:0;background:transparent;color:var(--fg-muted);font:inherit;font-size:12px;font-weight:500;cursor:pointer" style-hover="color:var(--fg)">ordered</button></div></div>
+            <div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:13px;font-weight:500">Fail closed on unknown price</div><div style="font-size:12px;color:var(--fg-muted)">Deny rather than estimate</div></div><span style="width:38px;height:22px;border-radius:999px;background:var(--success);position:relative;flex:0 0 auto;cursor:pointer"><span style="position:absolute;top:2px;left:18px;width:18px;height:18px;border-radius:999px;background:#fff;transition:left .18s"></span></span></div>
+          </div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">Filter chips</span></h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
+          <span style="display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 6px 0 11px;border-radius:7px;border:1px solid var(--border-strong);background:var(--surface);font-size:12px"><code style="font-size:11px;color:var(--fg-muted)">model: gpt-4o</code><button aria-label="remove" style="display:inline-flex;width:16px;height:16px;border:0;border-radius:4px;background:transparent;color:var(--fg-faint);cursor:pointer;align-items:center;justify-content:center" style-hover="background:var(--hover);color:var(--fg)">✕</button></span>
+          <span style="display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 6px 0 11px;border-radius:7px;border:1px solid var(--border-strong);background:var(--surface);font-size:12px"><code style="font-size:11px;color:var(--fg-muted)">cost center: cc-support</code><button aria-label="remove" style="display:inline-flex;width:16px;height:16px;border:0;border-radius:4px;background:transparent;color:var(--fg-faint);cursor:pointer;align-items:center;justify-content:center" style-hover="background:var(--hover);color:var(--fg)">✕</button></span>
+          <button style="display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 11px;border-radius:7px;border:1px dashed var(--border-hover);background:transparent;color:var(--fg-muted);font:inherit;font-size:12px;cursor:pointer" style-hover="color:var(--fg);border-color:var(--fg-faint)"><svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>Add filter</button>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ STATUS ░░ -->
+      <sc-if value="{{ active.status }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Components</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Status &amp; feedback</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">The core vocabulary of the whole product. Four states, one meaning each — every dot, badge, banner, and row accent is derived from this single table.</p>
+
+        <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:22px">
+          <div style="display:grid;grid-template-columns:150px 1fr 1.4fr 1fr;align-items:center;height:38px;padding:0 18px;border-bottom:1px solid var(--border);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)"><div>state</div><div>token</div><div>means</div><div>example</div></div>
+          <div style="display:grid;grid-template-columns:150px 1fr 1.4fr 1fr;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)"><div style="display:flex;align-items:center;gap:9px"><span style="width:9px;height:9px;border-radius:999px;background:var(--success)"></span><span style="font-weight:500;font-size:13px">up</span></div><code style="font-size:12px;color:var(--success-fg)">--success</code><div style="font-size:13px;color:var(--fg-muted)">Healthy, valid, active</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--success-bg);color:var(--success-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>200</span></div>
+          <div style="display:grid;grid-template-columns:150px 1fr 1.4fr 1fr;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)"><div style="display:flex;align-items:center;gap:9px"><span style="width:9px;height:9px;border-radius:999px;background:var(--warning)"></span><span style="font-weight:500;font-size:13px">verifying</span></div><code style="font-size:12px;color:var(--warning-fg)">--warning</code><div style="font-size:13px;color:var(--fg-muted)"><em>Unknown</em> — not yet unsupported</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--warning-bg);color:var(--warning-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--warning)"></span>clamp</span></div>
+          <div style="display:grid;grid-template-columns:150px 1fr 1.4fr 1fr;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)"><div style="display:flex;align-items:center;gap:9px"><span style="width:9px;height:9px;border-radius:999px;background:var(--danger)"></span><span style="font-weight:500;font-size:13px">down</span></div><code style="font-size:12px;color:var(--danger-fg)">--danger</code><div style="font-size:13px;color:var(--fg-muted)">Failed, denied, invalid</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--danger-bg);color:var(--danger-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--danger)"></span>504</span></div>
+          <div style="display:grid;grid-template-columns:150px 1fr 1.4fr 1fr;align-items:center;padding:14px 18px"><div style="display:flex;align-items:center;gap:9px"><span style="width:9px;height:9px;border-radius:999px;background:var(--neutral)"></span><span style="font-weight:500;font-size:13px">idle</span></div><code style="font-size:12px;color:var(--fg-faint)">--neutral</code><div style="font-size:13px;color:var(--fg-muted)">Disabled, revoked, no traffic</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--neutral)"></span>idle</span></div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px">
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">Live vs. settled</span></h2>
+            <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:20px;display:flex;flex-direction:column;gap:16px">
+              <div style="display:flex;align-items:center;gap:12px"><span style="position:relative;width:9px;height:9px;border-radius:999px;background:var(--warning);flex:0 0 auto"><span style="position:absolute;inset:0;border-radius:999px;background:var(--warning);animation:ds-pulse 2s ease-out infinite"></span></span><span style="font-size:13px">Azure OpenAI</span><code style="font-size:12px;color:var(--warning-fg);margin-left:auto">failover</code></div>
+              <div style="display:flex;align-items:center;gap:12px"><span style="width:9px;height:9px;border-radius:999px;background:var(--success);flex:0 0 auto"></span><span style="font-size:13px">OpenAI</span><code style="font-size:12px;color:var(--fg-faint);margin-left:auto">318 ms</code></div>
+              <div style="display:flex;align-items:center;gap:12px"><span style="width:9px;height:9px;border-radius:999px;background:var(--neutral);flex:0 0 auto"></span><span style="font-size:13px">Google Vertex</span><code style="font-size:12px;color:var(--fg-faint);margin-left:auto">idle</code></div>
+              <p style="font-size:12px;color:var(--fg-muted);line-height:1.55;margin:2px 0 0;border-top:1px solid var(--border);padding-top:14px">A pulsing dot means something is <em>happening now</em>. Steady dots are the resting truth. Never pulse a settled row.</p>
+            </div>
+          </div>
+          <div>
+            <h2 style="font-size:13px;font-weight:600;margin:0 0 14px;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">Banners</span></h2>
+            <div style="display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--warning-bg);color:var(--warning-fg);border:1px solid color-mix(in srgb,var(--warning) 30%,transparent)"><span style="width:8px;height:8px;border-radius:999px;background:var(--warning);margin-top:5px;flex:0 0 auto"></span><span>1 route has unpublished changes. Review in Publish.</span></div>
+              <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--danger-bg);color:var(--danger-fg);border:1px solid color-mix(in srgb,var(--danger) 34%,transparent)"><span style="position:relative;width:8px;height:8px;border-radius:999px;background:var(--danger);margin-top:5px;flex:0 0 auto"><span style="position:absolute;inset:0;border-radius:999px;background:var(--danger);animation:ds-pulse 2s ease-out infinite"></span></span><span><strong style="font-weight:600">cc-support</strong> exceeded its hard cap. 214 requests denied in the last hour.</span></div>
+              <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--success-bg);color:var(--success-fg);border:1px solid color-mix(in srgb,var(--success) 30%,transparent)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" style="margin-top:2px;flex:0 0 auto"><path d="M4 8.5 6.8 11 12 5" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Revision <code style="font-size:12px">sha256:8c41</code> applied. 2 routes added.</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ DATA DISPLAY ░░ -->
+      <sc-if value="{{ active.data }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Components</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Data display</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">The table is the product's main surface. KPIs sit above it as a 1px-seam grid; every number is mono and tabular so eyes scan down a column without drift.</p>
+
+        <h2 style="font-size:13px;font-weight:600;margin:28px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>KPI grid</h2>
+        <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:14px">
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Requests</div><div style="font-family:'Geist Mono',monospace;font-size:23px;font-weight:600;letter-spacing:-.01em;margin-top:6px">1.28M</div></div>
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Tokens</div><div style="font-family:'Geist Mono',monospace;font-size:23px;font-weight:600;letter-spacing:-.01em;margin-top:6px">3.94B</div></div>
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Spend</div><div style="font-family:'Geist Mono',monospace;font-size:23px;font-weight:600;letter-spacing:-.01em;margin-top:6px">$4,182</div></div>
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">P50</div><div style="font-family:'Geist Mono',monospace;font-size:23px;font-weight:600;letter-spacing:-.01em;margin-top:6px">312<span style="font-size:14px"> ms</span></div></div>
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">P95</div><div style="font-family:'Geist Mono',monospace;font-size:23px;font-weight:600;letter-spacing:-.01em;margin-top:6px">1,240<span style="font-size:14px"> ms</span></div></div>
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Errors</div><div style="font-family:'Geist Mono',monospace;font-size:23px;font-weight:600;letter-spacing:-.01em;margin-top:6px;color:var(--danger-fg)">0.42%</div></div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:28px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Table <span style="font-weight:400;color:var(--fg-faint);font-size:12px">— hover a row · red seam marks a failure</span></h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:14px">
+          <div style="display:grid;grid-template-columns:96px 100px 1.2fr 1.1fr 88px 92px 88px;align-items:center;height:40px;padding:0 16px;border-bottom:1px solid var(--border);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-muted)"><div>Time</div><div>Trace</div><div>Model</div><div>Provider</div><div>Status</div><div style="text-align:right">Latency</div><div style="text-align:right">Cost</div></div>
+          <div style="display:grid;grid-template-columns:96px 100px 1.2fr 1.1fr 88px 92px 88px;align-items:center;height:52px;padding:0 16px;border-bottom:1px solid var(--border);cursor:pointer" style-hover="background:var(--hover)"><code style="font-size:12px;color:var(--fg-muted)">14:22:07</code><code style="font-size:13px">tr_9f2c1a</code><div style="font-size:13px">gpt-4o</div><div style="font-size:13px;color:var(--fg-muted)">openai</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--success-bg);color:var(--success-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>200</span><code style="font-size:13px;text-align:right">412 ms</code><code style="font-size:13px;text-align:right">$0.0184</code></div>
+          <div style="display:grid;grid-template-columns:96px 100px 1.2fr 1.1fr 88px 92px 88px;align-items:center;height:52px;padding:0 16px;border-bottom:1px solid var(--border);cursor:pointer;box-shadow:inset 3px 0 0 var(--danger)" style-hover="background:var(--hover)"><code style="font-size:12px;color:var(--fg-muted)">14:21:58</code><code style="font-size:13px">tr_77b0e4</code><div style="font-size:13px">gpt-4o</div><div style="font-size:13px;color:var(--fg-muted)">azure→openai</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--danger-bg);color:var(--danger-fg);font-size:12px;font-weight:500;width:max-content"><span style="position:relative;width:7px;height:7px;border-radius:999px;background:var(--danger)"><span style="position:absolute;inset:0;border-radius:999px;background:var(--danger);animation:ds-pulse 2s ease-out infinite"></span></span>504</span><code style="font-size:13px;text-align:right;color:var(--danger-fg)">timeout</code><code style="font-size:13px;text-align:right;color:var(--fg-faint)">n/a</code></div>
+          <div style="display:grid;grid-template-columns:96px 100px 1.2fr 1.1fr 88px 92px 88px;align-items:center;height:52px;padding:0 16px;border-bottom:1px solid var(--border);cursor:pointer" style-hover="background:var(--hover)"><code style="font-size:12px;color:var(--fg-muted)">14:21:41</code><code style="font-size:13px">tr_5c02aa</code><div style="font-size:13px">claude-3-5-sonnet</div><div style="font-size:13px;color:var(--fg-muted)">anthropic</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--success-bg);color:var(--success-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>200</span><code style="font-size:13px;text-align:right">889 ms</code><code style="font-size:13px;text-align:right">$0.0421</code></div>
+          <div style="display:grid;grid-template-columns:96px 100px 1.2fr 1.1fr 88px 92px 88px;align-items:center;height:52px;padding:0 16px;cursor:pointer" style-hover="background:var(--hover)"><code style="font-size:12px;color:var(--fg-muted)">14:21:20</code><code style="font-size:13px">tr_1d9f30</code><div style="font-size:13px">text-embedding-3</div><div style="font-size:13px;color:var(--fg-muted)">openai</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--warning-bg);color:var(--warning-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--warning)"></span>clamp</span><code style="font-size:13px;text-align:right">96 ms</code><code style="font-size:13px;text-align:right;color:var(--warning-fg)">est.</code></div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:28px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">03</span>Chips</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:center">
+          <span style="display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:11px">weighted</span>
+          <span style="display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:11px">ordered</span>
+          <span style="display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;background:var(--chip)"><code style="font-size:11px;color:var(--fg-muted)">provider_verified</code></span>
+          <span style="display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;background:var(--chip)"><code style="font-size:11px;color:var(--fg-muted)">operator_override</code></span>
+          <span style="display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:999px;background:var(--chip)"><code style="font-size:11px;color:var(--fg-muted)">enterprise</code></span>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ OVERLAYS ░░ -->
+      <sc-if value="{{ active.overlays }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Components</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Overlays</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Four surfaces above the page, by intent. All share a scrim, dismiss on <kbd>Esc</kbd> and backdrop click, and trap focus. Try them — every button below is live.</p>
+
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:24px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:20px">
+            <div style="display:flex;align-items:center;justify-content:space-between"><div style="font-weight:600;font-size:14px">Sheet</div><code style="font-size:11px;color:var(--fg-faint)">edit · focused task</code></div>
+            <p style="font-size:13px;color:var(--fg-muted);line-height:1.55;margin:8px 0 16px">Right-side drawer for editing one entity without losing table context. 480px, slides on the entrance easing.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap"><button onClick="{{ open.routeSheet }}" style="height:34px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="border-color:var(--border-hover)">Edit route</button><button onClick="{{ open.providerSheet }}" style="height:34px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="border-color:var(--border-hover)">Add provider</button></div>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:20px">
+            <div style="display:flex;align-items:center;justify-content:space-between"><div style="font-weight:600;font-size:14px">Modal</div><code style="font-size:11px;color:var(--fg-faint)">interrupt · one decision</code></div>
+            <p style="font-size:13px;color:var(--fg-muted);line-height:1.55;margin:8px 0 16px">Centered, for a moment that must be acknowledged — a secret shown once, a destructive confirm.</p>
+            <button onClick="{{ open.keyModal }}" style="height:34px;padding:0 12px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:pointer">Mint key</button>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:20px">
+            <div style="display:flex;align-items:center;justify-content:space-between"><div style="font-weight:600;font-size:14px">Wide sheet</div><code style="font-size:11px;color:var(--fg-faint)">inspect · rich detail</code></div>
+            <p style="font-size:13px;color:var(--fg-muted);line-height:1.55;margin:8px 0 16px">600px drawer for read-heavy drilldowns — a trace waterfall, capture, linked audit event.</p>
+            <button onClick="{{ open.traceDrawer }}" style="height:34px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="border-color:var(--border-hover)">Open trace</button>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:20px">
+            <div style="display:flex;align-items:center;justify-content:space-between"><div style="font-weight:600;font-size:14px">Command menu</div><code style="font-size:11px;color:var(--fg-faint)">navigate · act</code></div>
+            <p style="font-size:13px;color:var(--fg-muted);line-height:1.55;margin:8px 0 16px">The keyboard front door. Fuzzy search over every screen, route, key, and action. Arrow keys and <kbd>↵</kbd>.</p>
+            <button onClick="{{ openPalette }}" style="height:34px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer;display:inline-flex;align-items:center;gap:8px" style-hover="border-color:var(--border-hover)">Open<kbd>⌘K</kbd></button>
+          </div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">Popover menu</span></h2>
+        <div style="margin-top:14px;width:250px;background:var(--surface);border:1px solid var(--border-strong);border-radius:12px;box-shadow:var(--shadow-popover);padding:6px">
+          <div style="display:flex;gap:10px;align-items:center;padding:8px 8px 12px;margin-bottom:6px;border-bottom:1px solid var(--border)"><span style="width:34px;height:34px;border-radius:999px;background:var(--chip);border:1px solid var(--border-strong);display:grid;place-items:center;color:var(--fg-muted);flex:0 0 auto"><svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.3" r="2.7"/><path d="M3.2 13c.4-2.6 2.3-4 4.8-4s4.4 1.4 4.8 4" stroke-linecap="round"/></svg></span><div style="min-width:0"><div style="font-weight:500;font-size:13px">Stephen Walker</div><code style="font-size:12px;color:var(--fg-faint)"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="12616677627a777c52617f653c737b">[email&#160;protected]</a></code></div></div>
+          <div style="display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer" style-hover="background:var(--hover)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--fg-muted)" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.6v2M8 12.4v2M1.6 8h2M12.4 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4"/></svg>Account settings</div>
+          <div style="display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer" style-hover="background:var(--hover)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--fg-muted)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3H4a1 1 0 0 0-1 1v1M11 3h1a1 1 0 0 1 1 1v1M5 13H4a1 1 0 0 1-1-1v-1M11 13h1a1 1 0 0 0 1-1v-1"/></svg>Command menu<kbd style="margin-left:auto">⌘K</kbd></div>
+          <div style="height:1px;background:var(--border);margin:6px 4px"></div>
+          <div style="display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;font-size:13px;cursor:pointer;color:var(--danger-fg)" style-hover="background:var(--danger-bg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v1.5A1.5 1.5 0 0 1 8.5 14h-4A1.5 1.5 0 0 1 3 12.5v-9A1.5 1.5 0 0 1 4.5 2h4A1.5 1.5 0 0 1 10 3.5V5"/><path d="M7 8h7M12 6l2 2-2 2"/></svg>Sign out</div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ NAVIGATION ░░ -->
+      <sc-if value="{{ active.nav }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Components</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Navigation</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">A 56px top bar for identity and global actions; a 236px rail for wayfinding. The rail groups by concern — Gateway, Governance, Config — and Governance hides entirely under a public profile.</p>
+
+        <h2 style="font-size:13px;font-weight:600;margin:28px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>Top bar</h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:14px">
+          <div style="height:56px;display:flex;align-items:center;gap:14px;padding:0 16px;background:var(--surface)">
+            <div style="display:flex;align-items:center;gap:9px;font-weight:600;font-size:15px;letter-spacing:-.02em"><span style="width:9px;height:9px;border-radius:999px;background:var(--fg)"></span>Manifold</div>
+            <div style="display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;color:var(--fg-muted);cursor:pointer">smw-prod<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="m4 6 4 4 4-4"/></svg></div>
+            <div style="height:32px;padding:0 12px;border:1px solid var(--border-strong);border-radius:6px;display:flex;align-items:center;color:var(--fg-muted);font-size:13px"><code style="font-size:12px">profile: enterprise_egress</code></div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+              <button style="display:inline-flex;align-items:center;gap:9px;height:32px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer"><span style="color:var(--fg-muted)">◆</span>Publish<span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--fg);color:var(--bg)"><code style="font-size:11px;font-weight:600">3</code></span></button>
+              <kbd>⌘K</kbd>
+              <span style="width:30px;height:30px;border-radius:999px;background:var(--chip);border:1px solid var(--border-strong);display:grid;place-items:center;color:var(--fg-muted)"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.3" r="2.7"/><path d="M3.2 13c.4-2.6 2.3-4 4.8-4s4.4 1.4 4.8 4" stroke-linecap="round"/></svg></span>
+            </div>
+          </div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Rail &amp; grouping</h2>
+        <div style="width:236px;border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:12px;margin-top:14px">
+          <div style="display:flex;align-items:center;gap:7px;font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-faint);padding:6px 10px"><span style="width:6px;height:6px;border-radius:999px;background:var(--fg-faint)"></span>Gateway</div>
+          <div style="display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;font-size:13px;background:var(--hover);color:var(--fg);font-weight:500"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>Overview</div>
+          <div style="display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;font-size:13px;color:var(--fg-muted);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 4h8M2 8h12M2 12h6"/></svg>Routes</div>
+          <div style="display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;font-size:13px;color:var(--fg-muted);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="3.2"/><path d="m8.3 8.3 4 4M11 11l1.5-1.5" stroke-linecap="round"/></svg>Keys</div>
+          <div style="display:flex;align-items:center;gap:7px;font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-faint);padding:14px 10px 6px"><span style="width:6px;height:6px;border-radius:999px;background:var(--fg-faint)"></span>Governance</div>
+          <div style="display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;font-size:13px;color:var(--fg-muted);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 2 3 4v3.5C3 10.5 5 12.6 8 14c3-1.4 5-3.5 5-6.5V4L8 2Z"/></svg>Policies</div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ HEALTH ░░ -->
+      <sc-if value="{{ active.health }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Pattern</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Health &amp; status</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">How the status vocabulary composes into a real observability surface: a traffic chart with failure markers, a per-provider health list, and a fallback trend. Degradation is always visible, never hidden behind an average.</p>
+
+        <div style="display:grid;grid-template-columns:1.7fr 1fr;gap:14px;margin-top:24px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px">
+            <div style="display:flex;align-items:baseline;justify-content:space-between"><div style="font-size:14px;font-weight:600">Requests by provider</div><code style="font-size:11px;color:var(--fg-faint)">stacked · 24h</code></div>
+            <svg viewBox="0 0 600 170" width="100%" height="170" preserveAspectRatio="none" style="display:block;margin-top:14px">
+              <defs><linearGradient id="hfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--fg)" stop-opacity="0.10"/><stop offset="1" stop-color="var(--fg)" stop-opacity="0"/></linearGradient></defs>
+              <line x1="0" y1="42" x2="600" y2="42" stroke="var(--border)"/><line x1="0" y1="85" x2="600" y2="85" stroke="var(--border)"/><line x1="0" y1="128" x2="600" y2="128" stroke="var(--border)"/>
+              <path d="M0 120 L50 112 L100 118 L150 92 L200 100 L250 66 L300 80 L350 54 L400 70 L450 40 L500 58 L550 44 L600 60 L600 170 L0 170 Z" fill="url(#hfill)"/>
+              <path d="M0 120 L50 112 L100 118 L150 92 L200 100 L250 66 L300 80 L350 54 L400 70 L450 40 L500 58 L550 44 L600 60" fill="none" stroke="var(--fg)" stroke-width="1.5" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+              <circle cx="350" cy="54" r="3" fill="var(--danger)"/><circle cx="250" cy="66" r="3" fill="var(--danger)"/>
+            </svg>
+            <div style="display:flex;justify-content:space-between;margin-top:6px"><code style="font-size:11px;color:var(--fg-faint)">−24h</code><span style="font-size:11px;color:var(--fg-muted);display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:999px;background:var(--danger)"></span>failure marker</span><code style="font-size:11px;color:var(--fg-faint)">now</code></div>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px">
+            <div style="font-size:14px;font-weight:600">Provider health</div>
+            <div style="display:flex;flex-direction:column;margin-top:10px">
+              <div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);font-size:13px"><span style="width:8px;height:8px;border-radius:999px;background:var(--success)"></span>OpenAI<code style="font-size:12px;color:var(--fg-faint);margin-left:auto">318 ms</code></div>
+              <div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);font-size:13px"><span style="width:8px;height:8px;border-radius:999px;background:var(--success)"></span>Anthropic<code style="font-size:12px;color:var(--fg-faint);margin-left:auto">402 ms</code></div>
+              <div style="display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--border);font-size:13px"><span style="position:relative;width:8px;height:8px;border-radius:999px;background:var(--warning)"><span style="position:absolute;inset:0;border-radius:999px;background:var(--warning);animation:ds-pulse 2s ease-out infinite"></span></span>Azure OpenAI<code style="font-size:12px;color:var(--warning-fg);margin-left:auto">failover</code></div>
+              <div style="display:flex;align-items:center;gap:10px;padding:9px 2px;font-size:13px"><span style="width:8px;height:8px;border-radius:999px;background:var(--neutral)"></span>Google Vertex<code style="font-size:12px;color:var(--fg-faint);margin-left:auto">idle</code></div>
+            </div>
+            <div style="font-size:14px;font-weight:600;margin-top:18px">Fallback rate</div>
+            <svg viewBox="0 0 300 44" width="100%" height="44" preserveAspectRatio="none" style="margin-top:8px"><path d="M0 34 L40 30 L80 32 L120 22 L160 26 L200 14 L240 20 L300 10" fill="none" stroke="var(--fg)" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>
+            <code style="font-size:11px;color:var(--fg-faint);display:block;margin-top:2px">1.9% of requests failed over</code>
+          </div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">Uptime timeline</span></h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:18px 22px;margin-top:12px;display:flex;flex-direction:column;gap:14px">
+          <div style="display:flex;align-items:center;gap:16px"><span style="width:96px;font-size:13px">OpenAI</span><div style="display:flex;gap:2px;height:22px;flex:1">
+            <span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span>
+          </div><code style="font-size:12px;color:var(--success-fg)">100%</code></div>
+          <div style="display:flex;align-items:center;gap:16px"><span style="width:96px;font-size:13px">Azure OpenAI</span><div style="display:flex;gap:2px;height:22px;flex:1">
+            <span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--warning);border-radius:1.5px"></span><span style="flex:1;background:var(--danger);border-radius:1.5px"></span><span style="flex:1;background:var(--warning);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span><span style="flex:1;background:var(--success);border-radius:1.5px"></span>
+          </div><code style="font-size:12px;color:var(--warning-fg)">96.1%</code></div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ COST ░░ -->
+      <sc-if value="{{ active.cost }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Pattern</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Cost &amp; budgets</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Spend is shown as burn against a cap, colored by headroom. The bar can exceed 100% — an over-budget hard cap turns red and starts denying. This is the clearest expression of <em>fail-closed</em>.</p>
+
+        <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px;margin-top:24px">
+          <div style="display:flex;align-items:baseline;justify-content:space-between"><div style="font-size:14px;font-weight:600">Budget burn by cost center</div><code style="font-size:11px;color:var(--fg-faint)">monthly window</code></div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:22px;margin-top:18px">
+            <div><div style="font-size:13px;color:var(--fg-muted)">cc-platform</div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden;margin-top:8px"><span style="display:block;height:100%;width:61%;background:var(--success)"></span></div><code style="font-size:11px;color:var(--fg-faint);display:block;margin-top:7px">$3,050 / $5,000 · hard</code></div>
+            <div><div style="font-size:13px;color:var(--fg-muted)">cc-research</div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden;margin-top:8px"><span style="display:block;height:100%;width:88%;background:var(--warning)"></span></div><code style="font-size:11px;color:var(--warning-fg);display:block;margin-top:7px">$2,640 / $3,000 · advisory</code></div>
+            <div><div style="font-size:13px;color:var(--fg-muted)">cc-support</div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden;margin-top:8px"><span style="display:block;height:100%;width:100%;background:var(--danger)"></span></div><code style="font-size:11px;color:var(--danger-fg);display:block;margin-top:7px">$1,560 / $1,500 · hard · denying</code></div>
+          </div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">Cost-center tree</span></h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:6px 22px;margin-top:12px">
+          <div style="display:grid;grid-template-columns:1.4fr 90px 1fr 100px 130px;gap:14px;align-items:center;padding:12px 4px;font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)"><div>account</div><div>enforce</div><div>burn</div><div style="text-align:right">window</div><div style="text-align:right">spend / limit</div></div>
+          <div style="display:grid;grid-template-columns:1.4fr 90px 1fr 100px 130px;gap:14px;align-items:center;padding:13px 4px;border-top:1px solid var(--border);font-size:13px"><div>workspace: smw-prod</div><div><span style="display:inline-flex;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:11px;align-items:center">advisory</span></div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden"><span style="display:block;height:100%;width:64%;background:var(--success)"></span></div><code style="font-size:12px;color:var(--fg-faint);text-align:right">monthly</code><code style="font-size:12px;text-align:right">$7,250 / $12,000</code></div>
+          <div style="display:grid;grid-template-columns:1.4fr 90px 1fr 100px 130px;gap:14px;align-items:center;padding:13px 4px;border-top:1px solid var(--border);font-size:13px"><div style="padding-left:22px;color:var(--fg-muted)">cc-platform</div><div><span style="display:inline-flex;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:11px;align-items:center;font-weight:500">hard</span></div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden"><span style="display:block;height:100%;width:61%;background:var(--success)"></span></div><code style="font-size:12px;color:var(--fg-faint);text-align:right">monthly</code><code style="font-size:12px;text-align:right">$3,050 / $5,000</code></div>
+          <div style="display:grid;grid-template-columns:1.4fr 90px 1fr 100px 130px;gap:14px;align-items:center;padding:13px 4px;border-top:1px solid var(--border);font-size:13px"><div style="padding-left:22px;color:var(--fg-muted)">cc-research</div><div><span style="display:inline-flex;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:11px;align-items:center">advisory</span></div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden"><span style="display:block;height:100%;width:88%;background:var(--warning)"></span></div><code style="font-size:12px;color:var(--fg-faint);text-align:right">monthly</code><code style="font-size:12px;text-align:right;color:var(--warning-fg)">$2,640 / $3,000</code></div>
+          <div style="display:grid;grid-template-columns:1.4fr 90px 1fr 100px 130px;gap:14px;align-items:center;padding:13px 4px;border-top:1px solid var(--border);font-size:13px;box-shadow:inset 3px 0 0 var(--danger)"><div style="padding-left:22px;color:var(--fg-muted)">cc-support</div><div><span style="display:inline-flex;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:11px;align-items:center;font-weight:500">hard</span></div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden"><span style="display:block;height:100%;width:100%;background:var(--danger)"></span></div><code style="font-size:12px;color:var(--fg-faint);text-align:right">monthly</code><code style="font-size:12px;text-align:right;color:var(--danger-fg)">$1,560 / $1,500</code></div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--danger-bg);color:var(--danger-fg);border:1px solid color-mix(in srgb,var(--danger) 34%,transparent);margin-top:14px"><span style="position:relative;width:8px;height:8px;border-radius:999px;background:var(--danger);margin-top:5px;flex:0 0 auto"><span style="position:absolute;inset:0;border-radius:999px;background:var(--danger);animation:ds-pulse 2s ease-out infinite"></span></span><span><strong style="font-weight:600">cc-support</strong> exceeded its hard cap. 214 requests denied in the last hour — reason <code style="font-size:12px">BUDGET_HARD_EXCEEDED</code>.</span></div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ LATENCY ░░ -->
+      <sc-if value="{{ active.latency }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Pattern</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Latency &amp; traces</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">A request is a sequence of attempts. The span waterfall shows exactly where time went — including a timed-out attempt that failed over — so a 504 is legible at a glance. <button onClick="{{ open.traceDrawer }}" style="background:none;border:0;color:var(--focus);font:inherit;font-size:14px;cursor:pointer;padding:0;text-decoration:underline">Open the full trace →</button></p>
+
+        <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px;margin-top:24px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px"><div style="font-size:14px;font-weight:600">Span waterfall</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--danger-bg);color:var(--danger-fg);font-size:12px;font-weight:500"><span style="width:7px;height:7px;border-radius:999px;background:var(--danger)"></span>504 timeout</span></div>
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <div style="display:grid;grid-template-columns:170px 1fr 74px;gap:12px;align-items:center;height:32px;font-size:13px"><span style="color:var(--fg-muted)">accepted</span><div style="position:relative;height:14px;background:var(--hover);border-radius:3px"><span style="position:absolute;left:0;width:2%;height:14px;border-radius:3px;background:var(--fg-muted)"></span></div><code style="font-size:12px;color:var(--fg-faint);text-align:right">2 ms</code></div>
+            <div style="display:grid;grid-template-columns:170px 1fr 74px;gap:12px;align-items:center;height:32px;font-size:13px"><span style="display:flex;align-items:center;gap:8px;color:var(--fg-muted)"><span style="width:7px;height:7px;border-radius:999px;background:var(--danger)"></span>attempt · azure</span><div style="position:relative;height:14px;background:var(--hover);border-radius:3px"><span style="position:absolute;left:2%;width:60%;height:14px;border-radius:3px;background:var(--danger)"></span></div><code style="font-size:12px;color:var(--danger-fg);text-align:right">30,000</code></div>
+            <div style="display:grid;grid-template-columns:170px 1fr 74px;gap:12px;align-items:center;height:32px;font-size:13px"><span style="display:flex;align-items:center;gap:8px;color:var(--fg-muted)"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>attempt · openai</span><div style="position:relative;height:14px;background:var(--hover);border-radius:3px"><span style="position:absolute;left:62%;width:34%;height:14px;border-radius:3px;background:var(--success)"></span></div><code style="font-size:12px;text-align:right">410 ms</code></div>
+            <div style="display:grid;grid-template-columns:170px 1fr 74px;gap:12px;align-items:center;height:32px;font-size:13px"><span style="color:var(--fg-muted)">terminal</span><div style="position:relative;height:14px;background:var(--hover);border-radius:3px"><span style="position:absolute;left:96%;width:3%;height:14px;border-radius:3px;background:var(--fg-muted)"></span></div><code style="font-size:12px;color:var(--fg-faint);text-align:right">1 ms</code></div>
+          </div>
+          <p style="font-size:12px;color:var(--fg-muted);line-height:1.55;margin:14px 0 0;border-top:1px solid var(--border);padding-top:14px">Attempt 1 (azure) timed out at 30s and failed over. Attempt 2 (openai) ran 410 ms but exceeded the request budget, returning 504.</p>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">Latency distribution</span></h2>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:12px">
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">P50</div><div style="font-family:'Geist Mono',monospace;font-size:22px;font-weight:600;margin-top:6px">312<span style="font-size:13px"> ms</span></div></div>
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">P90</div><div style="font-family:'Geist Mono',monospace;font-size:22px;font-weight:600;margin-top:6px">840<span style="font-size:13px"> ms</span></div></div>
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">P95</div><div style="font-family:'Geist Mono',monospace;font-size:22px;font-weight:600;margin-top:6px;color:var(--warning-fg)">1,240<span style="font-size:13px"> ms</span></div></div>
+          <div style="background:var(--surface);padding:15px 16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">P99</div><div style="font-family:'Geist Mono',monospace;font-size:22px;font-weight:600;margin-top:6px;color:var(--danger-fg)">4,102<span style="font-size:13px"> ms</span></div></div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ STREAMING ░░ -->
+      <sc-if value="{{ active.streaming }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Pattern</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Tokens &amp; streaming</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">A response has three lifecycle states, and cost is derived from usage after the fact. The gateway never stores token chunks — only bounded, redacted counts.</p>
+
+        <h2 style="font-size:13px;font-weight:600;margin:28px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>Lifecycle</h2>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:14px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:18px"><div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:999px;background:var(--neutral)"></span><code style="font-size:12px;color:var(--fg-muted)">queued</code></div><div style="margin-top:14px;display:flex;flex-direction:column;gap:7px"><span style="width:70%;height:9px;border-radius:4px;background:var(--hover)"></span><span style="width:90%;height:9px;border-radius:4px;background:var(--hover)"></span><span style="width:40%;height:9px;border-radius:4px;background:var(--hover)"></span></div></div>
+          <div style="border:1px solid color-mix(in srgb,var(--warning) 34%,transparent);border-radius:12px;background:var(--surface);padding:18px"><div style="display:flex;align-items:center;gap:8px"><span style="position:relative;width:8px;height:8px;border-radius:999px;background:var(--warning)"><span style="position:absolute;inset:0;border-radius:999px;background:var(--warning);animation:ds-pulse 2s ease-out infinite"></span></span><code style="font-size:12px;color:var(--warning-fg)">streaming</code></div><div style="margin-top:14px;font-size:13px;line-height:1.6;color:var(--fg)">Routes resolve to the first healthy target<span style="display:inline-block;width:2px;height:14px;background:var(--fg);margin-left:2px;vertical-align:-2px;animation:ds-caret 1s step-end infinite"></span></div></div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);padding:18px"><div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:999px;background:var(--success)"></span><code style="font-size:12px;color:var(--success-fg)">complete</code></div><div style="margin-top:14px;font-size:13px;line-height:1.6;color:var(--fg)">Routes resolve to the first healthy target and fail over on 5xx.</div></div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Usage &amp; cost</h2>
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:14px;margin-top:14px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px">
+            <div style="display:flex;flex-direction:column;gap:16px">
+              <div><div style="display:flex;justify-content:space-between;font-size:13px"><span style="color:var(--fg-muted)">input</span><code style="font-size:12px">1,204 tok</code></div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden;margin-top:7px"><span style="display:block;height:100%;width:76%;background:var(--fg-muted)"></span></div></div>
+              <div><div style="display:flex;justify-content:space-between;font-size:13px"><span style="color:var(--fg-muted)">output</span><code style="font-size:12px">384 tok</code></div><div style="height:6px;border-radius:3px;background:var(--border-strong);overflow:hidden;margin-top:7px"><span style="display:block;height:100%;width:24%;background:var(--focus)"></span></div></div>
+            </div>
+          </div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:22px;display:flex;flex-direction:column;justify-content:center">
+            <div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Derived cost</div>
+            <div style="font-family:'Geist Mono',monospace;font-size:28px;font-weight:600;margin-top:6px">$0.0184</div>
+            <code style="font-size:11px;color:var(--fg-faint);margin-top:6px">price rev p09 · provider_verified</code>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--warning-bg);color:var(--warning-fg);border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);margin-top:14px"><span style="width:8px;height:8px;border-radius:999px;background:var(--warning);margin-top:5px;flex:0 0 auto"></span><span>When a price is <code style="font-size:12px">unknown</code>, cost renders as <code style="font-size:12px">est.</code> in amber and the request cannot draw against a hard budget.</span></div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ REGISTRY ░░ -->
+      <sc-if value="{{ active.registry }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Pattern</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Providers &amp; models</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Credentials validate against a live call. Capabilities are <em>tri-state</em> — a filled dot is verified, amber is <code style="font-size:13px">unknown</code>, empty is unsupported — and price always carries a source. A model is routable only when a target exists.</p>
+
+        <h2 style="font-size:13px;font-weight:600;margin:28px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">01</span>Provider credentials</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px;margin-top:14px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:18px"><div style="display:flex;align-items:center;justify-content:space-between"><div style="font-weight:600">OpenAI</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--success-bg);color:var(--success-fg);font-size:12px;font-weight:500"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>valid</span></div><code style="font-size:12px;color:var(--fg-faint);margin-top:12px;display:block">sk-proj-••••4f9a</code><div style="display:flex;gap:14px;margin-top:14px;color:var(--fg-muted);font-size:12px"><span>32 offerings</span><span>val. 2m ago</span></div></div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:18px"><div style="display:flex;align-items:center;justify-content:space-between"><div style="font-weight:600">Azure OpenAI</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--warning-bg);color:var(--warning-fg);font-size:12px;font-weight:500"><span style="position:relative;width:7px;height:7px;border-radius:999px;background:var(--warning)"><span style="position:absolute;inset:0;border-radius:999px;background:var(--warning);animation:ds-pulse 2s ease-out infinite"></span></span>unvalidated</span></div><code style="font-size:12px;color:var(--fg-faint);margin-top:12px;display:block">••••/deployments/gpt4o</code><div style="display:flex;gap:14px;margin-top:14px;color:var(--fg-muted);font-size:12px"><span>4 offerings</span><span style="color:var(--warning-fg)">validate →</span></div></div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:18px"><div style="display:flex;align-items:center;justify-content:space-between"><div style="font-weight:600">AWS Bedrock</div><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--danger-bg);color:var(--danger-fg);font-size:12px;font-weight:500"><span style="width:7px;height:7px;border-radius:999px;background:var(--danger)"></span>invalid</span></div><code style="font-size:12px;color:var(--fg-faint);margin-top:12px;display:block">AKIA•••• · access denied</code><div style="display:flex;gap:14px;margin-top:14px;color:var(--fg-muted);font-size:12px"><span>n/a</span><span style="color:var(--danger-fg)">re-enter →</span></div></div>
+        </div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">02</span>Model registry</h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:14px">
+          <div style="display:grid;grid-template-columns:1.1fr 1.2fr 52px 52px 52px 70px 84px 1fr 96px;align-items:center;height:40px;padding:0 16px;border-bottom:1px solid var(--border);font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--fg-muted)"><div>model</div><div>offering</div><div style="text-align:center">strm</div><div style="text-align:center">tool</div><div style="text-align:center">vis</div><div style="text-align:right">ctx</div><div style="text-align:right">/1M in</div><div>source</div><div>routable</div></div>
+          <div style="display:grid;grid-template-columns:1.1fr 1.2fr 52px 52px 52px 70px 84px 1fr 96px;align-items:center;height:50px;padding:0 16px;border-bottom:1px solid var(--border)" style-hover="background:var(--hover)"><code style="font-size:13px">gpt-4o</code><code style="font-size:12px;color:var(--fg-faint)">openai:2024-11</code><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--success)"></span></div><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--success)"></span></div><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--success)"></span></div><code style="font-size:12px;text-align:right">128k</code><code style="font-size:12px;text-align:right">$2.50</code><span style="display:inline-flex;height:22px;padding:0 8px;border-radius:999px;background:var(--chip);align-items:center;width:max-content"><code style="font-size:10px;color:var(--fg-muted)">verified</code></span><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--success-bg);color:var(--success-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>yes</span></div>
+          <div style="display:grid;grid-template-columns:1.1fr 1.2fr 52px 52px 52px 70px 84px 1fr 96px;align-items:center;height:50px;padding:0 16px;border-bottom:1px solid var(--border)" style-hover="background:var(--hover)"><code style="font-size:13px">llama-3.1-405b</code><code style="font-size:12px;color:var(--fg-faint)">vertex:405b</code><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--success)"></span></div><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--warning)"></span></div><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--border-hover)"></span></div><code style="font-size:12px;text-align:right">128k</code><code style="font-size:12px;text-align:right;color:var(--warning-fg)">~$2.70</code><span style="display:inline-flex;height:22px;padding:0 8px;border-radius:999px;background:var(--chip);align-items:center;width:max-content"><code style="font-size:10px;color:var(--fg-muted)">aggregator</code></span><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--neutral)"></span>no target</span></div>
+          <div style="display:grid;grid-template-columns:1.1fr 1.2fr 52px 52px 52px 70px 84px 1fr 96px;align-items:center;height:50px;padding:0 16px" style-hover="background:var(--hover)"><code style="font-size:13px">mistral-large</code><code style="font-size:12px;color:var(--fg-faint)">vertex:large</code><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--success)"></span></div><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--warning)"></span></div><div style="text-align:center"><span style="display:inline-block;width:8px;height:8px;border-radius:999px;background:var(--border-hover)"></span></div><code style="font-size:12px;text-align:right">128k</code><code style="font-size:12px;text-align:right;color:var(--fg-faint)">unknown</code><span style="display:inline-flex;height:22px;padding:0 8px;border-radius:999px;background:var(--chip);align-items:center;width:max-content"><code style="font-size:10px;color:var(--fg-muted)">unknown</code></span><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--chip);color:var(--fg-muted);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--neutral)"></span>no price</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:22px;margin-top:12px;font-size:12px;color:var(--fg-muted)"><span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:999px;background:var(--success)"></span>verified</span><span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:999px;background:var(--warning)"></span>unknown</span><span style="display:flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:999px;background:var(--border-hover)"></span>unsupported</span></div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ CONFIG ░░ -->
+      <sc-if value="{{ active.config }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Pattern</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Config &amp; publish</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Changes stage as a draft and reach the gateway only on publish. The plan is a diff; destructive intent hits a tripwire that must be approved separately. Every revision is content-addressed and reversible.</p>
+
+        <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--warning-bg);color:var(--warning-fg);border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);margin-top:22px"><span style="position:relative;width:8px;height:8px;border-radius:999px;background:var(--warning);margin-top:5px;flex:0 0 auto"><span style="position:absolute;inset:0;border-radius:999px;background:var(--warning);animation:ds-pulse 2s ease-out infinite"></span></span><span>Tripwire holds 1 destructive change for approval — entitlement removal, <code style="font-size:12px">research → embed</code>.</span></div>
+
+        <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:14px">
+          <div style="display:flex;gap:12px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--border)"><code style="width:14px;text-align:center;font-weight:600;color:var(--success-fg)">+</code><code style="font-size:12px;color:var(--success-fg)">route</code><span style="font-size:12px;color:var(--fg-muted)">fast-chat · weighted [gpt-4o-mini 50, haiku 50]</span></div>
+          <div style="display:flex;gap:12px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--border)"><code style="width:14px;text-align:center;font-weight:600;color:var(--warning-fg)">~</code><code style="font-size:12px;color:var(--warning-fg)">route</code><span style="font-size:12px;color:var(--fg-muted)">gpt-4o · weights 80/20 → 70/30</span></div>
+          <div style="display:flex;gap:12px;align-items:center;padding:9px 16px;border-bottom:1px solid var(--border)"><code style="width:14px;text-align:center;font-weight:600;color:var(--success-fg)">+</code><code style="font-size:12px;color:var(--success-fg)">budget</code><span style="font-size:12px;color:var(--fg-muted)">cc-support · hard · $1,500 / monthly</span></div>
+          <div style="display:flex;gap:12px;align-items:center;padding:9px 16px"><code style="width:14px;text-align:center;font-weight:600;color:var(--danger-fg)">−</code><code style="font-size:12px;color:var(--danger-fg)">entitlement</code><span style="font-size:12px;color:var(--fg-muted)">research → text-embedding-3 (deny)</span></div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px"><button style="height:34px;padding:0 12px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--hover)">Discard</button><button style="height:34px;padding:0 12px;border-radius:6px;border:1px solid var(--danger-border);background:var(--surface);color:var(--danger-fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="border-color:var(--danger-fg)">Approve tripwire</button><button style="height:34px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:pointer">Apply revision</button></div>
+
+        <h2 style="font-size:13px;font-weight:600;margin:26px 0 0;display:flex;align-items:center;gap:8px"><span style="font-family:'Geist Mono',monospace;font-size:11px;color:var(--fg-faint)">Revision history</span></h2>
+        <div style="border:1px solid var(--border-strong);border-radius:12px;overflow:hidden;box-shadow:var(--shadow-card);margin-top:12px">
+          <div style="display:grid;grid-template-columns:130px 1fr 1fr 110px 80px;align-items:center;height:38px;padding:0 16px;border-bottom:1px solid var(--border);font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-muted)"><div>revision</div><div>by</div><div>changes</div><div>result</div><div style="text-align:right">when</div></div>
+          <div style="display:grid;grid-template-columns:130px 1fr 1fr 110px 80px;align-items:center;height:48px;padding:0 16px;border-bottom:1px solid var(--border)"><code style="font-size:12px">sha256:8c41</code><code style="font-size:12px;color:var(--fg-muted)"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="6c1f18091c0409022c1f011b420d05">[email&#160;protected]</a></code><span style="font-size:12px;color:var(--fg-muted)">+2 routes, −1 entl</span><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--success-bg);color:var(--success-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>accepted</span><code style="font-size:12px;color:var(--fg-faint);text-align:right">13:58</code></div>
+          <div style="display:grid;grid-template-columns:130px 1fr 1fr 110px 80px;align-items:center;height:48px;padding:0 16px"><code style="font-size:12px">sha256:0d55</code><code style="font-size:12px;color:var(--fg-muted)">agent · ci</code><span style="font-size:12px;color:var(--fg-muted)">~ retry policy</span><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;background:var(--danger-bg);color:var(--danger-fg);font-size:12px;font-weight:500;width:max-content"><span style="width:7px;height:7px;border-radius:999px;background:var(--danger)"></span>rejected</span><code style="font-size:12px;color:var(--fg-faint);text-align:right">Jul 18</code></div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ STATES ░░ -->
+      <sc-if value="{{ active.states }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Pattern</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Empty &amp; error states</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Every table and surface has four resolutions besides "full of data." Each names what happened and offers the one next action — never a dead end.</p>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:24px">
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:40px 24px;text-align:center;display:flex;flex-direction:column;align-items:center"><span style="width:40px;height:40px;border-radius:10px;background:var(--hover);display:grid;place-items:center;color:var(--fg-faint)"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><path d="M2 4h8M2 8h12M2 12h6"/></svg></span><div style="font-weight:600;font-size:14px;margin-top:14px">No routes yet</div><p style="font-size:13px;color:var(--fg-muted);line-height:1.55;margin:6px 0 16px;max-width:34ch">A route maps a model string your clients call to one or more provider targets.</p><button style="height:34px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:pointer">Create your first route</button></div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:16px 18px"><code style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">loading</code><div style="display:flex;flex-direction:column;gap:14px;margin-top:16px"><div style="display:flex;align-items:center;gap:14px"><span style="width:80px;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span><span style="flex:1;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span><span style="width:50px;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span></div><div style="display:flex;align-items:center;gap:14px"><span style="width:80px;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span><span style="flex:1;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span><span style="width:50px;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span></div><div style="display:flex;align-items:center;gap:14px"><span style="width:80px;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span><span style="flex:1;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span><span style="width:50px;height:11px;border-radius:4px;background:linear-gradient(90deg,var(--hover),var(--border-strong),var(--hover));background-size:320px 100%;animation:ds-shimmer 1.4s linear infinite"></span></div></div></div>
+          <div style="border:1px solid var(--danger-border);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:40px 24px;text-align:center;display:flex;flex-direction:column;align-items:center"><span style="width:40px;height:40px;border-radius:10px;background:var(--danger-bg);display:grid;place-items:center;color:var(--danger-fg)"><svg width="20" height="20" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M8 3v6M8 12v.1"/></svg></span><div style="font-weight:600;font-size:14px;margin-top:14px">Couldn't load logs</div><p style="font-size:13px;color:var(--fg-muted);line-height:1.55;margin:6px 0 16px;max-width:34ch">The observation store didn't respond. Traffic is unaffected.</p><button style="height:34px;padding:0 14px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="border-color:var(--border-hover)">Retry</button></div>
+          <div style="border:1px solid var(--border-strong);border-radius:12px;background:var(--surface);box-shadow:var(--shadow-card);padding:40px 24px;text-align:center;display:flex;flex-direction:column;align-items:center"><span style="width:40px;height:40px;border-radius:10px;background:var(--hover);display:grid;place-items:center;color:var(--fg-muted)"><svg width="19" height="19" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="7" width="10" height="6.5" rx="1.5"/><path d="M5.2 7V5a2.8 2.8 0 0 1 5.6 0v2" stroke-linecap="round"/></svg></span><div style="font-weight:600;font-size:14px;margin-top:14px">Access denied</div><p style="font-size:13px;color:var(--fg-muted);line-height:1.55;margin:6px 0 14px;max-width:34ch">Governance is hidden under the <code style="font-size:12px">public_app</code> profile.</p><code style="font-size:11px;color:var(--fg-faint)">ENTITLEMENT_SCREEN_DENIED</code></div>
+        </div>
+      </section>
+      </sc-if>
+
+      <!-- ░░ CONSOLE ░░ -->
+      <sc-if value="{{ active.console }}" hint-placeholder-val="{{ false }}">
+      <section>
+        <div style="font-family:'Geist Mono',monospace;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-faint)">Showcase</div>
+        <h1 style="font-size:24px;line-height:30px;font-weight:600;letter-spacing:-.02em;margin:8px 0 0">Console in use</h1>
+        <p style="color:var(--fg-muted);font-size:14px;line-height:1.6;margin:8px 0 0;max-width:60ch">Every token, component, and pattern on the previous pages, assembled into the Overview screen an operator actually lands on. Nothing here is new — it's the system doing its job.</p>
+
+        <div style="border:1px solid var(--border-strong);border-radius:14px;overflow:hidden;box-shadow:var(--shadow-modal);margin-top:24px;background:var(--bg)">
+          <!-- window topbar -->
+          <div style="height:52px;display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--border)">
+            <div style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;letter-spacing:-.02em"><span style="width:8px;height:8px;border-radius:999px;background:var(--fg)"></span>Manifold</div>
+            <div style="display:flex;align-items:center;gap:7px;height:28px;padding:0 9px;border:1px solid var(--border-strong);border-radius:6px;font-size:12px;color:var(--fg-muted)">smw-prod<svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="m4 6 4 4 4-4"/></svg></div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:9px"><button style="display:inline-flex;align-items:center;gap:8px;height:28px;padding:0 10px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:12px;font-weight:500;cursor:pointer"><span style="color:var(--fg-muted)">◆</span>Publish<span style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:999px;background:var(--fg);color:var(--bg)"><code style="font-size:10px;font-weight:600">3</code></span></button><span style="width:26px;height:26px;border-radius:999px;background:var(--chip);border:1px solid var(--border-strong);display:grid;place-items:center;color:var(--fg-muted)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="5.3" r="2.7"/><path d="M3.2 13c.4-2.6 2.3-4 4.8-4s4.4 1.4 4.8 4" stroke-linecap="round"/></svg></span></div>
+          </div>
+          <div style="display:grid;grid-template-columns:180px 1fr">
+            <!-- rail -->
+            <div style="border-right:1px solid var(--border);padding:12px 10px">
+              <div style="display:flex;align-items:center;gap:7px;font-family:'Geist Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-faint);padding:4px 8px"><span style="width:5px;height:5px;border-radius:999px;background:var(--fg-faint)"></span>Gateway</div>
+              <div style="display:flex;align-items:center;gap:9px;height:30px;padding:0 9px;border-radius:6px;font-size:12px;background:var(--hover);color:var(--fg);font-weight:500"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>Overview</div>
+              <div style="display:flex;align-items:center;gap:9px;height:30px;padding:0 9px;border-radius:6px;font-size:12px;color:var(--fg-muted);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2 4h8M2 8h12M2 12h6"/></svg>Routes</div>
+              <div style="display:flex;align-items:center;gap:9px;height:30px;padding:0 9px;border-radius:6px;font-size:12px;color:var(--fg-muted);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="4" rx="1"/><rect x="2" y="9" width="12" height="4" rx="1"/></svg>Providers</div>
+              <div style="display:flex;align-items:center;gap:9px;height:30px;padding:0 9px;border-radius:6px;font-size:12px;color:var(--fg-muted);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="6" cy="6" r="3.2"/><path d="m8.3 8.3 4 4M11 11l1.5-1.5" stroke-linecap="round"/></svg>Keys</div>
+              <div style="display:flex;align-items:center;gap:7px;font-family:'Geist Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--fg-faint);padding:12px 8px 4px"><span style="width:5px;height:5px;border-radius:999px;background:var(--fg-faint)"></span>Governance</div>
+              <div style="display:flex;align-items:center;gap:9px;height:30px;padding:0 9px;border-radius:6px;font-size:12px;color:var(--fg-muted);cursor:pointer" style-hover="background:var(--hover);color:var(--fg)"><svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v6M6.3 6.6c0-.9.8-1.4 1.7-1.4s1.7.4 1.7 1.3c0 1.8-3.4 1-3.4 2.9 0 .9.8 1.4 1.7 1.4s1.7-.5 1.7-1.4" stroke-linecap="round"/></svg>Budgets</div>
+            </div>
+            <!-- content -->
+            <div style="padding:20px 22px;background:var(--bg)">
+              <div style="display:flex;align-items:flex-end;justify-content:space-between"><div><div style="font-size:18px;font-weight:600;letter-spacing:-.02em">Overview</div><div style="font-size:13px;color:var(--fg-muted);margin-top:3px">Health, traffic, and spend across the gateway</div></div><div style="display:inline-flex;padding:3px;border:1px solid var(--border-strong);border-radius:8px;gap:2px"><button style="padding:3px 9px;border-radius:6px;border:0;background:transparent;color:var(--fg-muted);font:inherit;font-size:12px;cursor:pointer">1h</button><button style="padding:3px 9px;border-radius:6px;border:0;background:var(--hover);color:var(--fg);font:inherit;font-size:12px;cursor:pointer">24h</button><button style="padding:3px 9px;border-radius:6px;border:0;background:transparent;color:var(--fg-muted);font:inherit;font-size:12px;cursor:pointer">7d</button></div></div>
+
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:16px">
+                <div style="background:var(--surface);padding:12px 14px"><div style="font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Requests</div><div style="font-family:'Geist Mono',monospace;font-size:19px;font-weight:600;margin-top:5px">1.28M</div></div>
+                <div style="background:var(--surface);padding:12px 14px"><div style="font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Spend</div><div style="font-family:'Geist Mono',monospace;font-size:19px;font-weight:600;margin-top:5px">$4,182</div></div>
+                <div style="background:var(--surface);padding:12px 14px"><div style="font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">P95</div><div style="font-family:'Geist Mono',monospace;font-size:19px;font-weight:600;margin-top:5px">1,240<span style="font-size:12px"> ms</span></div></div>
+                <div style="background:var(--surface);padding:12px 14px"><div style="font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Errors</div><div style="font-family:'Geist Mono',monospace;font-size:19px;font-weight:600;margin-top:5px;color:var(--danger-fg)">0.42%</div></div>
+              </div>
+
+              <div style="display:grid;grid-template-columns:1.6fr 1fr;gap:12px;margin-top:12px">
+                <div style="border:1px solid var(--border-strong);border-radius:10px;background:var(--surface);padding:16px"><div style="display:flex;align-items:baseline;justify-content:space-between"><div style="font-size:13px;font-weight:600">Requests by provider</div><code style="font-size:10px;color:var(--fg-faint)">24h</code></div><svg viewBox="0 0 600 120" width="100%" height="96" preserveAspectRatio="none" style="margin-top:12px"><defs><linearGradient id="cfill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--fg)" stop-opacity="0.10"/><stop offset="1" stop-color="var(--fg)" stop-opacity="0"/></linearGradient></defs><path d="M0 84 L60 78 L120 82 L180 62 L240 70 L300 44 L360 56 L420 34 L480 48 L540 30 L600 42 L600 120 L0 120 Z" fill="url(#cfill)"/><path d="M0 84 L60 78 L120 82 L180 62 L240 70 L300 44 L360 56 L420 34 L480 48 L540 30 L600 42" fill="none" stroke="var(--fg)" stroke-width="1.5" vector-effect="non-scaling-stroke"/><circle cx="420" cy="34" r="3" fill="var(--danger)"/></svg></div>
+                <div style="border:1px solid var(--border-strong);border-radius:10px;background:var(--surface);padding:16px"><div style="font-size:13px;font-weight:600">Provider health</div><div style="display:flex;flex-direction:column;margin-top:8px"><div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>OpenAI<code style="font-size:11px;color:var(--fg-faint);margin-left:auto">318 ms</code></div><div style="display:flex;align-items:center;gap:9px;padding:7px 0;border-bottom:1px solid var(--border);font-size:12px"><span style="position:relative;width:7px;height:7px;border-radius:999px;background:var(--warning)"><span style="position:absolute;inset:0;border-radius:999px;background:var(--warning);animation:ds-pulse 2s ease-out infinite"></span></span>Azure<code style="font-size:11px;color:var(--warning-fg);margin-left:auto">failover</code></div><div style="display:flex;align-items:center;gap:9px;padding:7px 0;font-size:12px"><span style="width:7px;height:7px;border-radius:999px;background:var(--neutral)"></span>Vertex<code style="font-size:11px;color:var(--fg-faint);margin-left:auto">idle</code></div></div></div>
+              </div>
+
+              <div style="display:flex;align-items:baseline;justify-content:space-between;margin:16px 0 10px"><div style="font-size:13px;font-weight:600">Recent traces</div><span style="font-size:12px;color:var(--fg-muted);cursor:pointer">Open logs →</span></div>
+              <div style="border:1px solid var(--border-strong);border-radius:10px;overflow:hidden">
+                <div style="display:grid;grid-template-columns:84px 1fr 1fr 80px 78px;align-items:center;height:34px;padding:0 14px;border-bottom:1px solid var(--border);font-size:10px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-muted)"><div>Time</div><div>Model</div><div>Provider</div><div>Status</div><div style="text-align:right">Latency</div></div>
+                <div style="display:grid;grid-template-columns:84px 1fr 1fr 80px 78px;align-items:center;height:42px;padding:0 14px;border-bottom:1px solid var(--border)" style-hover="background:var(--hover)"><code style="font-size:11px;color:var(--fg-muted)">14:22:07</code><div style="font-size:12px">gpt-4o</div><div style="font-size:12px;color:var(--fg-muted)">openai</div><span style="display:inline-flex;align-items:center;gap:5px;padding:1px 7px;border-radius:999px;background:var(--success-bg);color:var(--success-fg);font-size:11px;font-weight:500;width:max-content"><span style="width:6px;height:6px;border-radius:999px;background:var(--success)"></span>200</span><code style="font-size:12px;text-align:right">412 ms</code></div>
+                <div style="display:grid;grid-template-columns:84px 1fr 1fr 80px 78px;align-items:center;height:42px;padding:0 14px;border-bottom:1px solid var(--border);box-shadow:inset 3px 0 0 var(--danger)" style-hover="background:var(--hover)"><code style="font-size:11px;color:var(--fg-muted)">14:21:58</code><div style="font-size:12px">gpt-4o</div><div style="font-size:12px;color:var(--fg-muted)">azure→openai</div><span style="display:inline-flex;align-items:center;gap:5px;padding:1px 7px;border-radius:999px;background:var(--danger-bg);color:var(--danger-fg);font-size:11px;font-weight:500;width:max-content"><span style="width:6px;height:6px;border-radius:999px;background:var(--danger)"></span>504</span><code style="font-size:12px;text-align:right;color:var(--danger-fg)">timeout</code></div>
+                <div style="display:grid;grid-template-columns:84px 1fr 1fr 80px 78px;align-items:center;height:42px;padding:0 14px" style-hover="background:var(--hover)"><code style="font-size:11px;color:var(--fg-muted)">14:21:41</code><div style="font-size:12px">claude-3-5-sonnet</div><div style="font-size:12px;color:var(--fg-muted)">anthropic</div><span style="display:inline-flex;align-items:center;gap:5px;padding:1px 7px;border-radius:999px;background:var(--success-bg);color:var(--success-fg);font-size:11px;font-weight:500;width:max-content"><span style="width:6px;height:6px;border-radius:999px;background:var(--success)"></span>200</span><code style="font-size:12px;text-align:right">889 ms</code></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:8px;margin-top:28px;padding-top:18px;border-top:1px solid var(--border);color:var(--fg-faint);font-size:12px"><span style="width:8px;height:8px;border-radius:999px;background:var(--success)"></span>Gateway healthy · 4 providers connected · region us-east-1 · Manifold Design System</div>
+      </section>
+      </sc-if>
+
+      <!--SECTIONS-->
+    </div>
+  </main>
+
+  <!-- backdrop -->
+  <div onClick="{{ closeOverlay }}" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;opacity:{{ bdOpacity }};pointer-events:{{ bdPE }};transition:opacity .2s ease"></div>
+
+  <!-- route sheet -->
+  <aside style="position:fixed;top:0;right:0;height:100vh;width:480px;max-width:92vw;background:var(--bg);border-left:1px solid var(--border-strong);box-shadow:var(--shadow-modal);z-index:101;display:flex;flex-direction:column;transform:{{ sxRoute }};transition:transform .28s cubic-bezier(.175,.885,.32,1.1)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 22px;border-bottom:1px solid var(--border)"><div style="font-size:16px;font-weight:600;letter-spacing:-.02em">Edit route · <code style="font-size:14px">gpt-4o</code></div><button onClick="{{ closeOverlay }}" style="border:0;background:transparent;color:var(--fg-faint);font-size:18px;cursor:pointer;line-height:1" style-hover="color:var(--fg)">✕</button></div>
+    <div data-scroll style="padding:20px 22px;overflow:auto;display:flex;flex-direction:column;gap:16px">
+      <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">public_name</label><input value="gpt-4o" style="width:100%;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font-family:'Geist Mono',monospace;font-size:13px;outline:none" style-focus="border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 26%,transparent)"></div>
+      <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">mode</label><div style="display:inline-flex;padding:3px;border:1px solid var(--border-strong);border-radius:8px;gap:2px;width:max-content"><button style="padding:5px 12px;border-radius:6px;border:0;background:var(--hover);color:var(--fg);font:inherit;font-size:12px;font-weight:500;cursor:pointer">weighted</button><button style="padding:5px 12px;border-radius:6px;border:0;background:transparent;color:var(--fg-muted);font:inherit;font-size:12px;font-weight:500;cursor:pointer">ordered</button></div></div>
+      <div style="display:grid;gap:8px"><label style="font-size:13px;font-weight:500">Targets</label><div style="border:1px solid var(--border);border-radius:8px;overflow:hidden"><div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--border)"><span style="width:8px;height:8px;border-radius:999px;background:var(--success)"></span><code style="font-size:13px">openai:gpt-4o</code><span style="margin-left:auto;display:inline-flex;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);align-items:center"><code style="font-size:11px;color:var(--fg-muted)">weight 70</code></span></div><div style="display:flex;align-items:center;gap:10px;padding:12px 14px"><span style="position:relative;width:8px;height:8px;border-radius:999px;background:var(--warning)"><span style="position:absolute;inset:0;border-radius:999px;background:var(--warning);animation:ds-pulse 2s ease-out infinite"></span></span><code style="font-size:13px">azure:eastus2/gpt4o</code><span style="margin-left:auto;display:inline-flex;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);align-items:center"><code style="font-size:11px;color:var(--fg-muted)">weight 30</code></span></div></div></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--warning-bg);color:var(--warning-fg);border:1px solid color-mix(in srgb,var(--warning) 30%,transparent)"><span style="width:8px;height:8px;border-radius:999px;background:var(--warning);margin-top:5px;flex:0 0 auto"></span><span>Changes stage as a draft. They reach the gateway only after Publish.</span></div>
+    </div>
+    <div style="margin-top:auto;display:flex;justify-content:flex-end;gap:8px;padding:16px 22px;border-top:1px solid var(--border)"><button onClick="{{ closeOverlay }}" style="height:34px;padding:0 12px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--hover)">Cancel</button><button onClick="{{ closeOverlay }}" style="height:34px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:pointer">Stage changes</button></div>
+  </aside>
+
+  <!-- provider sheet -->
+  <aside style="position:fixed;top:0;right:0;height:100vh;width:480px;max-width:92vw;background:var(--bg);border-left:1px solid var(--border-strong);box-shadow:var(--shadow-modal);z-index:101;display:flex;flex-direction:column;transform:{{ sxProvider }};transition:transform .28s cubic-bezier(.175,.885,.32,1.1)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 22px;border-bottom:1px solid var(--border)"><div style="font-size:16px;font-weight:600;letter-spacing:-.02em">Add provider</div><button onClick="{{ closeOverlay }}" style="border:0;background:transparent;color:var(--fg-faint);font-size:18px;cursor:pointer;line-height:1" style-hover="color:var(--fg)">✕</button></div>
+    <div style="padding:20px 22px;display:flex;flex-direction:column;gap:16px">
+      <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">Provider</label><div style="width:100%;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font-size:13px;display:flex;align-items:center;justify-content:space-between;cursor:pointer">OpenAI<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4" stroke-linecap="round"><path d="m4 6 4 4 4-4"/></svg></div></div>
+      <div style="display:grid;gap:7px"><label style="font-size:13px;font-weight:500">API secret</label><input type="password" value="sk-proj-live-secret" style="width:100%;height:36px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font-family:'Geist Mono',monospace;font-size:13px;outline:none" style-focus="border-color:var(--focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 26%,transparent)"></div>
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--warning-bg);color:var(--warning-fg);border:1px solid color-mix(in srgb,var(--warning) 30%,transparent)"><span style="width:8px;height:8px;border-radius:999px;background:var(--warning);margin-top:5px;flex:0 0 auto"></span><span>Shown once. Manifold stores an encrypted reference and a display prefix, never the plaintext.</span></div>
+    </div>
+    <div style="margin-top:auto;display:flex;justify-content:flex-end;gap:8px;padding:16px 22px;border-top:1px solid var(--border)"><button onClick="{{ closeOverlay }}" style="height:34px;padding:0 12px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--fg);font:inherit;font-size:13px;font-weight:500;cursor:pointer" style-hover="background:var(--hover)">Cancel</button><button onClick="{{ closeOverlay }}" style="height:34px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:pointer">Validate &amp; Save</button></div>
+  </aside>
+
+  <!-- trace drawer (wide) -->
+  <aside data-scroll style="position:fixed;top:0;right:0;height:100vh;width:600px;max-width:94vw;background:var(--bg);border-left:1px solid var(--border-strong);box-shadow:var(--shadow-modal);z-index:101;display:flex;flex-direction:column;transform:{{ sxTrace }};transition:transform .28s cubic-bezier(.175,.885,.32,1.1)">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:20px 22px;border-bottom:1px solid var(--border)"><div style="font-size:16px;font-weight:600;letter-spacing:-.02em">Trace · <code style="font-size:14px">tr_77b0e4</code></div><button onClick="{{ closeOverlay }}" style="border:0;background:transparent;color:var(--fg-faint);font-size:18px;cursor:pointer;line-height:1" style-hover="color:var(--fg)">✕</button></div>
+    <div data-scroll style="padding:20px 22px;overflow:auto;display:flex;flex-direction:column;gap:18px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap"><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--danger-bg);color:var(--danger-fg);font-size:12px;font-weight:500"><span style="width:7px;height:7px;border-radius:999px;background:var(--danger)"></span>504 timeout</span><span style="display:inline-flex;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);align-items:center"><code style="font-size:11px;color:var(--fg-muted)">gpt-4o</code></span><span style="display:inline-flex;height:22px;padding:0 9px;border-radius:999px;background:var(--chip);align-items:center"><code style="font-size:11px;color:var(--fg-muted)">platform · summarize</code></span></div>
+      <div>
+        <div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint);margin-bottom:10px">Span waterfall</div>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <div style="display:grid;grid-template-columns:150px 1fr 66px;gap:12px;align-items:center;height:32px;font-size:13px"><span style="color:var(--fg-muted)">accepted</span><div style="position:relative;height:14px;background:var(--hover);border-radius:3px"><span style="position:absolute;left:0;width:2%;height:14px;border-radius:3px;background:var(--fg-muted)"></span></div><code style="font-size:12px;color:var(--fg-faint);text-align:right">2 ms</code></div>
+          <div style="display:grid;grid-template-columns:150px 1fr 66px;gap:12px;align-items:center;height:32px;font-size:13px"><span style="display:flex;align-items:center;gap:8px;color:var(--fg-muted)"><span style="width:7px;height:7px;border-radius:999px;background:var(--danger)"></span>attempt · azure</span><div style="position:relative;height:14px;background:var(--hover);border-radius:3px"><span style="position:absolute;left:2%;width:60%;height:14px;border-radius:3px;background:var(--danger)"></span></div><code style="font-size:12px;color:var(--danger-fg);text-align:right">30,000</code></div>
+          <div style="display:grid;grid-template-columns:150px 1fr 66px;gap:12px;align-items:center;height:32px;font-size:13px"><span style="display:flex;align-items:center;gap:8px;color:var(--fg-muted)"><span style="width:7px;height:7px;border-radius:999px;background:var(--success)"></span>attempt · openai</span><div style="position:relative;height:14px;background:var(--hover);border-radius:3px"><span style="position:absolute;left:62%;width:34%;height:14px;border-radius:3px;background:var(--success)"></span></div><code style="font-size:12px;text-align:right">410 ms</code></div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="border:1px solid var(--border-strong);border-radius:10px;padding:16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Usage &amp; cost</div><div style="margin-top:10px;font-size:13px;line-height:1.9"><div>input <code style="color:var(--fg-muted)">1,204</code></div><div>output <code style="color:var(--fg-muted)">0</code></div><div>cost <code style="color:var(--warning-fg)">est. $0.0060</code></div></div></div>
+        <div style="border:1px solid var(--border-strong);border-radius:10px;padding:16px"><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint)">Policy decision</div><div style="margin-top:10px"><span style="display:inline-flex;align-items:center;gap:6px;padding:2px 9px;border-radius:999px;background:var(--warning-bg);color:var(--warning-fg);font-size:12px;font-weight:500"><span style="width:7px;height:7px;border-radius:999px;background:var(--warning)"></span>clamp</span></div><code style="font-size:11px;color:var(--fg-faint);display:block;margin-top:8px">MAX_OUTPUT_TOKENS</code></div>
+      </div>
+      <div><div style="font-size:11px;letter-spacing:.05em;text-transform:uppercase;color:var(--fg-faint);margin-bottom:8px">Capture · <span style="text-transform:none;letter-spacing:0">redacted · bounded_1k</span></div><pre style="margin:0;padding:12px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--code-bg);font-family:'Geist Mono',monospace;font-size:12px;color:var(--fg);white-space:pre-wrap;line-height:1.6">{ "messages": [ { "role": "user", "content": "Summarize ‹redacted 4.2kB›" } ], "max_tokens": 800 }</pre></div>
+    </div>
+  </aside>
+
+  <!-- key modal -->
+  <div style="position:fixed;left:50%;top:50%;width:520px;max-width:92vw;background:var(--bg);border:1px solid var(--border-strong);border-radius:12px;box-shadow:var(--shadow-modal);z-index:101;overflow:hidden;transform:{{ mKeyT }};opacity:{{ mKeyOp }};visibility:{{ mKeyVis }};transition:opacity .18s ease,transform .18s cubic-bezier(.175,.885,.32,1.1)">
+    <div style="padding:20px 22px 0"><div style="font-size:16px;font-weight:600;letter-spacing:-.02em">Key minted · <code style="font-size:14px">mf_live_a1c9</code></div></div>
+    <div style="padding:16px 22px">
+      <div style="display:flex;gap:10px;align-items:flex-start;padding:11px 14px;border-radius:10px;font-size:13px;line-height:1.5;background:var(--warning-bg);color:var(--warning-fg);border:1px solid color-mix(in srgb,var(--warning) 30%,transparent);margin-bottom:14px"><span style="width:8px;height:8px;border-radius:999px;background:var(--warning);margin-top:5px;flex:0 0 auto"></span><span>Copy it now. This is the only time the full key is shown.</span></div>
+      <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--border-strong);border-radius:8px;background:var(--code-bg)"><code style="font-size:13px;word-break:break-all;flex:1">mf_live_a1c94f2e8b7d3a06c15e9027fb44dd81</code><button style="height:30px;padding:0 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--surface);color:var(--fg);font:inherit;font-size:12px;font-weight:500;cursor:pointer" style-hover="border-color:var(--border-hover)">Copy</button></div>
+      <div style="display:flex;gap:16px;margin-top:14px;color:var(--fg-muted);font-size:13px"><span>profile <code style="font-size:12px">enterprise</code></span><span>rate <code style="font-size:12px">600/min</code></span></div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;padding:16px 22px;border-top:1px solid var(--border)"><button onClick="{{ closeOverlay }}" style="height:34px;padding:0 14px;border-radius:6px;border:1px solid transparent;background:var(--fg);color:var(--bg);font:inherit;font-size:13px;font-weight:500;cursor:pointer">Done, I saved it</button></div>
+  </div>
+
+  <!-- command palette -->
+  <div style="position:fixed;left:50%;top:11%;width:600px;max-width:94vw;background:var(--bg);border:1px solid var(--border-strong);border-radius:12px;box-shadow:var(--shadow-modal);z-index:101;overflow:hidden;transform:{{ mPalT }};opacity:{{ mPalOp }};visibility:{{ mPalVis }};transition:opacity .16s ease,transform .16s cubic-bezier(.175,.885,.32,1.1)">
+    <div style="display:flex;align-items:center;gap:10px;padding:15px 16px;border-bottom:1px solid var(--border)">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="var(--fg-faint)" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="m11 11 3 3" stroke-linecap="round"/></svg>
+      <input id="ds-cmd-input" value="{{ cmdQuery }}" onInput="{{ onCmdInput }}" placeholder="Search screens, patterns, actions" autocomplete="off" spellcheck="false" style="flex:1;border:0;background:transparent;color:var(--fg);font:inherit;font-size:15px;outline:none">
+      <kbd>esc</kbd>
+    </div>
+    <div data-scroll style="max-height:52vh;overflow:auto;padding:8px">
+      <sc-for list="{{ filteredCmd }}" as="c" hint-placeholder-count="6">
+        <div onClick="{{ c.run }}" style="display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:6px;font-size:13px;cursor:pointer;background:{{ c.bg }}" style-hover="background:var(--hover)">
+          <span style="width:15px;height:15px;display:grid;place-items:center;flex:0 0 auto"><span style="width:6px;height:6px;border-radius:999px;background:var(--fg-faint)"></span></span>
+          <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ c.label }}</span>
+          <code style="margin-left:auto;font-size:11px;color:var(--fg-faint);flex:0 0 auto">{{ c.g }}</code>
+        </div>
+      </sc-for>
+      <sc-if value="{{ cmdEmpty }}" hint-placeholder-val="{{ false }}"><div style="padding:28px 12px;text-align:center;color:var(--fg-faint);font-size:13px">No matches</div></sc-if>
+    </div>
+    <div style="display:flex;align-items:center;gap:16px;padding:10px 14px;border-top:1px solid var(--border);color:var(--fg-faint);font-size:12px"><span><kbd style="margin-right:4px">↑</kbd><kbd style="margin-right:6px">↓</kbd>Move</span><span><kbd style="margin-right:6px">↵</kbd>Open</span><code style="margin-left:auto;font-size:11px">Manifold</code></div>
+  </div>
+  <!--OVERLAYS-->
+</div>
+</x-dc>
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { theme:'dark', section:'overview', overlay:null, cmdQuery:'', cmdIndex:0 };
+
+  componentDidMount(){
+    this._key = (e)=>{
+      if(e.key==='Escape'){ this.closeOverlay(); return; }
+      if((e.metaKey||e.ctrlKey) && e.key.toLowerCase()==='k'){ e.preventDefault(); this.togglePalette(); return; }
+      if(this.state.overlay==='palette'){
+        const items=this.filteredCmd();
+        if(e.key==='ArrowDown'){ e.preventDefault(); this.setState({cmdIndex:(this.state.cmdIndex+1)%Math.max(items.length,1)}); }
+        else if(e.key==='ArrowUp'){ e.preventDefault(); this.setState({cmdIndex:(this.state.cmdIndex-1+items.length)%Math.max(items.length,1)}); }
+        else if(e.key==='Enter'){ e.preventDefault(); const it=items[this.state.cmdIndex]; if(it) this.runCmd(it); }
+      }
+    };
+    document.addEventListener('keydown', this._key);
+  }
+  componentWillUnmount(){ document.removeEventListener('keydown', this._key); }
+
+  setSection(id){ this.setState({section:id, overlay:null}); const m=document.getElementById('ds-main'); if(m) m.scrollTop=0; }
+  setTheme(t){ this.setState({theme:t}); }
+  toggleTheme(){ this.setState(s=>({theme:s.theme==='dark'?'light':'dark'})); }
+  openOverlay(id){ this.setState({overlay:id}); }
+  closeOverlay(){ this.setState({overlay:null}); }
+  openPalette(){ this.setState({overlay:'palette', cmdQuery:'', cmdIndex:0}); setTimeout(()=>{ const i=document.getElementById('ds-cmd-input'); if(i) i.focus(); },30); }
+  togglePalette(){ if(this.state.overlay==='palette') this.closeOverlay(); else this.openPalette(); }
+
+  SECS(){ return ['overview','color','type','space','motion','buttons','forms','status','data','overlays','nav','health','cost','latency','streaming','registry','config','states','console']; }
+  meta(){ return {
+    overview:['Foundations','Overview'], color:['Foundations','Color'], type:['Foundations','Typography'],
+    space:['Foundations','Space & elevation'], motion:['Foundations','Motion'],
+    buttons:['Components','Buttons'], forms:['Components','Forms & inputs'], status:['Components','Status & feedback'],
+    data:['Components','Data display'], overlays:['Components','Overlays'], nav:['Components','Navigation'],
+    health:['Patterns','Health & status'], cost:['Patterns','Cost & budgets'], latency:['Patterns','Latency & traces'],
+    streaming:['Patterns','Tokens & streaming'], registry:['Patterns','Providers & models'], config:['Patterns','Config & publish'],
+    states:['Patterns','Empty & error states'], console:['Showcase','Console in use'] }; }
+
+  cmdData(){
+    const secItems = this.SECS().map(id=>({ g:'Go to', label:this.meta()[id][1], kw:id, section:id }));
+    return secItems.concat([
+      { g:'Demos', label:'Open route editor', kw:'sheet drawer edit', overlay:'routeSheet' },
+      { g:'Demos', label:'Add provider', kw:'sheet credential', overlay:'providerSheet' },
+      { g:'Demos', label:'Mint virtual key', kw:'modal copy once', overlay:'keyModal' },
+      { g:'Demos', label:'Open trace waterfall', kw:'drawer latency span', overlay:'traceDrawer' },
+      { g:'Demos', label:'Toggle dark / light theme', kw:'theme appearance', action:'theme' },
+    ]);
+  }
+  filteredCmd(){
+    const q=(this.state.cmdQuery||'').trim().toLowerCase();
+    return this.cmdData().filter(c=> !q || (c.label+' '+(c.kw||'')+' '+c.g).toLowerCase().indexOf(q)>-1 );
+  }
+  runCmd(c){
+    if(c.action==='theme'){ this.toggleTheme(); this.closeOverlay(); return; }
+    this.setState({ section: c.section||this.state.section, overlay: c.overlay||null, cmdQuery:'' });
+    const m=document.getElementById('ds-main'); if(m && c.section) m.scrollTop=0;
+  }
+
+  renderVals(){
+    const s=this.state.section, o=this.state.overlay, dark=this.state.theme==='dark';
+    const active={}, navBg={}, navFg={};
+    this.SECS().forEach(id=>{ const on=s===id; active[id]=on; navBg[id]=on?'var(--hover)':'transparent'; navFg[id]=on?'var(--fg)':'var(--fg-muted)'; });
+    const mk=(a)=>a.map(x=>({name:x[0], v:x[1]}));
+
+    const grayRamp = mk([['white','#ffffff'],['gray-25','#fafafa'],['gray-50','#f6f6f6'],['gray-75','#f2f2f2'],['gray-100','#ececec'],['gray-150','#ebebeb'],['gray-200','#e0e0e0'],['gray-300','#c9c9c9'],['gray-400','#a1a1a1'],['gray-500','#8f8f8f'],['gray-600','#6e6e6e'],['gray-700','#4d4d4d'],['gray-800','#2e2e2e'],['gray-900','#1a1a1a'],['gray-950','#111111'],['black','#000000']]);
+    const alphaRamp = [['white-a-4','.04 · hover subtle'],['white-a-7','.07 · hover / chip'],['white-a-9','.09 · border'],['white-a-14','.14 · border-strong'],['white-a-24','.24 · border-hover'],['black-a-5','.05 · light hover']]
+      .map((x,i)=>({name:x[0], note:x[1], v:['rgba(255,255,255,.04)','rgba(255,255,255,.07)','rgba(255,255,255,.09)','rgba(255,255,255,.14)','rgba(255,255,255,.24)','rgba(0,0,0,.05)'][i]}));
+
+    const hueGroups = [
+      { label:'Blue · focus', dot:'#47a8ff', steps:mk([['blue-400','#47a8ff'],['blue-600','#006bff']]) },
+      { label:'Green · up', dot:'#00ac3a', steps:mk([['green-400','#00ca50'],['green-500','#00ac3a'],['green-700','#107d32'],['green-950','#002608']]) },
+      { label:'Amber · verifying', dot:'#ffae00', steps:mk([['amber-500','#ffae00'],['amber-600','#ff9300'],['amber-800','#aa4d00'],['amber-950','#2a1700']]) },
+      { label:'Red · down', dot:'#f13242', steps:mk([['red-400','#ff565f'],['red-500','#f13242'],['red-600','#e2162a'],['red-950','#330a11']]) },
+    ];
+
+    const semanticRows = [
+      ['--bg','App & surface background','black','white'],
+      ['--fg','Primary text','gray-100','gray-900'],
+      ['--fg-muted','Secondary text, labels','gray-400','gray-700'],
+      ['--fg-faint','Tertiary, timestamps','gray-500','gray-500'],
+      ['--border','Hairline separators','white-a-9','gray-150'],
+      ['--border-strong','Card & control borders','white-a-14','gray-150'],
+      ['--border-hover','Hover border','white-a-24','gray-300'],
+      ['--hover','Row / item hover fill','white-a-7','black-a-5'],
+      ['--chip','Chip & tag fill','white-a-7','gray-75'],
+      ['--focus','Focus ring','blue-400','blue-600'],
+      ['--success','Healthy / up','green-500','green-600'],
+      ['--warning','Degraded / verifying','amber-500','amber-500'],
+      ['--danger','Down / denied','red-500','red-vivid'],
+    ].map(r=>({ token:r[0], use:r[1], dark:r[2], light:r[3], swatch:'var('+r[0]+')' }));
+
+    const typeScale = [['Display','text-2xl',24,30,600,'Section & page titles'],['Heading','text-xl',20,26,600,'Screen titles'],['Subhead','text-lg',16,22,600,'Card & drawer titles'],['Body','text-md',14,21,400,'Default prose'],['UI','text-base',13,18,400,'Controls, tables, dense UI'],['Label','text-sm',12,16,500,'Field labels, chips'],['Micro','text-xs',11,14,500,'Eyebrows, badges, keys']]
+      .map(r=>({ role:r[0], name:r[1], size:r[2], lh:r[3], weight:r[4], use:r[5] }));
+    const weights = [['Regular',400],['Medium',500],['Semibold',600]].map(r=>({name:r[0], w:r[1]}));
+    const spaceScale = [['0',0],['0.5',2],['1',4],['1.5',6],['2',8],['2.5',10],['3',12],['4',16],['5',20],['6',24],['8',32],['10',40],['12',48]].map(r=>({name:r[0], px:r[1]}));
+    const radii = [['sm',5],['md',6],['lg',8],['xl',12],['pill',999]].map(r=>({name:r[0], px:r[1], w:r[1]===999?40:r[1]*2+8}));
+    const shadows = [['card','var(--shadow-card)','Cards, KPI grid, tables'],['popover','var(--shadow-popover)','Menus, dropdowns'],['modal','var(--shadow-modal)','Modals, drawers']].map(r=>({name:r[0], v:r[1], use:r[2]}));
+    const motionDur = [['fast','120ms','Color, hover, chip'],['base','180ms','Most transitions'],['slow','280ms','Sheets, drawers']].map(r=>({name:r[0], v:r[1], use:r[2]}));
+    const motionEase = [['standard','cubic-bezier(.4, 0, .2, 1)','Default in / out'],['entrance','cubic-bezier(.175, .885, .32, 1.1)','Overshoot — sheets slide in']].map(r=>({name:r[0], v:r[1], use:r[2]}));
+
+    const fc = this.filteredCmd().map((c,i)=>({ ...c, bg:(i===this.state.cmdIndex)?'var(--hover)':'transparent', run:()=>this.runCmd(c) }));
+
+    return {
+      theme:this.state.theme,
+      active, navBg, navFg,
+      crumbGroup:this.meta()[s][0], crumbTitle:this.meta()[s][1],
+      seg:{ dark:dark?'var(--hover)':'transparent', darkFg:dark?'var(--fg)':'var(--fg-muted)', light:!dark?'var(--hover)':'transparent', lightFg:!dark?'var(--fg)':'var(--fg-muted)' },
+      onNavClick:(e)=>{ const el=e.target.closest('[data-sec]'); if(el) this.setSection(el.getAttribute('data-sec')); },
+      setDark:()=>this.setTheme('dark'), setLight:()=>this.setTheme('light'), toggleTheme:()=>this.toggleTheme(),
+      openPalette:()=>this.openPalette(),
+      open:{ routeSheet:()=>this.openOverlay('routeSheet'), providerSheet:()=>this.openOverlay('providerSheet'), keyModal:()=>this.openOverlay('keyModal'), traceDrawer:()=>this.openOverlay('traceDrawer') },
+      closeOverlay:()=>this.closeOverlay(),
+      grayRamp, alphaRamp, hueGroups, semanticRows,
+      typeScale, weights, spaceScale, radii, shadows, motionDur, motionEase,
+      // overlays
+      bdOpacity:o?'1':'0', bdPE:o?'auto':'none',
+      sxRoute:o==='routeSheet'?'translateX(0)':'translateX(101%)',
+      sxProvider:o==='providerSheet'?'translateX(0)':'translateX(101%)',
+      sxTrace:o==='traceDrawer'?'translateX(0)':'translateX(101%)',
+      mKeyOp:o==='keyModal'?'1':'0', mKeyVis:o==='keyModal'?'visible':'hidden', mKeyT:o==='keyModal'?'translate(-50%,-50%) scale(1)':'translate(-50%,-50%) scale(.97)',
+      mPalOp:o==='palette'?'1':'0', mPalVis:o==='palette'?'visible':'hidden', mPalT:o==='palette'?'translate(-50%,0) scale(1)':'translate(-50%,0) scale(.98)',
+      cmdQuery:this.state.cmdQuery,
+      onCmdInput:(e)=>this.setState({cmdQuery:e.target.value, cmdIndex:0}),
+      filteredCmd:fc, cmdEmpty:fc.length===0,
+    };
+  }
+}
+</script>
+</body>
+</html>
