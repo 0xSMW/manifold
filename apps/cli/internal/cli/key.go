@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 )
@@ -18,30 +19,26 @@ func mintKey(cmd *cobra.Command, args []string, flags map[string]string) error {
 	}
 	stubKey := "mfk_stub_" + hex.EncodeToString(buf)
 
-	out := cmd.OutOrStdout()
-	if flagJSON {
-		return writeResult(cmd, StubResult{
-			Schema:  schemaVersion,
-			Kind:    "key.mint",
-			Command: cmd.CommandPath(),
-			Flags:   flags,
-			Message: stubKey,
-		})
-	}
-	if flagQuiet {
-		fmt.Fprintln(out, stubKey)
-		return nil
-	}
-	fmt.Fprintln(out, "[STUB] key.mint — this plaintext key is shown once and not stored:")
-	fmt.Fprintln(out, "  "+stubKey)
-	return nil
+	return writeResult(cmd, StubResult{
+		Schema:  schemaVersion,
+		Kind:    "key.mint",
+		Command: cmd.CommandPath(),
+		Flags:   flags,
+		Message: stubKey,
+	},
+		withQuiet(stubKey),
+		withHuman(func(out io.Writer) {
+			fmt.Fprintln(out, "[STUB] key.mint — this plaintext key is shown once and not stored:")
+			fmt.Fprintln(out, "  "+stubKey)
+		}),
+	)
 }
 
 func newKeyCmd() *cobra.Command {
 	c := branch("key", "virtual keys")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list keys", Args: cobra.NoArgs, Kind: "key.list"}),
-		buildLeaf(cmdSpec{Use: "get <id>", Short: "get a key (metadata only, never the plaintext)", Args: cobra.ExactArgs(1), Kind: "key.get"}),
+		leafList("key", "list keys"),
+		leafGet("key", "get a key (metadata only, never the plaintext)"),
 		buildLeaf(cmdSpec{
 			Use:   "mint",
 			Short: "mint a new virtual key; prints the plaintext once",

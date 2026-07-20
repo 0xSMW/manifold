@@ -15,7 +15,7 @@ func getJob(cmd *cobra.Command, args []string, flags map[string]string) error {
 func newJobCmd() *cobra.Command {
 	c := branch("job", "job_ledger operations (ingest retries, reconciliation, config-apply followups)")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list jobs", Args: cobra.NoArgs, Kind: "job.list"}),
+		leafList("job", "list jobs"),
 		buildLeaf(cmdSpec{
 			Use:     "get <id>",
 			Short:   "get a job; `job get missing` demonstrates exit 4 (RESOURCE_NOT_FOUND)",

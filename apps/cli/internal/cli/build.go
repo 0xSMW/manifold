@@ -82,6 +82,19 @@ func collectFlags(cmd *cobra.Command, specs []flagSpec) map[string]string {
 	return out
 }
 
+// leafList builds the conventional "<noun> list" leaf: no positional args,
+// Kind "<noun>.list". Only the human-facing Short varies between nouns, so it
+// is the single caller-supplied field; everything else follows convention.
+func leafList(noun, short string) *cobra.Command {
+	return buildLeaf(cmdSpec{Use: "list", Short: short, Args: cobra.NoArgs, Kind: noun + ".list"})
+}
+
+// leafGet builds the conventional "<noun> get <id>" leaf: exactly one id arg,
+// Kind "<noun>.get".
+func leafGet(noun, short string) *cobra.Command {
+	return buildLeaf(cmdSpec{Use: "get <id>", Short: short, Args: cobra.ExactArgs(1), Kind: noun + ".get"})
+}
+
 // branch makes a parent noun command that only groups subcommands (e.g.
 // `manifold provider`, `manifold provider revision`) — running it bare
 // prints help rather than a stub, matching cobra convention for group

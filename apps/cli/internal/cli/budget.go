@@ -5,8 +5,8 @@ import "github.com/spf13/cobra"
 func newBudgetCmd() *cobra.Command {
 	c := branch("budget", "budget accounts (spend/token caps)")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list budgets", Args: cobra.NoArgs, Kind: "budget.list"}),
-		buildLeaf(cmdSpec{Use: "get <id>", Short: "get a budget", Args: cobra.ExactArgs(1), Kind: "budget.get"}),
+		leafList("budget", "list budgets"),
+		leafGet("budget", "get a budget"),
 		buildLeaf(cmdSpec{
 			Use:   "create",
 			Short: "create a budget account",

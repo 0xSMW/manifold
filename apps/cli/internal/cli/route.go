@@ -5,8 +5,8 @@ import "github.com/spf13/cobra"
 func newRouteCmd() *cobra.Command {
 	c := branch("route", "gateway routes (public_name -> targets)")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list routes", Args: cobra.NoArgs, Kind: "route.list"}),
-		buildLeaf(cmdSpec{Use: "get <id>", Short: "get a route", Args: cobra.ExactArgs(1), Kind: "route.get"}),
+		leafList("route", "list routes"),
+		leafGet("route", "get a route"),
 		buildLeaf(cmdSpec{
 			Use:   "create",
 			Short: "create a route",

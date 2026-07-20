@@ -68,7 +68,7 @@ func newUsageCmd() *cobra.Command {
 func newAuditCmd() *cobra.Command {
 	c := branch("audit", "audit log of control-plane changes")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list audit entries", Args: cobra.NoArgs, Kind: "audit.list"}),
+		leafList("audit", "list audit entries"),
 		buildLeaf(cmdSpec{Use: "export", Short: "export audit entries", Args: cobra.NoArgs, Kind: "audit.export"}),
 		buildLeaf(cmdSpec{Use: "verify", Short: "verify the audit log's hash chain", Args: cobra.NoArgs, Kind: "audit.verify"}),
 		buildLeaf(cmdSpec{

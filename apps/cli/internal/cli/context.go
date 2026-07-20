@@ -5,7 +5,7 @@ import "github.com/spf13/cobra"
 func newContextCmd() *cobra.Command {
 	c := branch("context", "manage CLI contexts/workspaces (SPEC.md §12.6)")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list configured contexts", Args: cobra.NoArgs, Kind: "context.list"}),
+		leafList("context", "list configured contexts"),
 		buildLeaf(cmdSpec{
 			Use:   "use <name>",
 			Short: "switch the current context",
@@ -32,8 +32,8 @@ func newContextCmd() *cobra.Command {
 func newWorkspaceCmd() *cobra.Command {
 	c := branch("workspace", "manage workspaces (tenants)")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list workspaces", Args: cobra.NoArgs, Kind: "workspace.list"}),
-		buildLeaf(cmdSpec{Use: "get <id>", Short: "get a workspace", Args: cobra.ExactArgs(1), Kind: "workspace.get"}),
+		leafList("workspace", "list workspaces"),
+		leafGet("workspace", "get a workspace"),
 		buildLeaf(cmdSpec{
 			Use:   "update <id>",
 			Short: "update a workspace",

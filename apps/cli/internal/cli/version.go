@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/spf13/cobra"
 )
@@ -12,16 +13,17 @@ func newVersionCmd() *cobra.Command {
 		Short: "print the manifold CLI version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if flagJSON {
-				return writeResult(cmd, StubResult{
-					Schema:  schemaVersion,
-					Kind:    "version",
-					Command: cmd.CommandPath(),
-					Message: Version,
-				})
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "manifold version %s\n", Version)
-			return nil
+			return writeResult(cmd, StubResult{
+				Schema:  schemaVersion,
+				Kind:    "version",
+				Command: cmd.CommandPath(),
+				Message: Version,
+			},
+				withQuiet("manifold version "+Version),
+				withHuman(func(out io.Writer) {
+					fmt.Fprintf(out, "manifold version %s\n", Version)
+				}),
+			)
 		},
 	}
 }

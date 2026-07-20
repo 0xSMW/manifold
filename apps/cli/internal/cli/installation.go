@@ -5,8 +5,8 @@ import "github.com/spf13/cobra"
 func newInstallationCmd() *cobra.Command {
 	c := branch("installation", "manage gateway installations")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list installations", Args: cobra.NoArgs, Kind: "installation.list"}),
-		buildLeaf(cmdSpec{Use: "get <id>", Short: "get an installation", Args: cobra.ExactArgs(1), Kind: "installation.get"}),
+		leafList("installation", "list installations"),
+		leafGet("installation", "get an installation"),
 		buildLeaf(cmdSpec{
 			Use:   "register",
 			Short: "register a new gateway installation",
@@ -36,8 +36,8 @@ func newInstallationCmd() *cobra.Command {
 func newProfileCmd() *cobra.Command {
 	c := branch("profile", "ingress profiles (public_app | enterprise_egress)")
 	c.AddCommand(
-		buildLeaf(cmdSpec{Use: "list", Short: "list ingress profiles", Args: cobra.NoArgs, Kind: "profile.list"}),
-		buildLeaf(cmdSpec{Use: "get <id>", Short: "get an ingress profile", Args: cobra.ExactArgs(1), Kind: "profile.get"}),
+		leafList("profile", "list ingress profiles"),
+		leafGet("profile", "get an ingress profile"),
 		buildLeaf(cmdSpec{
 			Use:   "create",
 			Short: "bind a hostname + mode + auth to a new ingress profile",

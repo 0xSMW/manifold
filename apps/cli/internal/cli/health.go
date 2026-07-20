@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,28 +66,21 @@ func pingBaseURL(cmd *cobra.Command, args []string, flags map[string]string) err
 		}
 	}
 
-	out := cmd.OutOrStdout()
-	if flagQuiet {
-		fmt.Fprintln(out, "ok")
-		return nil
-	}
-	if flagJSON {
-		// Re-emit whatever the server returned as-is if it's valid JSON, so
-		// this command is a transparent pass-through of the real endpoint.
-		var probe json.RawMessage
-		if json.Unmarshal(body, &probe) == nil {
-			fmt.Fprintln(out, string(body))
-			return nil
-		}
-		return writeResult(cmd, StubResult{
-			Schema:  schemaVersion,
-			Kind:    "installation.health",
-			Command: cmd.CommandPath(),
-			Message: string(body),
-		})
-	}
-	fmt.Fprintf(out, "GET %s -> %d\n%s\n", url, resp.StatusCode, string(body))
-	return nil
+	// --quiet prints "ok"; --json re-emits the server body as-is when it is
+	// valid JSON (transparent pass-through) and otherwise wraps it in a stub
+	// envelope; human mode shows the request/status/body.
+	return writeResult(cmd, StubResult{
+		Schema:  schemaVersion,
+		Kind:    "installation.health",
+		Command: cmd.CommandPath(),
+		Message: string(body),
+	},
+		withQuiet("ok"),
+		withRawJSON(body),
+		withHuman(func(out io.Writer) {
+			fmt.Fprintf(out, "GET %s -> %d\n%s\n", url, resp.StatusCode, string(body))
+		}),
+	)
 }
 
 func newHealthCmd() *cobra.Command {

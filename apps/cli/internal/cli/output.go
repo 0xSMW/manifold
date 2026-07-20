@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -57,19 +58,68 @@ func printStub(cmd *cobra.Command, kind string, args []string, flags map[string]
 	return writeResult(cmd, res)
 }
 
+// resultOpts customizes how writeResult renders a payload in each output
+// mode. Commands whose --quiet/--json/human rendering differs from the
+// standard stub (version, key mint, installation health) pass these so the
+// --quiet/--json precedence lives in exactly one place instead of being
+// re-implemented at each call site.
+type resultOpts struct {
+	quiet   string          // --quiet line; defaults to res.Kind
+	human   func(io.Writer) // human-mode renderer; defaults to the stub block
+	rawJSON []byte          // if itself valid JSON, emitted verbatim in --json mode
+}
+
+type resultOpt func(*resultOpts)
+
+// withQuiet overrides the single line printed in --quiet mode.
+func withQuiet(line string) resultOpt {
+	return func(o *resultOpts) { o.quiet = line }
+}
+
+// withHuman overrides the default human-readable stub block.
+func withHuman(fn func(io.Writer)) resultOpt {
+	return func(o *resultOpts) { o.human = fn }
+}
+
+// withRawJSON passes a body through verbatim in --json mode when it is itself
+// valid JSON, so the command is a transparent proxy of an upstream endpoint.
+func withRawJSON(b []byte) resultOpt {
+	return func(o *resultOpts) { o.rawJSON = b }
+}
+
 // writeResult prints any JSON-serializable payload as JSON (--json) or as a
 // concise human line (default table-ish rendering). --quiet suppresses
-// everything but the kind on success.
-func writeResult(cmd *cobra.Command, res StubResult) error {
+// everything but a single line on success. Options let a few commands
+// override each mode's rendering without re-implementing the precedence.
+func writeResult(cmd *cobra.Command, res StubResult, opts ...resultOpt) error {
+	o := resultOpts{}
+	for _, fn := range opts {
+		fn(&o)
+	}
 	out := cmd.OutOrStdout()
 	if flagQuiet {
-		fmt.Fprintln(out, res.Kind)
+		line := res.Kind
+		if o.quiet != "" {
+			line = o.quiet
+		}
+		fmt.Fprintln(out, line)
 		return nil
 	}
 	if flagJSON {
+		if o.rawJSON != nil {
+			var probe json.RawMessage
+			if json.Unmarshal(o.rawJSON, &probe) == nil {
+				fmt.Fprintln(out, string(o.rawJSON))
+				return nil
+			}
+		}
 		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		return enc.Encode(res)
+	}
+	if o.human != nil {
+		o.human(out)
+		return nil
 	}
 	fmt.Fprintf(out, "[STUB] %s\n", res.Kind)
 	fmt.Fprintf(out, "  command: %s\n", res.Command)
