@@ -56,7 +56,14 @@ export interface ConfigPolicy {
  * the two additional §7 sections. Everything under here is canonicalized + hashed except
  * `meta.signature` (§7.3).
  */
-export interface ConfigSnapshot extends Snapshot {
+// NOTE (integration seam, GROK_DRY #21): config emits the TRANSPORT policy shape (ConfigPolicy:
+// entitlementIndex + string constraint bounds + dataHandling), while the gateway enforcement path
+// reads the EVALUATOR shape (ports SnapshotPolicyRevision: modelEntitlements + numeric constraints).
+// These are legitimately different; we Omit `policies` from the base so the two don't false-unify.
+// Wiring config to ALSO emit the evaluator-shaped policy (so config-built snapshots drive gateway
+// policy enforcement end-to-end) is tracked as a follow-up — today the gateway enforces whatever
+// evaluator-shaped policy is present in the loaded snapshot (proven by the enforcement tests).
+export interface ConfigSnapshot extends Omit<Snapshot, "policies"> {
   offerings: Record<string, ConfigOffering>;
   policies: Record<string, ConfigPolicy>;
 }

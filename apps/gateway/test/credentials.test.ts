@@ -38,7 +38,7 @@ test("wrong KEK cannot decrypt (throws, no wrong-secret)", () => {
 
 test("tampered ciphertext ⇒ resolver rejects (GCM integrity, never a wrong secret)", async () => {
   const raw = unpackBase64(ciphertext);
-  raw[raw.length - 1] ^= 0x01;
+  raw[raw.length - 1] = (raw[raw.length - 1] ?? 0) ^ 0x01;
   await assert.rejects(makeSecretResolver(KEK)(target({ credentialCiphertext: packBase64(raw) })));
 });
 
@@ -88,7 +88,7 @@ test("end-to-end: DECRYPTED secret injected as x-api-key upstream; inbound Autho
 
 test("end-to-end FAIL CLOSED: tampered ciphertext ⇒ 502, upstream NEVER called (no leak)", async () => {
   const raw = unpackBase64(ciphertext);
-  raw[5] ^= 0x01;
+  raw[5] = (raw[5] ?? 0) ^ 0x01;
   const { fetcher, calls } = countingFetcher();
   const res = await handleRequest(ctxFor(target({ credentialCiphertext: packBase64(raw) }), fetcher), req());
   assert.equal(res.status, 502);

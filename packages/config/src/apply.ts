@@ -140,7 +140,7 @@ export async function apply(
          ${tx.json(q.jval(routeIds))}, ${tx.json(q.jval(policyIds))}, ${tx.json(q.jval(priceIds))}, 'active')`;
 
     // Publish to the store (Edge Config / KV). DB is source of truth; store is its cache (§8.2).
-    const published = await store.publish(plan.installationId, revisionId, snap as Snapshot);
+    const published = await store.publish(plan.installationId, revisionId, snap as unknown as Snapshot /* publish serializes JSON; policy shape divergence is at rest, GROK_DRY #21 */);
 
     await tx`
       UPDATE gateway_installation SET applied_config_revision = ${revisionId}
@@ -185,7 +185,7 @@ export async function rollback(
     }
 
     const priorSnap = target.snapshot as ConfigSnapshot;
-    const published = await store.publish(target.installation_id, target.id, priorSnap as Snapshot);
+    const published = await store.publish(target.installation_id, target.id, priorSnap as unknown as Snapshot);
     await tx`
       UPDATE gateway_installation SET applied_config_revision = ${target.id}
       WHERE id = ${target.installation_id}`;
