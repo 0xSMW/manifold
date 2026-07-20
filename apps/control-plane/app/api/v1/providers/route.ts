@@ -13,7 +13,7 @@ import { withWorkspace } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { genId } from "@/lib/ids";
 import {
-  handle,
+  wrapInEnvelope,
   jsonBody,
   ok,
   requireString,
@@ -49,7 +49,7 @@ interface ProviderRow {
 }
 
 export async function GET(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "providers:read");
     const rows = await withWorkspace(principal.workspaceId, (sql) =>
       sql<ProviderRow[]>`
@@ -77,7 +77,7 @@ export async function GET(req: Request): Promise<Response> {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "providers:write");
     const body = await jsonBody(req);
     const provider = requireString(body, "provider");

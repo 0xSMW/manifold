@@ -10,13 +10,13 @@
 // that workspace).
 import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
-import { baseHeaders, handle, ManifoldError } from "@/lib/http";
+import { baseHeaders, wrapInEnvelope, ManifoldError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "config:read");
     const url = new URL(req.url);
     const installationId = url.searchParams.get("installationId");

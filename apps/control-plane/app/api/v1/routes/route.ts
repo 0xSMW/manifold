@@ -8,7 +8,7 @@ import { withWorkspace } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { genId } from "@/lib/ids";
 import {
-  handle,
+  wrapInEnvelope,
   jsonBody,
   ok,
   requireString,
@@ -31,7 +31,7 @@ interface RouteListRow {
 }
 
 export async function GET(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "routes:read");
     const rows = await withWorkspace(principal.workspaceId, (sql) =>
       sql<RouteListRow[]>`
@@ -58,7 +58,7 @@ export async function GET(req: Request): Promise<Response> {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "routes:write");
     const body = await jsonBody(req);
     const installationId = requireString(body, "installationId");

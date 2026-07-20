@@ -7,13 +7,13 @@
 import { authorize } from "@/lib/auth";
 import { requireInstallation } from "@/lib/db";
 import { buildSignedPlan } from "@/lib/snapshot";
-import { handle, jsonBody, ok, requireString } from "@/lib/http";
+import { wrapInEnvelope, jsonBody, ok, requireString } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "config:read");
     const body = await jsonBody(req);
     const installationId = requireString(body, "installationId");

@@ -11,7 +11,7 @@ import { withWorkspace, adminDb, type Sql } from "@/lib/db";
 import { generateSecret } from "@/lib/crypto";
 import { genId } from "@/lib/ids";
 import { sha256Canonical } from "@manifold/config";
-import { handle, jsonBody, ok, optionalString, ManifoldError } from "@/lib/http";
+import { wrapInEnvelope, jsonBody, ok, optionalString, ManifoldError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +32,7 @@ const ALL_SCOPES = [
 ];
 
 export async function POST(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const secret = process.env.MANIFOLD_SEED_SECRET;
     const presented = req.headers.get("x-seed-secret");
     if (!secret || presented !== secret) {

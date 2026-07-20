@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(): Promise<Response> {
-  // Public (no auth), so it does not run through `handle`; but it still carries the kit's
+  // Public (no auth), so it does not run through `wrapInEnvelope`; but it still carries the kit's
   // correlation/schema headers (X-Request-Id, X-Manifold-Schema) like every other response.
   const requestId = newRequestId();
   let db: "ok" | "unreachable" = "unreachable";

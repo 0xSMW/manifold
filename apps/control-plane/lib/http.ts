@@ -1,5 +1,5 @@
 // Control-plane HTTP kit: request-id assignment, the §0.3 error envelope, and a
-// `handle` wrapper that turns thrown ManifoldErrors into that envelope. Every response
+// `wrapInEnvelope` wrapper that turns thrown ManifoldErrors into that envelope. Every response
 // carries X-Request-Id and X-Manifold-Schema (§10.1).
 import { NextResponse } from "next/server";
 import { SCHEMA_VERSION } from "@manifold/contracts";
@@ -7,10 +7,20 @@ import { SCHEMA_VERSION } from "@manifold/contracts";
 /**
  * `error.code` on the control-plane envelope. §0.2/§0.3 defines the ErrorCode enum
  * (VALIDATION, NOT_FOUND, CONFIG_PRECONDITION_FAILED, …) but has NO auth code, so we
- * additionally allow UNAUTHENTICATED/FORBIDDEN here and carry the precise AUTH_* /
- * other codes in `reason_codes[]`. Kept as a widened string for that reason.
+ * additionally allow UNAUTHENTICATED/FORBIDDEN/INTERNAL here and carry the precise AUTH_* /
+ * other codes in `reason_codes[]`. This union is exactly the set of codes actually constructed
+ * via ManifoldError across the control-plane — keep it in sync when a route adds a new one.
  */
-export type EnvelopeCode = string;
+export type EnvelopeCode =
+  | "UNAUTHENTICATED"
+  | "FORBIDDEN"
+  | "INTERNAL"
+  | "VALIDATION"
+  | "NOT_FOUND"
+  | "CONFIG_PRECONDITION_FAILED"
+  | "CONFIG_TRIPWIRE_HELD"
+  | "DUPLICATE_ROUTE"
+  | "OFFERING_NOT_FOUND";
 
 export interface ManifoldErrorInit {
   status: number;
@@ -85,7 +95,7 @@ export function errorEnvelope(err: ManifoldError, requestId: string): NextRespon
  * Wrap a route handler: assign a request id, run it, and convert thrown errors into the
  * §0.3 envelope. Unknown errors become a 500 with a generic message (details logged).
  */
-export async function handle(
+export async function wrapInEnvelope(
   fn: (requestId: string) => Promise<Response>,
 ): Promise<Response> {
   const requestId = newRequestId();

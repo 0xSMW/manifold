@@ -9,7 +9,7 @@ import { audit } from "@/lib/audit";
 import { generateSecret } from "@/lib/crypto";
 import { genId } from "@/lib/ids";
 import {
-  handle,
+  wrapInEnvelope,
   jsonBody,
   ok,
   requireString,
@@ -33,7 +33,7 @@ interface KeyRow {
 }
 
 export async function GET(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "keys:read");
     const rows = await withWorkspace(principal.workspaceId, (sql) =>
       sql<KeyRow[]>`
@@ -63,7 +63,7 @@ export async function GET(req: Request): Promise<Response> {
 }
 
 export async function POST(req: Request): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "keys:write");
     const body = await jsonBody(req);
     const profileId = requireString(body, "profileId");

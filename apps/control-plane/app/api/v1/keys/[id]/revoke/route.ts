@@ -3,7 +3,7 @@ import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
 import { publishKeysOnly } from "@/lib/snapshot";
 import { audit } from "@/lib/audit";
-import { handle, ok, ManifoldError } from "@/lib/http";
+import { wrapInEnvelope, ok, ManifoldError } from "@/lib/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ export async function POST(
   req: Request,
   ctx: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  return handle(async (requestId) => {
+  return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "keys:write");
     const { id } = await ctx.params;
 

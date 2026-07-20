@@ -50,6 +50,12 @@ export const REASON_CODES = [
   // config
   "CONFIG_PRECONDITION_FAILED",
   "CONFIG_TRIPWIRE_HELD",
+  // guard — terminal codes the gateway emits into an observation's reasonCodes[] before any
+  // provider dispatch: pre-auth profile miss, egress (SSRF) block, credential decrypt failure.
+  // handleRequest.emitTerminal stamps these into a ReasonCode[] (§8.3), so they must be registered.
+  "PROFILE_UNKNOWN",
+  "SSRF_BLOCKED",
+  "CREDENTIAL_UNAVAILABLE",
 ] as const;
 
 export const ReasonCode = z.enum(REASON_CODES);
