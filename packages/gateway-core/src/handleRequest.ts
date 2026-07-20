@@ -72,6 +72,12 @@ const USAGE_CAPTURE_MAX_BYTES = 256 * 1024;
 function isBufferableJson(upstream: Response): boolean {
   const ct = upstream.headers.get("content-type") ?? "";
   if (!ct.toLowerCase().includes("application/json")) return false;
+  // Do NOT trust content-length for a COMPRESSED body (review HIGH #7 — decompression bomb): undici
+  // transparently decompresses on `.text()`, so a gzip/br/deflate response with a small on-wire
+  // content-length can decode to hundreds of MB / GB. Treat a content-encoded body as a stream (relay,
+  // no buffer, no usage) rather than buffer an unbounded decoded payload into memory.
+  const enc = (upstream.headers.get("content-encoding") ?? "").toLowerCase().trim();
+  if (enc && enc !== "identity") return false;
   const lenHeader = upstream.headers.get("content-length");
   if (lenHeader === null) return false; // unknown length ⇒ treat as a stream, never buffer
   const len = Number(lenHeader);

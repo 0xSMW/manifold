@@ -180,12 +180,16 @@ export async function startServer(opts: ServerOptions = {}): Promise<RunningServ
   const server = createServer((req, res) => {
     handleRequest(ctx, toWebRequest(req))
       .then((response) => writeWebResponse(res, response))
-      .catch((err) => {
+      .catch(() => {
+        // NEVER leak internal error text (review gateway-F4): a driver/postgres error can carry the
+        // host/DSN or other internals straight to the client. handleRequest already maps every known
+        // failure to a reason code + terminal internally; anything reaching here is an unexpected bug,
+        // so return a GENERIC envelope with no error detail.
         res.statusCode = 500;
         res.setHeader("content-type", "application/json");
         res.end(
           JSON.stringify({
-            error: { message: String(err), type: "api_error", param: null, code: "INTERNAL" },
+            error: { message: "internal error", type: "api_error", param: null, code: "INTERNAL" },
           }),
         );
       });

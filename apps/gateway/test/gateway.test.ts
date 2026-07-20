@@ -375,3 +375,23 @@ function listen(server: Server): Promise<number> {
     });
   });
 }
+
+// review HIGH #7 (decompression bomb): a response that declares content-encoding must NOT be buffered
+// on the strength of its (on-wire, compressed) content-length — undici decompresses on .text() to an
+// unbounded size. The guard treats a content-encoded body as a stream: relayed, no usage captured.
+test("#7: a content-encoded JSON response is NOT buffered for usage (decompression-bomb guard)", async () => {
+  const usageBody = JSON.stringify({ usage: { input_tokens: 10, output_tokens: 5 } });
+  const base = { "content-type": "application/json", "content-length": String(Buffer.byteLength(usageBody)) };
+
+  const gz = new FakeFetcher(() => new Response(usageBody, { status: 200, headers: { ...base, "content-encoding": "gzip" } }));
+  const g1 = makeCtx({ snapshot: makeSnapshot(makeTarget()), fetcher: gz });
+  await handleRequest(g1.ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  const t1 = g1.ingest.events.find((e) => e.kind === "terminal");
+  assert.equal(t1?.usage, undefined, "a content-encoded response must NOT be buffered for usage");
+
+  const plain = new FakeFetcher(() => new Response(usageBody, { status: 200, headers: base }));
+  const g2 = makeCtx({ snapshot: makeSnapshot(makeTarget()), fetcher: plain });
+  await handleRequest(g2.ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  const t2 = g2.ingest.events.find((e) => e.kind === "terminal");
+  assert.equal(t2?.usage?.inputTokens, 10, "the identical PLAIN response IS buffered and usage captured");
+});

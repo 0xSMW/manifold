@@ -191,28 +191,35 @@ export function makeDbBudgetReserveFn(
   const { sql } = opts;
   const now = opts.now ?? (() => new Date());
   return async (input: BudgetReserveInput): Promise<BudgetReserveResult> => {
-    const rows = await sql<BudgetAccountMetaRow[]>`
-      SELECT workspace_id, "window"
-      FROM budget_account
-      WHERE id = ${input.budgetAccountId}
-      LIMIT 1
-    `;
-    const acct = rows[0];
-    // A hard budget whose account we cannot resolve is not honorable → fail closed.
-    if (!acct) return { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+    // FAIL CLOSED on ANY driver/connection/deadlock error (review gateway-F4): a throw here would
+    // propagate to the server's top-level catch — a 500 that both leaks internal detail and skips the
+    // budget gate. A hard budget we cannot evaluate MUST deny, never dispatch unmetered.
+    try {
+      const rows = await sql<BudgetAccountMetaRow[]>`
+        SELECT workspace_id, "window"
+        FROM budget_account
+        WHERE id = ${input.budgetAccountId}
+        LIMIT 1
+      `;
+      const acct = rows[0];
+      // A hard budget whose account we cannot resolve is not honorable → fail closed.
+      if (!acct) return { ok: false, reason: "BUDGET_RESERVE_DENIED" };
 
-    const at = now();
-    const result = await budgetReserve(sql, {
-      budgetAccountId: input.budgetAccountId,
-      requestId: reservationRequestId(input.requestId, at),
-      estMicroUsd: input.estMicroUsd,
-      workspaceId: acct.workspace_id,
-      windowStart: bucketStart(acct.window, at),
-      shard: 0,
-    });
-    return result.ok
-      ? { ok: true, reservationId: result.reservationId }
-      : { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+      const at = now();
+      const result = await budgetReserve(sql, {
+        budgetAccountId: input.budgetAccountId,
+        requestId: reservationRequestId(input.requestId, at),
+        estMicroUsd: input.estMicroUsd,
+        workspaceId: acct.workspace_id,
+        windowStart: bucketStart(acct.window, at),
+        shard: 0,
+      });
+      return result.ok
+        ? { ok: true, reservationId: result.reservationId }
+        : { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+    } catch {
+      return { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+    }
   };
 }
 
