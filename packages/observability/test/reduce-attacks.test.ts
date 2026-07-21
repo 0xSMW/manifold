@@ -5,7 +5,7 @@
 // replay determinism, and totality on a missing terminal. Assertions are intentionally strict.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { project, reduce, type ObservationEvent } from "../src/index.js";
+import { project, reduce, type JournalObservationEvent } from "../src/index.js";
 
 // ---------------------------------------------------------------------------------------------
 // Fixtures. A realistic trace: accepted → attempt(A, fails, no bytes) → attempt(B, ok, tokens)
@@ -22,7 +22,7 @@ const PRICE = {
   outputPerMtokMicroUsd: 15_000_000n, // $15.00 / 1M
 } as const;
 
-function richTrace(): ObservationEvent[] {
+function richTrace(): JournalObservationEvent[] {
   return [
     {
       kind: "accepted",
@@ -174,7 +174,7 @@ test("(2) duplicate events do not double-count tokens or attempts (INGEST_DEDUP)
 // ---------------------------------------------------------------------------------------------
 test("(3) no-byte retries add attempts/failovers but cost is exactly zero", () => {
   // Two providers, both fail with no bytes; the request terminates in error. Prices are non-zero.
-  const events: ObservationEvent[] = [
+  const events: JournalObservationEvent[] = [
     {
       kind: "accepted",
       workspaceId: WS,
@@ -251,7 +251,7 @@ test("(4) replay is deterministic: reduce(events) === reduce(events)", () => {
 // (5) Missing terminal ⇒ status reflects incomplete, not a crash. §16.6, ADR-0011.
 // ---------------------------------------------------------------------------------------------
 test("(5) a trace with no terminal event reduces to 'incomplete' without throwing", () => {
-  const events: ObservationEvent[] = [
+  const events: JournalObservationEvent[] = [
     {
       kind: "accepted",
       workspaceId: WS,

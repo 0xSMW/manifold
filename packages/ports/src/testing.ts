@@ -9,8 +9,8 @@ import type {
   Clock,
   Crypto,
   Fetcher,
+  HotPathObservationEvent,
   IngestSink,
-  ObservationEvent,
   Snapshot,
   SnapshotStore,
 } from "./index.js";
@@ -35,8 +35,8 @@ export class FakeSnapshotStore implements SnapshotStore {
 
 /** IngestSink fake: records every emitted event so tests can assert on them. */
 export class FakeIngestSink implements IngestSink {
-  readonly events: ObservationEvent[] = [];
-  async emit(event: ObservationEvent): Promise<void> {
+  readonly events: HotPathObservationEvent[] = [];
+  async emit(event: HotPathObservationEvent): Promise<void> {
     this.events.push(event);
   }
 }

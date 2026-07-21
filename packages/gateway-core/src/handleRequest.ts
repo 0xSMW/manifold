@@ -7,13 +7,14 @@ import type {
   Clock,
   Crypto,
   Fetcher,
+  HotPathObservationEvent,
   IngestSink,
-  ObservationEvent,
   ObservationUsage,
   Snapshot,
   SnapshotTarget,
 } from "@manifold/ports";
 import type { ReasonCode } from "@manifold/contracts";
+import { ulidFromEntropy } from "@manifold/ids";
 import { authenticate } from "./authenticate.js";
 import { enforceRequest } from "./enforce.js";
 import { errorResponse, shapeForCode } from "./errors.js";
@@ -123,34 +124,17 @@ function parseUsageBlock(body: unknown): ObservationUsage | undefined {
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/** Encode a 48-bit millisecond timestamp as a ULID's 10-char Crockford-base32 time prefix. */
-function encodeUlidTime(ms: number): string {
-  let out = "";
-  let n = Math.floor(ms);
-  for (let i = 0; i < 10; i++) {
-    out = CROCKFORD[n % 32]! + out;
-    n = Math.floor(n / 32);
-  }
-  return out;
-}
-
 /**
- * Mint the trace id as a REAL ULID (SPEC §6.7 B1, §16.3): its 10-char time prefix is `nowMs`, so
- * `ulidCreatedAt` decodes it back to the request instant — giving the hard-budget reservation an
- * accurate created_at (and the right monthly partition) instead of throwing on a `trace_<hex>` that
- * is NOT a ULID. The 16 random chars are sourced from the crypto port (gateway-core stays pure — no
- * @manifold/budget import); a ULID is itself a valid trace id and the reservation idempotency anchor.
+ * Mint the trace id as a REAL ULID (SPEC §6.7 B1, §16.3) via the ONE shared id vocabulary
+ * (`@manifold/ids`): its 10-char time prefix is `nowMs`, so `ulidCreatedAt` decodes it back to the
+ * request instant — giving the hard-budget reservation an accurate created_at (and the right monthly
+ * partition) instead of throwing on a `trace_<hex>` that is NOT a ULID. The 16 random chars are
+ * sourced from the crypto port (gateway-core stays pure — `@manifold/ids` is a zero-dep leaf, so this
+ * imports NO @manifold/budget and NO driver); a ULID is itself a valid trace id and the reservation
+ * idempotency anchor.
  */
 function mintTraceUlid(crypto: Crypto, nowMs: number): string {
-  const entropy = crypto.randomId("t"); // prefixed random hex; sample its chars as a random source
-  let rand = "";
-  for (let i = 0; i < 16; i++) {
-    const code = entropy.charCodeAt(entropy.length - 1 - i) || i * 31 + 7;
-    rand += CROCKFORD[code % 32]!;
-  }
-  return encodeUlidTime(nowMs) + rand;
+  return ulidFromEntropy(nowMs, crypto.randomId("t"));
 }
 
 export async function handleRequest(ctx: GatewayContext, request: Request): Promise<Response> {
@@ -162,8 +146,8 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
 
   // Best-effort observation; never blocks or fails the client response (§8.1 public path).
   let seq = 0;
-  const emit = (e: Omit<ObservationEvent, "seq" | "occurredAt" | "traceId">): void => {
-    const event: ObservationEvent = {
+  const emit = (e: Omit<HotPathObservationEvent, "seq" | "occurredAt" | "traceId">): void => {
+    const event: HotPathObservationEvent = {
       traceId,
       seq: seq++,
       // Stamp occurredAt per-event at emit time (NOT the single request-start `now`), so

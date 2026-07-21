@@ -6,16 +6,24 @@
 // These mirror the governance schema in SPEC §6.6 (`model_entitlement`,
 // `request_constraint`) as pure in-memory value shapes so the SAME function runs in the
 // gateway authorizer and the Policies simulator (SPEC §11 Policies, §21.5).
-import type { ReasonCode } from "@manifold/contracts";
+import type {
+  PolicyEffect,
+  PolicyOnViolation,
+  PolicySubjectKind,
+  ReasonCode,
+} from "@manifold/contracts";
 
+// SPEC §6.6 policy vocabulary — owned by @manifold/contracts (the leaf). Aliased to the
+// evaluator's local names so the same literal sets back the gateway authorizer, the ports
+// snapshot types, and the DB CHECKs without drift.
 /** Which class of subject a `ModelEntitlement` grants to (SPEC §6.6 `subject_kind`). */
-export type SubjectKind = "key_scope" | "team" | "cost_center" | "app" | "all";
+export type SubjectKind = PolicySubjectKind;
 
 /** Effect of an entitlement (SPEC §6.6 `effect`). */
-export type EntitlementEffect = "allow" | "deny";
+export type EntitlementEffect = PolicyEffect;
 
 /** What a constraint does when a param is out of bounds (SPEC §6.6 `on_violation`). */
-export type OnViolation = "clamp" | "reject";
+export type OnViolation = PolicyOnViolation;
 
 /**
  * A single subject→model grant (SPEC §6.6 `model_entitlement`).

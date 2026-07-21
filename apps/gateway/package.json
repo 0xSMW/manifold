@@ -16,6 +16,7 @@
     "@manifold/database": "0.0.0",
     "@manifold/domain": "0.0.0",
     "@manifold/gateway-core": "0.0.0",
+    "@manifold/ids": "0.0.0",
     "@manifold/observability": "0.0.0",
     "@manifold/ports": "0.0.0",
     "@manifold/crypto": "*",

@@ -20,7 +20,8 @@
   "dependencies": {
     "@manifold/contracts": "*",
     "@manifold/database": "*",
-    "@manifold/domain": "*"
+    "@manifold/domain": "*",
+    "@manifold/ids": "*"
   },
   "devDependencies": {
     "postgres": "^3.4.5",

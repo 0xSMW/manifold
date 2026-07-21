@@ -8,6 +8,7 @@
   },
   "references": [
     { "path": "../contracts" },
+    { "path": "../ids" },
     { "path": "../ports" },
     { "path": "../gateway-policy" }
   ],

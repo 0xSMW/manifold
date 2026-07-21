@@ -88,6 +88,33 @@ export const ERROR_CODES = [
 export const ErrorCode = z.enum(ERROR_CODES);
 export type ErrorCode = z.infer<typeof ErrorCode>;
 
+// ────────────────────────────────────────────────────────────────────────────
+// Policy vocabulary (SPEC §6.6). Single source for the governance literal sets
+// `subject_kind` / `effect` / `on_violation`. Owned here (the leaf) so ports,
+// gateway-policy, and the DB CHECKs never drift: @manifold/ports and
+// @manifold/gateway-policy re-export these; the `model_entitlement` /
+// `request_constraint` CHECK constraints in @manifold/database derive from the
+// SAME literal set (kept in sync by hand — see the comment on those checks).
+// ────────────────────────────────────────────────────────────────────────────
+
+/** SPEC §6.6 `subject_kind`: which class of principal a `model_entitlement` grants to. */
+export const POLICY_SUBJECT_KINDS = [
+  "key_scope",
+  "team",
+  "cost_center",
+  "app",
+  "all",
+] as const;
+export type PolicySubjectKind = (typeof POLICY_SUBJECT_KINDS)[number];
+
+/** SPEC §6.6 `effect`: whether an entitlement allows or denies. */
+export const POLICY_EFFECTS = ["allow", "deny"] as const;
+export type PolicyEffect = (typeof POLICY_EFFECTS)[number];
+
+/** SPEC §6.6 `on_violation`: what a `request_constraint` does when a param is out of bounds. */
+export const POLICY_ON_VIOLATIONS = ["clamp", "reject"] as const;
+export type PolicyOnViolation = (typeof POLICY_ON_VIOLATIONS)[number];
+
 /** OpenAI-shaped data-plane error envelope (SPEC §0.3). */
 export const GatewayError = z.object({
   error: z.object({

@@ -20,7 +20,12 @@ export const OBSERVATION_TERMINAL_STATES: readonly ObservationState[] = [
   "deleted",
 ];
 
-export type ObservationEvent =
+/**
+ * The observation LIFECYCLE state-machine event (SPEC §5.4, §13) — distinct from the hot-path
+ * `HotPathObservationEvent` (@manifold/ports) and the journal `JournalObservationEvent`
+ * (@manifold/observability). This drives `event_appended → reduced → projected → compacted → deleted`.
+ */
+export type ObservationLifecycleEvent =
   /** event_appended → reduced: reduce(events for trace) → Observation (deterministic). */
   | { type: "REDUCE" }
   /** reduced → projected: project → trace_summary, usage_record, cost_ledger. */
@@ -32,7 +37,7 @@ export type ObservationEvent =
 
 export function transitionObservation(
   state: ObservationState,
-  event: ObservationEvent,
+  event: ObservationLifecycleEvent,
 ): Transition<ObservationState> {
   switch (state) {
     case "event_appended":

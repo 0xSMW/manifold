@@ -1,6 +1,6 @@
 // packages/observability/src/mapPortsEvent.ts — the ports-flat → journal event mapper (#113).
 //
-// The gateway (@manifold/ports) emits a FLAT `ObservationEvent` (one row per emit, no tenancy /
+// The gateway (@manifold/ports) emits a FLAT `HotPathObservationEvent` (one row per emit, no tenancy /
 // dedup anchor, token counts as plain numbers, prices as decimal strings — everything the
 // passthrough core can produce without importing @manifold/domain). The reducer (reduce.ts) consumes
 // the RICHER journal event: kind-discriminated payloads, a (workspace_id, producer_id,
@@ -13,7 +13,7 @@
 // not per-request data the flat event carries. Keeping the translation in observability means the one
 // place that DEFINES the journal shape also owns turning foreign events into it.
 import type {
-  ObservationEvent as PortsEvent,
+  HotPathObservationEvent,
   ObservationUsage,
   SnapshotPrice,
 } from "@manifold/ports";
@@ -21,7 +21,7 @@ import { parseMicroUsdString } from "@manifold/ports/price";
 import type { PriceMicroUsd, TokenCounts } from "@manifold/domain";
 import type {
   AcceptedEvent,
-  ObservationEvent as JournalEvent,
+  JournalObservationEvent,
   ObservationStatus,
   ProviderAttemptEvent,
   ProviderAttemptOutcome,
@@ -74,7 +74,7 @@ function priceFromSnapshot(p: SnapshotPrice | undefined): PriceMicroUsd | undefi
 }
 
 /** Map a flat event's HTTP status + reason codes to the durable `observation.status` set (§6.8). */
-function mapStatus(e: PortsEvent): ObservationStatus {
+function mapStatus(e: HotPathObservationEvent): ObservationStatus {
   const codes = e.reasonCodes;
   if (codes.some((c) => c === "PROVIDER_TIMEOUT")) return "timeout";
   if (codes.some((c) => c === "BUDGET_RESERVE_DENIED" || c.startsWith("POLICY_"))) return "denied";
@@ -91,11 +91,14 @@ function mapOutcome(status: number | null): ProviderAttemptOutcome {
 }
 
 /**
- * Map ONE flat ports `ObservationEvent` to the journal event `reduce()` consumes. The dedup
+ * Map ONE flat `HotPathObservationEvent` to the journal event `reduce()` consumes. The dedup
  * anchor is `(workspaceId, producerId, `${traceId}:${seq}`)`: `seq` is unique per (trace, producer),
  * so re-delivery of the SAME emit collapses (idempotent) while distinct emits never collide.
  */
-export function journalFromPortsEvent(e: PortsEvent, ctx: JournalContext): JournalEvent {
+export function journalFromPortsEvent(
+  e: HotPathObservationEvent,
+  ctx: JournalContext,
+): JournalObservationEvent {
   const base = {
     workspaceId: ctx.workspaceId,
     traceId: e.traceId,
@@ -157,8 +160,8 @@ export function journalFromPortsEvent(e: PortsEvent, ctx: JournalContext): Journ
 
 /** Map every flat event of a trace to its journal event (convenience over `journalFromPortsEvent`). */
 export function journalFromPortsEvents(
-  events: readonly PortsEvent[],
+  events: readonly HotPathObservationEvent[],
   ctx: JournalContext,
-): JournalEvent[] {
+): JournalObservationEvent[] {
   return events.map((e) => journalFromPortsEvent(e, ctx));
 }

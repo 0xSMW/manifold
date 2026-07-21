@@ -11,7 +11,7 @@
 // DB writes and the §6.10 cost math are REAL. A durable queue/worker is the production transport, but
 // it reduces/projects with this exact code.
 import type { Sql, TransactionSql } from "@manifold/database";
-import type { ObservationEvent as PortsEvent } from "@manifold/ports";
+import type { HotPathObservationEvent } from "@manifold/ports";
 import { commit, ulid, ulidCreatedAt, type CommitResult } from "@manifold/budget";
 import {
   journalFromPortsEvents,
@@ -28,7 +28,7 @@ const p = (b: bigint): string => b.toString();
 export interface IngestTraceInput {
   sql: Sql;
   /** The flat events the gateway emitted for ONE trace. */
-  events: readonly PortsEvent[];
+  events: readonly HotPathObservationEvent[];
   /** Tenant scope + producer id — the journal dedup anchor the flat events do not carry. */
   workspaceId: string;
   producerId: string;

@@ -19,6 +19,7 @@
   "dependencies": {
     "@manifold/contracts": "0.0.0",
     "@manifold/gateway-policy": "0.0.0",
+    "@manifold/ids": "0.0.0",
     "@manifold/ports": "0.0.0"
   }
 }

@@ -1,7 +1,12 @@
 // @manifold/ports — platform-adapter INTERFACES only. Pure types, ZERO platform imports.
 // SPEC §4.4 (port interfaces), §7.2 (snapshot schema). Adapters (apps/gateway, adapters-*)
 // implement these; gateway-core depends only on the interfaces, never on an adapter (§4.2).
-import type { ReasonCode } from "@manifold/contracts";
+import type {
+  PolicyEffect,
+  PolicyOnViolation,
+  PolicySubjectKind,
+  ReasonCode,
+} from "@manifold/contracts";
 
 // ────────────────────────────────────────────────────────────────────────────
 // Snapshot schema (SPEC §7.2). The hot-path blob the gateway reads to route,
@@ -60,12 +65,11 @@ export interface SnapshotKey {
 // reads here is passed straight to `policy.evaluate()` in the core (SPEC §21.5 parity).
 // ────────────────────────────────────────────────────────────────────────────
 
-/** SPEC §6.6 `subject_kind`. */
-export type PolicySubjectKind = "key_scope" | "team" | "cost_center" | "app" | "all";
-/** SPEC §6.6 `effect`. */
-export type PolicyEntitlementEffect = "allow" | "deny";
-/** SPEC §6.6 `on_violation`. */
-export type PolicyOnViolation = "clamp" | "reject";
+// SPEC §6.6 policy vocabulary — owned by @manifold/contracts (the leaf), re-exported
+// here so the snapshot types stay in lockstep with the evaluator and DB CHECKs.
+export type { PolicySubjectKind, PolicyOnViolation };
+/** SPEC §6.6 `effect`. Alias of @manifold/contracts' `PolicyEffect`. */
+export type PolicyEntitlementEffect = PolicyEffect;
 
 export interface SnapshotModelEntitlement {
   subjectKind: PolicySubjectKind;
@@ -227,7 +231,13 @@ export interface ObservationUsage {
   audioOutputTokens?: number;
 }
 
-export interface ObservationEvent {
+/**
+ * The FLAT hot-path observation event the gateway emits (SPEC §8.3 / ADR-0011). One row per emit,
+ * no tenancy / dedup anchor, token counts as plain numbers, prices as decimal strings — everything
+ * the passthrough core produces without importing @manifold/domain. `@manifold/observability`'s
+ * `journalFromPortsEvent` (the single bridge) widens this into `JournalObservationEvent`.
+ */
+export interface HotPathObservationEvent {
   /** Idempotency anchor for the trace (§8.1). */
   traceId: string;
   kind: ObservationEventKind;
@@ -267,7 +277,7 @@ export interface SnapshotStore {
 
 export interface IngestSink {
   /** Emit an observation event (after()+ledger on Vercel | Queue on Cloudflare). */
-  emit(event: ObservationEvent): Promise<void>;
+  emit(event: HotPathObservationEvent): Promise<void>;
 }
 
 export interface Clock {

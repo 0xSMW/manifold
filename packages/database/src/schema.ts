@@ -641,6 +641,9 @@ export const modelEntitlement = pgTable(
   },
   (t) => [
     index("entitlement_revision_idx").on(t.policyRevisionId),
+    // SPEC §6.6. These literal sets are the DB projection of the policy vocabulary owned by
+    // @manifold/contracts (`POLICY_SUBJECT_KINDS` / `POLICY_EFFECTS`). Keep them in lockstep:
+    // any change to the const arrays there must be mirrored by a new migration here.
     check(
       "entitlement_subject_kind_chk",
       sql`${t.subjectKind} IN ('key_scope','team','cost_center','app','all')`,
@@ -664,6 +667,8 @@ export const requestConstraint = pgTable(
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (t) => [
+    // SPEC §6.6. DB projection of `POLICY_ON_VIOLATIONS`, owned by @manifold/contracts; keep in
+    // lockstep — a change to that const array must be mirrored by a new migration here.
     check(
       "request_constraint_on_violation_chk",
       sql`${t.onViolation} IN ('clamp','reject')`,

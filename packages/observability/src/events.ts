@@ -92,7 +92,13 @@ export interface AnnotationEvent extends BaseEvent {
   payload: Record<string, unknown>;
 }
 
-export type ObservationEvent =
+/**
+ * The RICH append-only journal event the reducer (`reduce`) consumes (SPEC §6.8, ADR-0011):
+ * kind-discriminated payloads, a (workspace_id, producer_id, idempotency_key) dedup anchor, and
+ * `bigint` token/price math. `journalFromPortsEvent` is the single bridge that maps the gateway's
+ * flat `HotPathObservationEvent` (@manifold/ports) into this shape.
+ */
+export type JournalObservationEvent =
   | AcceptedEvent
   | ProviderAttemptEvent
   | TerminalEvent

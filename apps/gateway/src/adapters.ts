@@ -13,12 +13,13 @@ import type {
   Clock,
   Crypto,
   Fetcher,
+  HotPathObservationEvent,
   IngestSink,
-  ObservationEvent,
   Snapshot,
   SnapshotStore,
 } from "@manifold/ports";
 import { isPrivateIp, schemeAllowed, type SsrfPolicy, STRICT_SSRF } from "@manifold/gateway-core";
+import { isUlid, ulidFromBytes } from "@manifold/ids";
 import { bucketStart, reserve as budgetReserve } from "@manifold/budget";
 // `@manifold/database` is the sole owner of the postgres driver (§4.2): we take both its `Sql` type
 // and its `getClient` opener from it, so the reservation connection is created (and its json/jsonb
@@ -61,7 +62,7 @@ export class JsonlIngestSink implements IngestSink {
   constructor(path: string) {
     this.path = path;
   }
-  async emit(event: ObservationEvent): Promise<void> {
+  async emit(event: HotPathObservationEvent): Promise<void> {
     await appendFile(this.path, `${JSON.stringify(event)}\n`);
   }
 }
@@ -117,53 +118,24 @@ export class BudgetReserverAdapter implements BudgetReserver {
 // off the budget_account once, derive `windowStart = bucketStart(account.window, now)`, and call
 // reserve. gateway-core never imports @manifold/budget or a driver — this adapter is the seam.
 
-const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/**
- * Is `s` a syntactically valid 26-char Crockford-base32 ULID whose 48-bit timestamp does not
- * overflow? A ULID's 10-char time prefix (50 bits) carries a 48-bit millisecond timestamp, so its
- * FIRST char is always `0`–`7`; a 26-char Crockford lookalike starting `8`–`Z` decodes to an
- * impossible (overflowed) millisecond. Rejecting it here means such a lookalike is re-synthesized
- * with a real `now` timestamp rather than passed through to set a garbage reservation created_at.
- */
-function isUlid(s: string): boolean {
-  if (s.length !== 26) return false;
-  const upper = s.toUpperCase();
-  for (const ch of upper) {
-    if (!CROCKFORD.includes(ch)) return false;
-  }
-  return upper[0]! <= "7"; // time prefix must not overflow the 48-bit timestamp
-}
-
-/** Encode a 48-bit millisecond timestamp as a ULID's 10-char time prefix. */
-function encodeUlidTime(ms: number): string {
-  let out = "";
-  let n = Math.floor(ms);
-  for (let i = 0; i < 10; i++) {
-    out = CROCKFORD[n % 32]! + out;
-    n = Math.floor(n / 32);
-  }
-  return out;
-}
-
 /**
  * The ULID `request_id` the reservation transaction uses. `@manifold/budget.reserve` derives
  * `created_at` (and thus the monthly partition + the `(budget_account_id, request_id, created_at)`
- * idempotency key) from this ULID's timestamp, so it MUST be a ULID.
+ * idempotency key) from this ULID's timestamp, so it MUST be a ULID — validated and synthesized via
+ * the ONE shared id vocabulary (`@manifold/ids`).
  *
- * When the gateway trace-id already IS a ULID (the production intent, per budget/ulid.ts) we pass it
- * straight through — full idempotency + trace linkage. Otherwise (today's `trace_<hex>` ids) we
- * synthesize a ULID whose TIME is `now` — so `created_at ≈ now` and the reserve's own
- * `bucketStart(window, created_at)` lands in the SAME window we reserved against — and whose 16
- * random chars are a deterministic function of the trace-id, so the reservation still ties back to
- * the trace and same-millisecond retries of one trace collapse to a single reservation.
+ * When the gateway trace-id already IS a ULID (the production intent — the pure core now mints one)
+ * we pass it straight through — full idempotency + trace linkage. Otherwise (a legacy `trace_<hex>`
+ * id, or a 26-char Crockford lookalike whose timestamp overflows) we synthesize a ULID whose TIME is
+ * `now` — so `created_at ≈ now` and the reserve's own `bucketStart(window, created_at)` lands in the
+ * SAME window we reserved against — and whose 16 random chars are a deterministic function of the
+ * trace-id's sha256, so the reservation still ties back to the trace and same-millisecond retries of
+ * one trace collapse to a single reservation.
  */
 export function reservationRequestId(traceId: string, now: Date): string {
   if (isUlid(traceId)) return traceId.toUpperCase();
   const digest = createHash("sha256").update(traceId).digest();
-  let rand = "";
-  for (let i = 0; i < 16; i++) rand += CROCKFORD[digest[i]! % 32]!;
-  return encodeUlidTime(now.getTime()) + rand;
+  return ulidFromBytes(now.getTime(), digest);
 }
 
 interface BudgetAccountMetaRow {

@@ -3,6 +3,7 @@
 // carries X-Request-Id and X-Manifold-Schema (§10.1).
 import { NextResponse } from "next/server";
 import { SCHEMA_VERSION } from "@manifold/contracts";
+import { prefixedUlid } from "@manifold/ids";
 
 /**
  * `error.code` on the control-plane envelope. §0.2/§0.3 defines the ErrorCode enum
@@ -53,7 +54,9 @@ export class ManifoldError extends Error {
 }
 
 export function newRequestId(): string {
-  return `req_${crypto.randomUUID().replace(/-/g, "")}`;
+  // The ONE id vocabulary (§6.1): a `req_`-prefixed Crockford ULID, the same shape config/control-
+  // plane text PKs and gateway trace-ids use — not a bespoke UUID hex fork.
+  return prefixedUlid("req");
 }
 
 /**

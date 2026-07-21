@@ -16,7 +16,7 @@ import type {
   SnapshotRoute,
   SnapshotTarget,
 } from "@manifold/ports";
-import { randomBytes } from "node:crypto";
+import { prefixedUlid } from "@manifold/ids";
 import { computeContentHash } from "./canonical.js";
 import * as q from "./db.js";
 import type { PgSql, PriceRow } from "./db.js";
@@ -43,9 +43,15 @@ function priceFromRow(row: PriceRow): SnapshotPrice {
   return out;
 }
 
-/** Prefixed-ULID-ish id (§6.1 convention: prefixed text). Monotonic-ish for readability. */
+/**
+ * Prefixed id (§6.1 convention: `<prefix>_<ULID>`). Delegates to the ONE id vocabulary
+ * (`@manifold/ids`) so config/control-plane text PKs are real Crockford ULIDs — the same shape the
+ * gateway and budget mint — instead of the old `prefix_<base36-time><hex>` fork. Kept as a thin
+ * re-exported wrapper so every `genId("prefix")` call site (and control-plane's `lib/ids`) is
+ * unchanged.
+ */
 export function genId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}${randomBytes(9).toString("hex")}`;
+  return prefixedUlid(prefix);
 }
 
 /**

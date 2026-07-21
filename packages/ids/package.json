@@ -1,0 +1,23 @@
+{
+  "name": "@manifold/ids",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The one id vocabulary (SPEC §6.1): Crockford-base32 ULID mint/encode/decode + prefixedUlid. Pure ES, zero deps — safe for the pure gateway-core and for @manifold/budget alike, so both mint ONE compatible id shape.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "test": "node --experimental-strip-types --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
