@@ -231,8 +231,15 @@ export async function readCredential(
 }
 
 export async function readDek(sql: PgSql, id: string): Promise<DekRow | null> {
+  // Only an ACTIVE DEK may ship in the signed snapshot (mirrors readCredential's live-only filter,
+  // review bug): `status` is 'active' | 'retiring' | 'revoked'. Without this predicate a DEK mid
+  // rotation (retiring) or already revoked still gets embedded — its wrapped bytes travel to the
+  // gateway even though the platform no longer considers it current, and a revoked DEK should never
+  // leave the DB at all. A non-active DEK returns null here, so assembleSnapshot must drop the
+  // referencing credential/target rather than ship stale/forbidden key material.
   const rows = await sql<DekRow[]>`
-    SELECT id, wrapped_dek FROM data_encryption_key WHERE id = ${id} LIMIT 1`;
+    SELECT id, wrapped_dek FROM data_encryption_key
+    WHERE id = ${id} AND status = 'active' LIMIT 1`;
   return rows[0] ?? null;
 }
 

@@ -183,6 +183,55 @@ before(async () => {
       (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url, weight) VALUES
       ('tg_rb','ws1','rev_rb','cred_openai','off1','ar1',NULL,100);
     UPDATE gateway_route SET active_revision_id = 'rev_rb' WHERE id = 'route_rb';
+
+    -- ── Bug fix (db.ts readDek): a credential whose DEK is NOT status='active' (retiring/revoked)
+    --    must not ship that DEK's wrapped bytes in the built snapshot.
+    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
+      ('inst_dek','ws1','inst-dek','{"kind":"test"}');
+    INSERT INTO gateway_ingress_profile
+      (id, workspace_id, installation_id, hostname, mode, auth_config) VALUES
+      ('prof_dek','ws1','inst_dek','dek.local','public_app','{}');
+    INSERT INTO data_encryption_key (id, workspace_id, wrapped_dek, kek_id, status) VALUES
+      ('dek_retiring','ws1','\\xfeedface','kek1','retiring');
+    INSERT INTO provider_credential
+      (id, workspace_id, provider, label, encrypted_secret, dek_id, base_url, allowed_hosts, status, revoked_at) VALUES
+      ('cred_dek_retiring','ws1','openai','retiring-dek key','\\xc0ffee','dek_retiring',NULL,'["api.openai.com"]','valid',NULL);
+    INSERT INTO gateway_route (id, workspace_id, installation_id, public_name, endpoint_kind) VALUES
+      ('route_dek','ws1','inst_dek','dek-route','chat');
+    INSERT INTO gateway_route_revision
+      (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
+      ('rev_dek','ws1','route_dek','ordered','{}','{"overall_ms":30000}','sha256:rdek');
+    INSERT INTO gateway_target
+      (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url) VALUES
+      ('tg_dek','ws1','rev_dek','cred_dek_retiring','off1','ar1',NULL);
+    UPDATE gateway_route SET active_revision_id = 'rev_dek' WHERE id = 'route_dek';
+
+    -- ── Bug fix (plan.ts tripwires): a budget account whose enforcement flips hard -> advisory.
+    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
+      ('inst_budget_tw','ws1','inst-budget-tw','{"kind":"test"}');
+    INSERT INTO gateway_ingress_profile
+      (id, workspace_id, installation_id, hostname, mode, auth_config) VALUES
+      ('prof_budget_tw','ws1','inst_budget_tw','budgettw.local','public_app','{}');
+    INSERT INTO budget_account
+      (id, workspace_id, scope_type, unit, "window", limit_amount, enforcement, pricing_catalog_revision_id) VALUES
+      ('ba_hard_tw','ws1','key','cost_microusd','monthly',1000000,'hard','pcr_hard_tw');
+    INSERT INTO virtual_key
+      (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, budget_account_id) VALUES
+      ('vk_budget_tw','ws1','prof_budget_tw','sk-budtw','\\xb0da','[]','[]','ba_hard_tw');
+
+    -- ── Bug fix (plan.ts tripwires): removing a deny entitlement (not just allow) is a tripwire.
+    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
+      ('inst_deny_tw','ws1','inst-deny-tw','{"kind":"test"}');
+    INSERT INTO gateway_policy (id, workspace_id, name) VALUES ('pol_deny_tw','ws1','deny-tw-policy');
+    INSERT INTO gateway_policy_revision (id, workspace_id, policy_id, content_hash) VALUES
+      ('polrev_deny_tw','ws1','pol_deny_tw','sha256:polrevdenytw');
+    UPDATE gateway_policy SET active_revision_id = 'polrev_deny_tw' WHERE id = 'pol_deny_tw';
+    INSERT INTO gateway_ingress_profile
+      (id, workspace_id, installation_id, hostname, mode, auth_config, policy_revision_id) VALUES
+      ('prof_deny_tw','ws1','inst_deny_tw','denytw.local','public_app','{}','polrev_deny_tw');
+    INSERT INTO model_entitlement
+      (id, workspace_id, policy_revision_id, subject_kind, subject_ref, canonical_model_id, offering_id, effect) VALUES
+      ('ent_deny_tw','ws1','polrev_deny_tw','all',NULL,'cm1',NULL,'deny');
   `);
 }, { timeout: 300_000 });
 
@@ -432,4 +481,83 @@ test("rollback: republish runs only after commit (publish failure ⇒ the DB rol
   assert.equal(inst[0].applied_config_revision, rev1, "installation must point at the rolled-back-to revision");
   const rev2row = await sql`SELECT status FROM gateway_config_revision WHERE id = ${rev2}`;
   assert.equal(rev2row[0].status, "rolled_back", "the prior active revision must be marked rolled_back");
+});
+
+// ── Bug fix (db.ts readDek): a non-active (retiring/revoked) DEK must not ship its wrapped bytes ─
+test("build: a non-active DEK (retiring/revoked) does not ship its wrapped bytes in the snapshot", async () => {
+  const snap = await buildSnapshot(sql, "inst_dek");
+  const target = allTargets(snap).find((t) => t.credentialId === "cred_dek_retiring");
+  assert.ok(target, "the target must still be present (its credential itself is live/valid)");
+  // Pre-fix, readDek ignored `status` and returned the retiring DEK's wrapped bytes verbatim
+  // (base64 of \xfeedface, non-empty). Post-fix, readDek requires status='active', so a
+  // retiring/revoked DEK resolves to null and build.ts ships an empty string instead.
+  assert.equal(
+    target.wrappedDek,
+    "",
+    `a non-active DEK's wrapped bytes must not ship in the snapshot; got ${JSON.stringify(target.wrappedDek)}`,
+  );
+});
+
+// ── Bug fix (plan.ts tripwires): a budget hard->advisory enforcement flip requires approval ─────
+test("plan: a budget hard->advisory enforcement flip is a tripwire requiring approval", async () => {
+  const s1 = await buildSnapshot(sql, "inst_budget_tw");
+  assert.equal(s1.budgets["ba_hard_tw"]?.enforcement, "hard", "fixture must start hard");
+  await apply(sql, await plan(sql, "inst_budget_tw", s1), okStore());
+
+  // Relax the SAME account from hard to advisory — no route/entitlement change at all.
+  await sql`UPDATE budget_account SET enforcement = 'advisory' WHERE id = 'ba_hard_tw'`;
+  const s2 = await buildSnapshot(sql, "inst_budget_tw");
+  assert.equal(s2.budgets["ba_hard_tw"]?.enforcement, "advisory");
+  const p2 = await plan(sql, "inst_budget_tw", s2);
+
+  const tw = p2.tripwireItems.find((t) => t.kind === "budget_enforcement_relaxed" && t.ref === "ba_hard_tw");
+  assert.ok(
+    tw,
+    `a hard->advisory budget flip must produce a tripwire; got ${JSON.stringify(p2.tripwireItems)}`,
+  );
+
+  // apply() must hold it without a matching approval...
+  const rejected = await apply(sql, p2, okStore());
+  assert.equal(rejected.outcome, "rejected");
+  assert.equal(rejected.reasonCode, "CONFIG_TRIPWIRE_HELD");
+  assert.equal(rejected.revisionId, null, "a held budget tripwire must not produce a new revision");
+
+  // ...and let it through once approved.
+  const approvals: Approval[] = [{ kind: tw!.kind, ref: tw!.ref, planHash: p2.planHash }];
+  const accepted = await apply(sql, p2, okStore(), approvals);
+  assert.equal(accepted.outcome, "accepted");
+  assert.equal(accepted.revisionId, s2.meta.revision);
+});
+
+// ── Bug fix (plan.ts tripwires): removing a `deny` entitlement is ALSO a tripwire (not just allow) ─
+test("plan: removing a deny entitlement is a tripwire requiring approval (not allow-only)", async () => {
+  const s1 = await buildSnapshot(sql, "inst_deny_tw");
+  const pol1 = s1.policies["polrev_deny_tw"];
+  assert.ok(
+    pol1?.modelEntitlements.some((e) => e.effect === "deny"),
+    "fixture must carry a deny entitlement in the base",
+  );
+  await apply(sql, await plan(sql, "inst_deny_tw", s1), okStore());
+
+  // Remove the deny entitlement entirely — access it used to block is now silently open.
+  await sql`DELETE FROM model_entitlement WHERE id = 'ent_deny_tw'`;
+  const s2 = await buildSnapshot(sql, "inst_deny_tw");
+  const p2 = await plan(sql, "inst_deny_tw", s2);
+
+  const tw = p2.tripwireItems.find((t) => t.kind === "entitlement_removal" && t.ref.startsWith("deny:"));
+  assert.ok(
+    tw,
+    `removing a deny entitlement must produce a tripwire; got ${JSON.stringify(p2.tripwireItems)}`,
+  );
+
+  // apply() must hold it without a matching approval...
+  const rejected = await apply(sql, p2, okStore());
+  assert.equal(rejected.outcome, "rejected");
+  assert.equal(rejected.reasonCode, "CONFIG_TRIPWIRE_HELD");
+
+  // ...and let it through once approved.
+  const approvals: Approval[] = [{ kind: tw!.kind, ref: tw!.ref, planHash: p2.planHash }];
+  const accepted = await apply(sql, p2, okStore(), approvals);
+  assert.equal(accepted.outcome, "accepted");
+  assert.equal(accepted.revisionId, s2.meta.revision);
 });

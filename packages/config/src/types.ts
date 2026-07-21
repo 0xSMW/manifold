@@ -98,7 +98,7 @@ export interface SnapshotPublishStore {
 
 /** A destructive change requiring approval before apply (SPEC §8.2 tripwire). */
 export interface TripwireItem {
-  kind: "route_delete" | "entitlement_removal";
+  kind: "route_delete" | "entitlement_removal" | "budget_enforcement_relaxed";
   ref: string;
   detail: Record<string, unknown>;
 }

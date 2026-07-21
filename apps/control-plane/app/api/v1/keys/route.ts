@@ -140,7 +140,19 @@ export async function POST(req: Request): Promise<Response> {
 
     // Scope-publish the new key into the active snapshot (§8.2 H7) so the snapshot-only gateway
     // authenticates it immediately instead of returning AUTH_KEY_UNKNOWN until a full apply.
-    await publishKeysOnly(principal.workspaceId, created.installationId);
+    //
+    // publishKeysOnly returns `null` on a legitimate no-op (no active revision yet — nothing to
+    // rebuild keys against, so the key enters on the installation's first full apply — or the
+    // rebuild was idempotent) and a ConfigOperation otherwise. A non-null result whose
+    // `outcome !== "accepted"` (e.g. CONFIG_PRECONDITION_FAILED: a concurrent full apply moved the
+    // active revision out from under this scoped publish) means the rebuild did NOT land in the
+    // active snapshot. Pre-fix this return value was discarded entirely, so the caller had no way
+    // to know the gateway might still answer AUTH_KEY_UNKNOWN for this brand-new key (review bug).
+    // We still return the plaintext below — it is returned EXACTLY ONCE (§9.2) and withholding it
+    // here would orphan the just-minted DB row's secret forever — but `published` tells the caller
+    // whether the key is confirmed live in the active snapshot yet or needs a retry / first apply.
+    const publishResult = await publishKeysOnly(principal.workspaceId, created.installationId);
+    const published = publishResult !== null && publishResult.outcome === "accepted";
 
     // Plaintext returned exactly once (§9.2). Never retrievable again.
     return ok(
@@ -148,6 +160,7 @@ export async function POST(req: Request): Promise<Response> {
         keyId,
         displayPrefix: secret.displayPrefix,
         plaintext: secret.plaintext,
+        published,
       },
       requestId,
       201,

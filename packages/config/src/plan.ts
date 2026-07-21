@@ -81,24 +81,45 @@ export async function plan(
   for (const routeKey of diffJson.routes.removed) {
     tripwireItems.push({ kind: "route_delete", ref: routeKey, detail: {} });
   }
-  // Entitlement removals: an `allow` present in a base policy that is gone from the target.
+  // Entitlement removals: an entitlement present in a base policy that is gone from the target.
+  // Both `allow` AND `deny` removals are tripwires: dropping a `deny` silently OPENS access to
+  // whatever it used to block, which is exactly as destructive as dropping an `allow` (review bug
+  // — this loop previously covered `allow` only, so a deny-entitlement removal shipped with no
+  // approval gate at all). `effect` is folded into the ref so an allow-removal and a deny-removal
+  // for the same subject+model never collide under one {kind, ref} approval.
   for (const prid of Object.keys(b.policies)) {
     const basePol = b.policies[prid] as ConfigPolicy | undefined;
     const targetPol = t.policies[prid] as ConfigPolicy | undefined;
-    const baseAllows = new Set(
-      (basePol?.entitlements ?? [])
-        .filter((e) => e.effect === "allow")
-        .map((e) => `${e.subjectKind}:${e.subjectRef ?? "*"}=>${e.offeringId ?? e.canonicalModelId ?? "*"}`),
-    );
-    const targetAllows = new Set(
-      (targetPol?.entitlements ?? [])
-        .filter((e) => e.effect === "allow")
-        .map((e) => `${e.subjectKind}:${e.subjectRef ?? "*"}=>${e.offeringId ?? e.canonicalModelId ?? "*"}`),
-    );
-    for (const a of baseAllows) {
-      if (!targetAllows.has(a)) {
-        tripwireItems.push({ kind: "entitlement_removal", ref: a, detail: { policyRevision: prid } });
+    for (const effect of ["allow", "deny"] as const) {
+      const refOf = (e: { subjectKind: string; subjectRef: string | null; offeringId: string | null; canonicalModelId: string | null }) =>
+        `${effect}:${e.subjectKind}:${e.subjectRef ?? "*"}=>${e.offeringId ?? e.canonicalModelId ?? "*"}`;
+      const baseSet = new Set(
+        (basePol?.entitlements ?? []).filter((e) => e.effect === effect).map(refOf),
+      );
+      const targetSet = new Set(
+        (targetPol?.entitlements ?? []).filter((e) => e.effect === effect).map(refOf),
+      );
+      for (const ref of baseSet) {
+        if (!targetSet.has(ref)) {
+          tripwireItems.push({ kind: "entitlement_removal", ref, detail: { policyRevision: prid, effect } });
+        }
       }
+    }
+  }
+  // Budget enforcement relaxation: a budget account present in both base and target whose
+  // enforcement flips 'hard' -> anything else (i.e. 'advisory'). A hard budget stops dispatch at
+  // cap; silently downgrading it to advisory removes that enforcement with no visible route/
+  // entitlement change to signal it (review bug — no tripwire covered this at all), so a
+  // budget-only edit could relax spend enforcement without approval.
+  for (const id of Object.keys(b.budgets)) {
+    const baseBudget = b.budgets[id] as { enforcement?: string } | undefined;
+    const targetBudget = t.budgets[id] as { enforcement?: string } | undefined;
+    if (baseBudget?.enforcement === "hard" && targetBudget && targetBudget.enforcement !== "hard") {
+      tripwireItems.push({
+        kind: "budget_enforcement_relaxed",
+        ref: id,
+        detail: { from: baseBudget.enforcement, to: targetBudget.enforcement },
+      });
     }
   }
 

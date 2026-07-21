@@ -21,6 +21,7 @@ import { parseMicroUsdString } from "@manifold/ports/price";
 import type { PriceMicroUsd, TokenCounts } from "@manifold/domain";
 import type {
   AcceptedEvent,
+  CostFidelity,
   JournalObservationEvent,
   ObservationStatus,
   ProviderAttemptEvent,
@@ -71,6 +72,38 @@ function priceFromSnapshot(p: SnapshotPrice | undefined): PriceMicroUsd | undefi
   set("audioInPerMtokMicroUsd", p.audioInPerMtokMicroUsd);
   set("audioOutPerMtokMicroUsd", p.audioOutPerMtokMicroUsd);
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Which `PriceMicroUsd` field prices a given `TokenCounts` class (§6.10). */
+const TOKEN_PRICE_KEY: Record<keyof TokenCounts, keyof PriceMicroUsd> = {
+  inputTokens: "inputPerMtokMicroUsd",
+  outputTokens: "outputPerMtokMicroUsd",
+  cacheReadTokens: "cacheReadPerMtokMicroUsd",
+  cacheWriteTokens: "cacheWritePerMtokMicroUsd",
+  reasoningTokens: "reasoningPerMtokMicroUsd",
+  audioInputTokens: "audioInPerMtokMicroUsd",
+  audioOutputTokens: "audioOutPerMtokMicroUsd",
+};
+
+/**
+ * Derive `costFidelity` (§6.10) from the WIDENED tokens/price. `exact` requires that EVERY token
+ * class with a positive count has a matching price; a class billed with no price makes the
+ * projected cost a floor, not an exact figure, so it must downgrade to `estimated` (partially
+ * priced) rather than masquerade as `exact` (an under-count must never look authoritative).
+ * `unknown` when there is no billed usage to price at all.
+ */
+function costFidelityFor(
+  tokens: Partial<TokenCounts> | undefined,
+  price: PriceMicroUsd | undefined,
+): CostFidelity {
+  if (!tokens) return "unknown";
+  const billedClasses = (Object.keys(tokens) as (keyof TokenCounts)[]).filter(
+    (k) => (tokens[k] ?? 0n) > 0n,
+  );
+  if (billedClasses.length === 0) return "unknown";
+  if (!price) return "unknown";
+  const allPriced = billedClasses.every((k) => price[TOKEN_PRICE_KEY[k]] !== undefined);
+  return allPriced ? "exact" : "estimated";
 }
 
 /** Map a flat event's HTTP status + reason codes to the durable `observation.status` set (§6.8). */
@@ -146,13 +179,18 @@ export function journalFromPortsEvent(
       ...(e.status !== null ? { httpStatus: e.status } : {}),
       ...(tokens ? { tokens } : {}),
       ...(price ? { price } : {}),
-      // Cost fidelity is `exact` only when we captured usage AND a dispatch price; otherwise the
-      // projected cost is a floor (µ$0 / under-priced) and must not masquerade as exact (§6.10).
-      costFidelity: tokens && price ? "exact" : "unknown",
+      // Cost fidelity is `exact` only when EVERY billed token class has a matching price; a
+      // partially-priced usage record is `estimated`, never `exact` (§6.10) — an under-count must
+      // not masquerade as authoritative.
+      costFidelity: costFidelityFor(tokens, price),
       ...(e.offeringId ? { finalOfferingId: e.offeringId } : {}),
       ...(e.priceRevisionId ? { priceRevisionId: e.priceRevisionId } : {}),
       ...(e.budgetAccountId ? { budgetAccountId: e.budgetAccountId } : {}),
       ...(e.keyId ? { virtualKeyId: e.keyId } : {}),
+      // Carry the HotPath reasonCodes (POLICY_*/AUTH_*/SSRF_*/etc.) into the journal terminal so
+      // the reduced Observation retains the denial cause — mapStatus() alone only derives the
+      // coarse `status`, dropping the specific reason if not also threaded through here (§6.8).
+      ...(e.reasonCodes.length > 0 ? { reasonCodes: e.reasonCodes } : {}),
     },
   };
   return terminal;

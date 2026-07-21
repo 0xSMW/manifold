@@ -98,6 +98,46 @@ func TestKeyList_NoBaseURL_UsageError(t *testing.T) {
 	}
 }
 
+// A bare (non-§0.3-envelope) HTTP error response — no `{"error":{...}}` body — must still map its
+// STATUS to the right exit code instead of collapsing to ExitGeneric. Before the fix, any response
+// that didn't parse as the envelope (e.g. a plain-text/HTML 401 from a proxy, or a JSON body with no
+// `error.code`) fell through to the generic CLI_HTTP_ERROR branch regardless of status.
+func TestBareHTTPStatus_MapsToStatusSpecificExit(t *testing.T) {
+	cases := []struct {
+		name     string
+		status   int
+		body     string
+		wantExit int
+	}{
+		{"401 no envelope -> ExitAuth", http.StatusUnauthorized, `not authorized`, ExitAuth},
+		{"403 no envelope -> ExitAuth", http.StatusForbidden, `{"message":"forbidden"}`, ExitAuth},
+		{"404 no envelope -> ExitNotFound", http.StatusNotFound, `page not found`, ExitNotFound},
+		{"409 no envelope -> ExitPrecondition", http.StatusConflict, `conflict`, ExitPrecondition},
+		{"500 no envelope -> ExitGeneric", http.StatusInternalServerError, `boom`, ExitGeneric},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			_, err := runCLI(t, "key", "list", "--base-url", srv.URL, "--token", "t")
+			if err == nil {
+				t.Fatalf("expected an error for bare HTTP %d, got nil", tc.status)
+			}
+			var cliErr *CLIError
+			if !errors.As(err, &cliErr) {
+				t.Fatalf("expected *CLIError, got %T", err)
+			}
+			if cliErr.Code != tc.wantExit {
+				t.Fatalf("bare HTTP %d must map to exit %d, got %d", tc.status, tc.wantExit, cliErr.Code)
+			}
+		})
+	}
+}
+
 // The apiLeafList wiring maps each noun's `list` to the right control-plane path. The client itself is
 // verified above; this proves provider/route/key list each hit the correct GET path with bearer auth.
 func TestListCommands_HitCorrectPaths(t *testing.T) {

@@ -47,6 +47,23 @@ const keyId = mk.b?.keyId ?? mk.b?.id;
 ok(mk.s >= 200 && mk.s < 300 && typeof plaintext === "string" && plaintext.length > 10,
    `mint returns plaintext once (status ${mk.s}, plaintext len ${plaintext?.length ?? 0})`);
 
+// ── BUG #1 (mint ignores publish outcome): instA has NO active revision yet at this point in the
+// script (no route/plan/apply has run for it), so publishKeysOnly() legitimately returns `null`
+// (a no-op — nothing to rebuild keys against). Pre-fix, POST /keys discarded that return value
+// entirely, so the response never said anything about publish state. Post-fix it must surface
+// `published: false` here (the key is NOT yet live at the gateway — it enters on the first full
+// apply), proving the route now actually consults publishKeysOnly's result instead of ignoring it.
+ok(mk.b?.published === false,
+   `#1-MINT mint with no active revision yet surfaces published:false (got ${JSON.stringify(mk.b?.published)})`);
+
+// ── BUG #1 (revoke ignores publish outcome), same no-active-revision case: revoking k1 immediately
+// (still no active revision for instA) must succeed (a null publishKeysOnly result is a SAFE
+// no-op — the key was never in any active snapshot to begin with) AND surface published:false,
+// not the unconditional revoked:true with no publish info the pre-fix code always returned.
+const revNoActive = await call(tokA, `/api/v1/keys/${keyId}/revoke`, {});
+ok(revNoActive.s === 200 && revNoActive.b?.revoked === true && revNoActive.b?.published === false,
+   `#1-REVOKE revoke with no active revision yet still succeeds and surfaces published:false (status ${revNoActive.s}, body ${JSON.stringify(revNoActive.b)})`);
+
 // cross-tenant list
 const listA = await j(await fetch(`${BASE}/api/v1/keys`, { headers: { authorization: `Bearer ${tokA}` } }));
 const listB = await j(await fetch(`${BASE}/api/v1/keys`, { headers: { authorization: `Bearer ${tokB}` } }));
@@ -160,12 +177,34 @@ const afterMint = await cfgActive();
 const keysAfterMint = afterMint.b?.keys ?? {};
 ok(afterMint.s === 200 && hex2 != null && !!keysAfterMint[hex2] && keysAfterMint[hex2].revoked === false,
    `#MINT-PUBLISH new key's hex(keyed_hash) present in /config/active, revoked:false (status ${afterMint.s}, present ${!!keysAfterMint[hex2]})`);
+// ── BUG #1 (mint ignores publish outcome), the accepted case: instA HAS an active revision here
+// (from #2/#4 applies), so the scoped publish must actually land — the response must say so.
+ok(mk2.b?.published === true,
+   `#1-MINT mint with an active revision surfaces published:true (got ${JSON.stringify(mk2.b?.published)})`);
 
 // ── BUG: REVOKE publishes the revocation into the active snapshot ──────────────────────────────
 // After revoke, /config/active must either DROP the key or show revoked:true — else the snapshot-
 // only gateway keeps honoring the revoked key for the whole publish lag.
 const rev2 = await call(tokA, `/api/v1/keys/${keyId2}/revoke`, {});
 ok(rev2.s === 200 && rev2.b?.revoked === true, `revoke k2 (status ${rev2.s})`);
+// ── BUG #1 (revoke ignores publish outcome), the accepted case ────────────────────────────────
+// NOTE: we deliberately do NOT assert `published` on rev2 above — revoking k2 here reverts the
+// keys section to EXACTLY the combination stored by an earlier revision (a pre-existing, separate
+// apply()/keyOnlyPublish defect: rebuilding back to a byte-identical prior snapshot collides on
+// `config_revision_hash_uq` since that old row is merely superseded, not gone; apply.ts is outside
+// this fix's file group). Use a fresh pair of keys instead, so the reverted state is NOVEL and the
+// scoped publish actually completes, to prove the accepted-case `published:true` surfacing works.
+const mk3 = await call(tokA, "/api/v1/keys", { profileId: profA, name: "k3" });
+const keyId3 = mk3.b?.keyId;
+ok(mk3.s >= 200 && mk3.s < 300 && mk3.b?.published === true,
+   `#1-MINT-2 mint k3 with an active revision surfaces published:true (status ${mk3.s}, published ${mk3.b?.published})`);
+const mk4 = await call(tokA, "/api/v1/keys", { profileId: profA, name: "k4" });
+ok(mk4.s >= 200 && mk4.s < 300 && mk4.b?.published === true,
+   `mint k4 for the revoke-published test (status ${mk4.s}, published ${mk4.b?.published})`);
+const rev3 = await call(tokA, `/api/v1/keys/${keyId3}/revoke`, {});
+ok(rev3.s === 200 && rev3.b?.revoked === true && rev3.b?.published === true,
+   `#1-REVOKE revoke with an active revision surfaces published:true (status ${rev3.s}, body ${JSON.stringify(rev3.b)})`);
+
 const afterRevoke = await cfgActive();
 const revEntry = (afterRevoke.b?.keys ?? {})[hex2];
 ok(afterRevoke.s === 200 && (revEntry === undefined || revEntry.revoked === true),

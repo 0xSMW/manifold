@@ -31,6 +31,22 @@ func exitForEnvelopeCode(code string) int {
 	}
 }
 
+// exitForHTTPStatus maps a bare (non-§0.3-envelope) HTTP status to the CLI process exit code, so a
+// control-plane error response that isn't shaped as the envelope still surfaces the right exit
+// instead of collapsing to ExitGeneric.
+func exitForHTTPStatus(status int) int {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return ExitAuth
+	case http.StatusNotFound:
+		return ExitNotFound
+	case http.StatusConflict:
+		return ExitPrecondition
+	default:
+		return ExitGeneric
+	}
+}
+
 // apiErrorEnvelope is the control-plane's §0.3 error shape ({ "error": { code, message, ... } }).
 type apiErrorEnvelope struct {
 	Error struct {
@@ -112,7 +128,7 @@ func (c *apiClient) do(method, path string, body any) (json.RawMessage, error) {
 			Retryable:   env.Error.Retryable,
 		}
 	}
-	return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_HTTP_ERROR",
+	return nil, &CLIError{Code: exitForHTTPStatus(resp.StatusCode), ErrCode: "CLI_HTTP_ERROR",
 		Message: fmt.Sprintf("%s %s returned HTTP %d", method, url, resp.StatusCode)}
 }
 
