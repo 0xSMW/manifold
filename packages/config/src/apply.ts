@@ -23,23 +23,6 @@ import type {
   SnapshotPublishStore,
 } from "./types.js";
 
-function revisionIdSets(snap: ConfigSnapshot): {
-  routeIds: string[];
-  policyIds: string[];
-  priceIds: string[];
-} {
-  const routeIds = [...new Set(Object.values(snap.routes).map((r) => r.routeId))].sort();
-  const policyIds = Object.keys(snap.policies).sort();
-  const priceIds = [
-    ...new Set(
-      Object.values(snap.offerings)
-        .map((o) => o.priceRevisionId)
-        .filter((x): x is string => x != null),
-    ),
-  ].sort();
-  return { routeIds, policyIds, priceIds };
-}
-
 async function insertOperation(
   sql: PgSql,
   op: Omit<ConfigOperation, "id"> & { workspaceId: string },
@@ -160,7 +143,6 @@ export async function apply(
 
     const snap = plan.snapshot;
     const revisionId = snap.meta.revision;
-    const { routeIds, policyIds, priceIds } = revisionIdSets(snap);
 
     // Flip prior active → superseded (guard allows active→superseded), then insert new active.
     if (active) {
@@ -168,12 +150,10 @@ export async function apply(
     }
     await tx`
       INSERT INTO gateway_config_revision
-        (id, workspace_id, installation_id, content_hash, parent_revision_id, snapshot,
-         route_ids, policy_ids, price_ids, status)
+        (id, workspace_id, installation_id, content_hash, parent_revision_id, snapshot, status)
       VALUES
         (${revisionId}, ${plan.workspaceId}, ${plan.installationId}, ${plan.targetConfigHash},
-         ${active?.id ?? null}, ${tx.json(q.jval(snap))},
-         ${tx.json(q.jval(routeIds))}, ${tx.json(q.jval(policyIds))}, ${tx.json(q.jval(priceIds))}, 'active')`;
+         ${active?.id ?? null}, ${tx.json(q.jval(snap))}, 'active')`;
 
     await tx`
       UPDATE gateway_installation SET applied_config_revision = ${revisionId}

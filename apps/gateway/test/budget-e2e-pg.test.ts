@@ -34,6 +34,7 @@ import type { Fetcher, Snapshot, SnapshotTarget } from "@manifold/ports";
 import { FakeCrypto, FakeIngestSink, FixedClock, keyedHashHex } from "@manifold/ports/testing";
 import { BudgetReserverAdapter, makeDbBudgetReserveFn } from "../src/adapters.ts";
 import { startPg, type PgHarness } from "../../../packages/database/test/pg-harness.ts";
+import { seedMinimalGatewayTenant } from "../../../packages/database/test/seed-gateway-tenant.ts";
 
 // ── shared crypto + key material (the SAME FakeCrypto the gateway authenticates with) ──────────
 const crypto = new FakeCrypto();
@@ -65,68 +66,25 @@ before(async () => {
 
   // One workspace + installation + ingress profile (NO policy bound — this isolates the budget
   // gate), an offering/credential/DEK + a chat route so an under-cap request can actually dispatch,
-  // a HARD budget_account with a small cap, and a virtual_key BOUND to that budget account. The
-  // credential allowlist contains api.openai.com so the target survives the fail-closed egress filter.
-  pg.psql(`
-    INSERT INTO workspace (id, slug, name, region) VALUES
-      ('ws_be2e','ws-be2e','Budget E2E Workspace','local');
-
-    INSERT INTO canonical_model (id, canonical_slug, display_name, catalog_revision) VALUES
-      ('cm_be2e','be2e-model','BE2E Model','cat1');
-
-    INSERT INTO data_encryption_key (id, workspace_id, wrapped_dek, kek_id, status) VALUES
-      ('dek_be2e','ws_be2e','\\xdeadbeef','kek1','active');
-
-    INSERT INTO provider_model_offering
-      (id, canonical_model_id, provider, provider_model_id, endpoint_kinds, adapter_revision,
-       capabilities, catalog_revision) VALUES
-      ('off_be2e','cm_be2e','openai','be2e-model','["chat"]','ar1','{}','cat1');
-
-    -- A price for the offering (review #4: a µ$ hard budget over an UNPRICED offering fails closed).
-    -- 1,000,000 µ$/mtok = exactly 1 µ$/token, so the reserve estimate stays est ≈ max_tokens — the
-    -- 100 µ$ cap still admits max_tokens=50 and denies max_tokens=1000, exactly as before pricing.
-    INSERT INTO provider_price_revision
-      (id, offering_id, workspace_id, input_per_mtok_microusd, output_per_mtok_microusd,
-       fidelity, content_hash, catalog_revision) VALUES
-      ('prc_be2e','off_be2e','ws_be2e',1000000,1000000,'provider_verified','sha256:pricebe2e','cat1');
-    UPDATE provider_model_offering SET active_price_revision_id = 'prc_be2e' WHERE id = 'off_be2e';
-
-    INSERT INTO provider_credential
-      (id, workspace_id, provider, label, encrypted_secret, dek_id, base_url, allowed_hosts, status) VALUES
-      ('cred_be2e','ws_be2e','openai','openai key','\\xc0ffee','dek_be2e',NULL,'["api.openai.com"]','valid');
-
-    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
-      ('${INSTALLATION}','ws_be2e','inst-be2e','{"kind":"test"}');
-
-    -- Ingress profile with NO policy revision: the ONLY enforcement here is the hard budget.
-    INSERT INTO gateway_ingress_profile
-      (id, workspace_id, installation_id, hostname, mode, auth_config) VALUES
-      ('${PROFILE}','ws_be2e','${INSTALLATION}','${HOST}','public_app','{}');
-
-    -- A chat route (→ /v1/chat/completions) so an UNDER-cap request actually dispatches.
-    INSERT INTO gateway_route (id, workspace_id, installation_id, public_name, endpoint_kind) VALUES
-      ('route_be2e','ws_be2e','${INSTALLATION}','chat-route','chat');
-    INSERT INTO gateway_route_revision
-      (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
-      ('rev_be2e','ws_be2e','route_be2e','ordered','{}','{"overall_ms":30000}','sha256:revbe2e');
-    INSERT INTO gateway_target
-      (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url) VALUES
-      ('tg_be2e','ws_be2e','rev_be2e','cred_be2e','off_be2e','ar1',NULL);
-    UPDATE gateway_route SET active_revision_id = 'rev_be2e' WHERE id = 'route_be2e';
-
-    -- The operator's HARD budget account: cost_microusd / total window / small cap. hard budgets
-    -- require a pricing catalog revision (schema CHECK hard_requires_pricing).
-    INSERT INTO budget_account
-      (id, workspace_id, scope_type, scope_id, unit, "window", limit_amount, enforcement,
-       pricing_catalog_revision_id) VALUES
-      ('${BUDGET_ACCOUNT}','ws_be2e','key','vk_be2e','cost_microusd','total',${LIMIT_MICROUSD},'hard','pcr_be2e');
-
-    -- The virtual key on this profile, BOUND to the hard budget account. keyed_hash = hex(HMAC(
-    -- pepper, VALID_KEY)) computed by the SAME FakeCrypto the gateway authenticates with.
-    INSERT INTO virtual_key
-      (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, budget_account_id) VALUES
-      ('vk_be2e','ws_be2e','${PROFILE}','sk-be2e','\\x${keyHashHex}','[]','[]','${BUDGET_ACCOUNT}');
-
+  // a HARD budget_account with a small cap, and a virtual_key BOUND to that budget account, all via
+  // the shared helper (prefix be2e ⇒ ws_be2e, off_be2e, prc_be2e, ba_be2e = BUDGET_ACCOUNT, vk_be2e).
+  // The credential allowlist contains api.openai.com so the target survives the fail-closed egress
+  // filter. The offering is PRICED (review #4: a µ$ hard budget over an UNPRICED offering fails
+  // closed); 1,000,000 µ$/mtok = exactly 1 µ$/token, so the reserve estimate stays est ≈ max_tokens
+  // — the 100 µ$ cap still admits max_tokens=50 and denies max_tokens=1000, exactly as before pricing.
+  //
+  // Appended AFTER the helper: a SECOND unit=TOKENS hard budget (100 tokens) + a key bound to it
+  // (review #3: pre-dispatch token guard) — the token scenario this suite additionally proves.
+  pg.psql(
+    seedMinimalGatewayTenant({
+      prefix: "be2e",
+      hostname: HOST,
+      keyHashHex,
+      workspaceName: "Budget E2E Workspace",
+      price: { inputPerMtokMicrousd: 1000000, outputPerMtokMicrousd: 1000000 },
+      budget: { limitAmount: LIMIT_MICROUSD },
+    }) +
+      `
     -- A unit=TOKENS hard budget (100 tokens) + a key bound to it (review #3: pre-dispatch token guard).
     INSERT INTO budget_account
       (id, workspace_id, scope_type, scope_id, unit, "window", limit_amount, enforcement,
@@ -135,7 +93,8 @@ before(async () => {
     INSERT INTO virtual_key
       (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, budget_account_id) VALUES
       ('vk_be2e_tok','ws_be2e','${PROFILE}','sk-tok','\\x${tokenKeyHashHex}','[]','[]','${TOKEN_BUDGET_ACCOUNT}');
-  `);
+  `,
+  );
 
   // THE REAL RESERVER: @manifold/budget.reserve against the SAME Postgres container (NO fake).
   const reserver = new BudgetReserverAdapter(

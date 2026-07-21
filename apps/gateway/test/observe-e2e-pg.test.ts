@@ -30,6 +30,7 @@ import { FakeCrypto, FakeIngestSink, FixedClock, keyedHashHex } from "@manifold/
 import { BudgetReserverAdapter, makeDbBudgetReserveFn } from "../src/adapters.ts";
 import { ingestTrace } from "../src/observe.ts";
 import { startPg, type PgHarness } from "../../../packages/database/test/pg-harness.ts";
+import { seedMinimalGatewayTenant } from "../../../packages/database/test/seed-gateway-tenant.ts";
 
 // ── shared crypto + key material (the SAME FakeCrypto the gateway authenticates with) ──────────
 const crypto = new FakeCrypto();
@@ -60,64 +61,24 @@ let realReserve: GatewayContext["reserveBudget"];
 before(async () => {
   pg = await startPg({ namePrefix: "mf-observe-e2e" });
 
-  // Seed one tenant with: an offering PRICED by a provider_price_revision (offering.active_price →
-  // price), a credential/DEK, an ingress profile (NO policy — isolate the billing path), a chat
-  // route/target, a HARD budget_account, and a virtual_key bound to it. The offering↔price FK is
-  // circular, so insert the offering unpriced, insert the price, then point the offering at it.
-  pg.psql(`
-    INSERT INTO workspace (id, slug, name, region) VALUES
-      ('${WORKSPACE}','ws-oe2e','Observe E2E Workspace','local');
-
-    INSERT INTO canonical_model (id, canonical_slug, display_name, catalog_revision) VALUES
-      ('cm_oe2e','oe2e-model','OE2E Model','cat1');
-
-    INSERT INTO data_encryption_key (id, workspace_id, wrapped_dek, kek_id, status) VALUES
-      ('dek_oe2e','${WORKSPACE}','\\xdeadbeef','kek1','active');
-
-    INSERT INTO provider_model_offering
-      (id, canonical_model_id, provider, provider_model_id, endpoint_kinds, adapter_revision,
-       capabilities, catalog_revision) VALUES
-      ('${OFFERING}','cm_oe2e','openai','oe2e-model','["chat"]','ar1','{}','cat1');
-
-    -- The price revision the gateway resolves at dispatch and stamps onto the terminal for cost.
-    INSERT INTO provider_price_revision
-      (id, offering_id, workspace_id, input_per_mtok_microusd, output_per_mtok_microusd,
-       fidelity, content_hash, catalog_revision) VALUES
-      ('${PRICE_REV}','${OFFERING}','${WORKSPACE}',${INPUT_PRICE},${OUTPUT_PRICE},
-       'provider_verified','sha256:priceoe2e','cat1');
-
-    UPDATE provider_model_offering SET active_price_revision_id = '${PRICE_REV}' WHERE id = '${OFFERING}';
-
-    INSERT INTO provider_credential
-      (id, workspace_id, provider, label, encrypted_secret, dek_id, base_url, allowed_hosts, status) VALUES
-      ('cred_oe2e','${WORKSPACE}','openai','openai key','\\xc0ffee','dek_oe2e',NULL,'["api.openai.com"]','valid');
-
-    INSERT INTO gateway_installation (id, workspace_id, name, workload_identity) VALUES
-      ('${INSTALLATION}','${WORKSPACE}','inst-oe2e','{"kind":"test"}');
-
-    INSERT INTO gateway_ingress_profile
-      (id, workspace_id, installation_id, hostname, mode, auth_config) VALUES
-      ('${PROFILE}','${WORKSPACE}','${INSTALLATION}','${HOST}','public_app','{}');
-
-    INSERT INTO gateway_route (id, workspace_id, installation_id, public_name, endpoint_kind) VALUES
-      ('route_oe2e','${WORKSPACE}','${INSTALLATION}','chat-route','chat');
-    INSERT INTO gateway_route_revision
-      (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
-      ('rev_oe2e','${WORKSPACE}','route_oe2e','ordered','{}','{"overall_ms":30000}','sha256:revoe2e');
-    INSERT INTO gateway_target
-      (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url) VALUES
-      ('tg_oe2e','${WORKSPACE}','rev_oe2e','cred_oe2e','${OFFERING}','ar1',NULL);
-    UPDATE gateway_route SET active_revision_id = 'rev_oe2e' WHERE id = 'route_oe2e';
-
-    INSERT INTO budget_account
-      (id, workspace_id, scope_type, scope_id, unit, "window", limit_amount, enforcement,
-       pricing_catalog_revision_id) VALUES
-      ('${BUDGET_ACCOUNT}','${WORKSPACE}','key','vk_oe2e','cost_microusd','total',${LIMIT_MICROUSD},'hard','pcr_oe2e');
-
-    INSERT INTO virtual_key
-      (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes, allowed_app_ids, budget_account_id) VALUES
-      ('vk_oe2e','${WORKSPACE}','${PROFILE}','sk-oe2e','\\x${keyHashHex}','[]','[]','${BUDGET_ACCOUNT}');
-  `);
+  // Seed one tenant (shared helper): an offering PRICED by a provider_price_revision (so the
+  // offering.active_price → price, the whole billing path here), a credential/DEK, an ingress
+  // profile with NO policy (isolate the billing path), a chat route/target, a HARD budget_account,
+  // and a virtual_key bound to it. The `${prefix}` (oe2e) derives every id: ws_oe2e, off_oe2e (=
+  // OFFERING), prc_oe2e (= PRICE_REV), ba_oe2e (= BUDGET_ACCOUNT), vk_oe2e.
+  pg.psql(
+    seedMinimalGatewayTenant({
+      prefix: "oe2e",
+      hostname: HOST,
+      keyHashHex,
+      workspaceName: "Observe E2E Workspace",
+      price: {
+        inputPerMtokMicrousd: INPUT_PRICE,
+        outputPerMtokMicrousd: OUTPUT_PRICE,
+      },
+      budget: { limitAmount: LIMIT_MICROUSD },
+    }),
+  );
 
   const reserver = new BudgetReserverAdapter(
     makeDbBudgetReserveFn({ sql: pg.sql as unknown as Sql, workspaceId: WORKSPACE }),

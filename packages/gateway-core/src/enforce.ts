@@ -300,29 +300,45 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
 
   // ── Policy (deny-first across EVERY subject the key carries) ──────────────
   if (policy) {
-    // Evaluate the request under each of the key's subjects (scope × app × team × cost-center).
-    // Deny-first: the FIRST subject that denies (an explicit model deny or a rejecting constraint)
-    // blocks the whole request — so a deny on ANY scope/app is honored, not just scopes[0]. Request
-    // constraints are subject-independent, so any allowing subject's clamps are representative.
-    let denied: PolicyDecision | undefined;
-    let clampDecision: PolicyDecision | undefined;
+    // The evaluator does two things: (Rule 1) a SUBJECT-DEPENDENT model-entitlement check, and
+    // (Rule 2) SUBJECT-INDEPENDENT request-constraint clamp/reject. Running the full `evaluate`
+    // per subject (scope × app × team × cost-center) re-ran Rule 2's constraint loop once for
+    // every subject even though its verdict is identical each time. Separate the two concerns:
+    //
+    //   1. Entitlements are checked PER subject, deny-first — the FIRST subject whose model is
+    //      denied blocks the whole request (an explicit deny or a deny-by-default on ANY
+    //      scope/app, not just scopes[0]). We check this against an entitlement-only view of the
+    //      revision so the constraint loop never runs on this per-subject path.
+    //   2. Constraints are subject-independent, so they run ONCE, on the first subject that clears
+    //      the entitlement gate (any allowing subject reaches Rule 2 with the same verdict).
+    //
+    // Interleaving the single constraint evaluation at the first allowing subject preserves the
+    // original deny-first ordering exactly: a model deny that precedes the first allowing subject
+    // still wins (POLICY_MODEL_DENIED), and a rejecting constraint still fires at the first
+    // allowing subject (POLICY_PARAM_REJECTED) — identical to breaking on the first `evaluate` deny.
+    const entitlementOnly = { modelEntitlements: policy.modelEntitlements, requestConstraints: [] };
+    let constraint: PolicyDecision | undefined; // Rule 2 verdict, computed once (subject-independent)
     for (const subject of subjectsFromKey(key)) {
-      const decision = evaluate({ subject, canonicalModelId: model, params }, policy);
-      if (decision.outcome === "deny") {
-        denied = decision;
-        break;
+      const entitlement = evaluate({ subject, canonicalModelId: model, params }, entitlementOnly);
+      if (entitlement.outcome === "deny") {
+        // Model denied for this subject → deny-first blocks. Carry the evaluator's own code.
+        const code = entitlement.reasonCodes[0] ?? "POLICY_MODEL_DENIED";
+        return { ok: false, code, message: `request denied by policy (${code})` };
       }
-      if (decision.outcome === "clamp") clampDecision = decision;
+      // Model allowed for this subject. Evaluate the subject-independent constraints exactly once
+      // (on the first allowing subject); later allowing subjects reuse the cached verdict.
+      if (constraint === undefined) {
+        constraint = evaluate({ subject, canonicalModelId: model, params }, policy);
+      }
+      if (constraint.outcome === "deny") {
+        // A rejecting constraint denies the request (POLICY_PARAM_REJECTED).
+        const code = constraint.reasonCodes[0] ?? "POLICY_PARAM_REJECTED";
+        return { ok: false, code, message: `request denied by policy (${code})` };
+      }
     }
-    if (denied) {
-      // Carry the evaluator's own code (POLICY_MODEL_DENIED, or POLICY_PARAM_REJECTED for a
-      // rejecting constraint) so the status map and terminal event report the real reason.
-      const code = denied.reasonCodes[0] ?? "POLICY_MODEL_DENIED";
-      return { ok: false, code, message: `request denied by policy (${code})` };
-    }
-    if (clampDecision?.clamps && parsed) {
+    if (constraint?.outcome === "clamp" && constraint.clamps && parsed) {
       // Rewrite the clamped params back into the forwarded body — the provider sees the safe values.
-      for (const [param, value] of Object.entries(clampDecision.clamps)) parsed[param] = value;
+      for (const [param, value] of Object.entries(constraint.clamps)) parsed[param] = value;
       forwardBody = JSON.stringify(parsed);
     }
   }
