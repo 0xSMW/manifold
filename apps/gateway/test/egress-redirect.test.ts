@@ -79,6 +79,78 @@ for (const location of [
   });
 }
 
+// ── (2b) 302 → the SAME host but a DIFFERENT port must NOT receive the secret ──────────────────
+// BUG: the redirect guard compared only `hostname`, so a same-host redirect to a different port
+// (e.g. `https://api.example.com:8443/steal`) was treated as "same host" and followed WITH the
+// injected secret attached — a listener on another port is a different destination the per-target
+// allowlist never vetted.
+test("EgressFetcher refuses a same-host DIFFERENT-PORT redirect — secret never reaches the other port", async () => {
+  let sinkHits = 0;
+  let sinkSawSecret = false;
+  const sink = createServer((reqIn, res) => {
+    sinkHits++;
+    if (reqIn.headers["x-api-key"] === SECRET) sinkSawSecret = true;
+    res.writeHead(200);
+    res.end("sink");
+  });
+  const sinkPort = await listen(sink);
+  after(() => sink.close());
+
+  // Same host (127.0.0.1) as the sink, but the upstream listens on a DIFFERENT port.
+  const upstream = createServer((_reqIn, res) => {
+    res.writeHead(302, { location: `http://127.0.0.1:${sinkPort}/steal` });
+    res.end();
+  });
+  const upstreamPort = await listen(upstream);
+  after(() => upstream.close());
+  assert.notEqual(upstreamPort, sinkPort, "the two servers must be on different ports");
+
+  const fetcher = new EgressFetcher({ allowInsecureHttp: true, allowPrivate: true });
+  const req = new Request(`http://127.0.0.1:${upstreamPort}/v1/messages`, {
+    method: "POST",
+    headers: { "x-api-key": SECRET },
+    body: "{}",
+  });
+
+  await assert.rejects(fetcher.fetch(req), /redirect/i, "must refuse the same-host different-port redirect");
+  assert.equal(sinkHits, 0, "the redirect target on the other port must NEVER be contacted");
+  assert.equal(sinkSawSecret, false, "the injected secret must NEVER reach the other port");
+});
+
+// ── (2c) 302 → the SAME host:port but downgrading https → http must be refused ─────────────────
+// A real TLS upstream isn't needed to exercise this: stub `globalThis.fetch` so the origin request
+// is seen as `https://api.example.com:8443/...` (same explicit port as the redirect target, so the
+// host/port guard above would pass) while the 302 Location downgrades to `http://` on that SAME
+// host:port — only the dedicated downgrade check can catch this.
+test("EgressFetcher refuses a same-host:port scheme downgrade on redirect (https origin → http Location)", async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = realFetch;
+  });
+  let redirectTargetHit = false;
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === "https://api.example.com:8443/v1/messages") {
+      return new Response(null, { status: 302, headers: { location: "http://api.example.com:8443/steal" } });
+    }
+    if (url === "http://api.example.com:8443/steal") {
+      redirectTargetHit = true;
+      return new Response("stolen", { status: 200 });
+    }
+    throw new Error(`unexpected fetch to ${url}`);
+  }) as typeof fetch;
+
+  // Stub the resolver too — no real DNS/network in this test, `api.example.com` just needs to
+  // resolve to a public address so the (unrelated) DNS-rebind gate doesn't get in the way.
+  const resolver: HostResolver = async () => [{ address: "93.184.216.34" }];
+  const fetcher = new EgressFetcher({ allowInsecureHttp: true, allowPrivate: false }, resolver);
+  const req = new Request("https://api.example.com:8443/v1/messages", {
+    headers: { "x-api-key": SECRET },
+  });
+  await assert.rejects(fetcher.fetch(req), /downgrade/i, "must refuse the https → http downgrade");
+  assert.equal(redirectTargetHit, false, "the downgraded target must NEVER be contacted");
+});
+
 // ── (3) a hostname that RESOLVES to a private address is blocked (all families) ───────────────
 test("EgressFetcher blocks a hostname that resolves to a private/loopback address", async () => {
   const fetcher = new EgressFetcher({ allowInsecureHttp: true, allowPrivate: false });

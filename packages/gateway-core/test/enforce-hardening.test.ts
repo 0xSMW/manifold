@@ -132,3 +132,84 @@ test("#4 control: hard TOKEN budget over an unpriced offering still reserves (no
   });
   assert.equal(res.ok, true);
 });
+
+// HIGH #1 — a STRING max_tokens ("1000000") must be visible to a policy clamp ceiling exactly like
+// a JSON number. Pre-fix, `numericParams` only accepted `typeof v === "number"`, so the string value
+// was silently dropped from `params`: no clamp constraint ever saw it (evaluated as "param absent"),
+// and the reserve estimate's `params.max_tokens ?? ... ?? 0` fell back to 0 (maxOut=0) — a hard cap
+// and a hard-budget reserve estimate both bypassed while the raw string was still forwarded upstream.
+test("HIGH #1: STRING max_tokens over a clamp ceiling is clamped, not bypassed", async () => {
+  const policy = {
+    id: "rev1",
+    modelEntitlements: [{ subjectKind: "all", subjectRef: null, canonicalModelId: null, effect: "allow" }],
+    requestConstraints: [{ param: "max_tokens", maxValue: 4096, minValue: null, onViolation: "clamp" }],
+  } as unknown as import("@manifold/ports").SnapshotPolicyRevision;
+
+  const res = await enforceRequest({
+    snapshot: { policies: { rev1: policy } } as unknown as Snapshot,
+    profile: profile("rev1"),
+    key: key(null),
+    request: req('{"model":"m","max_tokens":"1000000"}'),
+    traceId: "t",
+    target,
+  });
+  assert.equal(res.ok, true);
+  const forwardBody = (res as { forwardBody?: string }).forwardBody;
+  assert.ok(forwardBody, "clamp must rewrite forwardBody");
+  const forwarded = JSON.parse(forwardBody!);
+  assert.equal(forwarded.max_tokens, 4096, "the string value must be clamped, not passed through raw");
+});
+
+// HIGH #1 (budget side) — a STRING max_tokens must also be visible to the hard-budget reserve
+// estimate: pre-fix, `params.max_tokens` was `undefined` for a string value, so `maxOut` collapsed
+// to 0 and a token-unit hard budget's `reserveBudget` was called with `maxOutputTokens: 0n`,
+// defeating the pre-dispatch token guard entirely.
+test("HIGH #1: STRING max_tokens reaches the hard-budget reserve estimate (maxOutputTokens != 0)", async () => {
+  let seenMaxOutputTokens: bigint | undefined;
+  const capturingReserve: BudgetReserver["reserve"] = async (req) => {
+    seenMaxOutputTokens = req.maxOutputTokens;
+    return { ok: true, reservationId: "r" };
+  };
+  const res = await enforceRequest({
+    snapshot: { budgets: { ba: { id: "ba", enforcement: "hard", unit: "tokens" } } } as unknown as Snapshot,
+    profile: profile(null),
+    key: key("ba"),
+    request: req('{"model":"m","max_tokens":"1000000"}'),
+    traceId: "t",
+    target,
+    reserveBudget: capturingReserve,
+  });
+  assert.equal(res.ok, true);
+  assert.equal(seenMaxOutputTokens, 1000000n);
+});
+
+// HIGH #2 — a key with a budgetAccountId that has NO matching `snapshot.budgets` entry must fail
+// CLOSED, symmetric with the #5 "declared policy revision missing from snapshot" case. Pre-fix,
+// `budget` was `undefined` ⇒ `hardBudget` was `false` ⇒ (absent a policy too) the request took the
+// "nothing to enforce" fast path and dispatched completely unmetered.
+test("HIGH #2: budgetAccountId with no matching snapshot.budgets entry fails CLOSED (BUDGET_RESERVE_DENIED)", async () => {
+  const res = await enforceRequest({
+    snapshot: { budgets: {} } as unknown as Snapshot, // "ba" is absent
+    profile: profile(null),
+    key: key("ba"),
+    request: req("{}"),
+    traceId: "t",
+    target,
+    reserveBudget: okReserve,
+  });
+  assert.equal(res.ok, false);
+  assert.equal((res as { code: string }).code, "BUDGET_RESERVE_DENIED");
+});
+
+// HIGH #2 control — a key with NO budgetAccountId at all (null) is unaffected and still fast-paths.
+test("HIGH #2 control: key with no budgetAccountId (null) still fast-paths", async () => {
+  const res = await enforceRequest({
+    snapshot: { budgets: {} } as unknown as Snapshot,
+    profile: profile(null),
+    key: key(null),
+    request: req("{}"),
+    traceId: "t",
+    target,
+  });
+  assert.equal(res.ok, true);
+});

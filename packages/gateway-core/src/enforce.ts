@@ -68,12 +68,36 @@ function subjectsFromKey(key: SnapshotKey): PolicySubject[] {
   return subjects;
 }
 
+/** A JSON-number-shaped string (optional sign, digits, optional fraction/exponent). Used to
+ *  recognize a numeric param a client sent as a STRING (e.g. `{"max_tokens":"1000000"}`) so it
+ *  is not invisible to the policy evaluator / reserve estimate below (review HIGH #1). */
+const NUMERIC_STRING_RE = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+
+/** Parse a numeric-shaped string to a `number`. Returns `undefined` for a string that is not
+ *  number-shaped at all (e.g. a model id) — such a field was never a numeric param and stays
+ *  untouched. A number-shaped string that parses to a non-finite value (e.g. `"1e999"`) returns
+ *  `NaN`/`Infinity` unchanged so the caller can fail closed on it exactly like a raw JSON number
+ *  (config-F7) instead of silently dropping it. */
+function parseNumericString(v: string): number | undefined {
+  const t = v.trim();
+  if (t === "" || !NUMERIC_STRING_RE.test(t)) return undefined;
+  return Number(t);
+}
+
 /** Collect the finite numeric top-level params (max_tokens, temperature, top_p, …) the policy
- *  constraints operate on. Non-numeric fields (model, messages, …) are ignored. */
+ *  constraints operate on. Non-numeric fields (model, messages, …) are ignored. A numeric-shaped
+ *  STRING (review HIGH #1) is coerced to a number here too — otherwise a client sending
+ *  `{"max_tokens":"1000000"}` sails past every policy clamp AND the hard-budget reserve estimate
+ *  (which reads `params.max_tokens`), forwarded upstream unmetered and unclamped. */
 function numericParams(obj: Record<string, unknown>): Record<string, number> {
   const out: Record<string, number> = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+    if (typeof v === "number" && Number.isFinite(v)) {
+      out[k] = v;
+    } else if (typeof v === "string") {
+      const n = parseNumericString(v);
+      if (n !== undefined && Number.isFinite(n)) out[k] = n;
+    }
   }
   return out;
 }
@@ -174,6 +198,46 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
   }
   const budgetAccountId = key.budgetAccountId;
   const budget = budgetAccountId ? snapshot.budgets?.[budgetAccountId] : undefined;
+  // Fail CLOSED on referential drift, budget side (review HIGH #2 — the budget-side twin of the
+  // #5 policy check above): the key DECLARES a budgetAccountId but the signed snapshot carries no
+  // matching `budgets` entry. `budget` is then `undefined`, so `budget?.enforcement === "hard"` is
+  // `false` — the pre-fix code took that as "no hard budget" and, absent a policy too, fell through
+  // the fast path and dispatched completely unmetered. A key that references a budget MUST be
+  // metered by it; an unresolvable reference is a config error, not permission to skip budgeting.
+  //
+  // KNOWN GAP (not fixable from this file — see below): `budgetAccountId && !budget` is also
+  // exactly the shape produced when an operator SOFT-DISABLES a budget account (`disabled_at` set).
+  // `config.readBudgetAccounts` (packages/config/src/db.ts) filters `disabled_at IS NULL`, and
+  // `config.buildSnapshot` (packages/config/src/build.ts) carries `key.budget_account_id` into the
+  // snapshot verbatim with no null-out when the referenced account is disabled — so a disabled
+  // budget and a genuinely-dangling reference are structurally IDENTICAL by the time they reach
+  // `enforceRequest`: same `budgetAccountId` truthy, same `snapshot.budgets[id]` absent. There is no
+  // signal in `Snapshot`/`SnapshotKey` as currently typed (ports/src/index.ts) that lets this
+  // function tell them apart, so the deny below — correct for true drift — also fires for a
+  // legitimately disabled budget, turning "operator turned off the cap" into "key hard-denied on
+  // every request" (an availability regression, not a money-safety one). This is a deterministic
+  // function of its inputs: as long as the two cases produce the same input, no logic added HERE
+  // can split their outcomes without also breaking the drift case (see
+  // `packages/gateway-core/test/enforce-hardening.test.ts` "HIGH #2", which pins `{budgets:{}}` +
+  // `reserveBudget` that would happily reserve to still deny — i.e. denial must NOT depend on
+  // whether a reserver is wired, only on the snapshot shape). Fixing this requires changing what
+  // ships in the snapshot, in a file this pass is scoped NOT to touch:
+  //   (a) packages/config/src/build.ts: when a key's referenced budget_account is disabled, null out
+  //       `key.budgetAccountId` in the snapshot so the key legitimately fast-paths unmetered; or
+  //   (b) packages/config/src/db.ts `readBudgetAccounts`: stop excluding `disabled_at IS NOT NULL`
+  //       rows — emit them too but with `enforcement` forced to `"advisory"` (already a valid
+  //       `BudgetEnforcement` value; no `ports` type change needed). With (b), `budget` would be
+  //       DEFINED for a disabled account, `budget?.enforcement === "hard"` would be `false`, and the
+  //       existing fast path below would already dispatch it unmetered correctly — the check just
+  //       below would then only ever fire for a truly-absent account. No change to this function
+  //       would be required once either (a) or (b) lands upstream.
+  if (budgetAccountId && !budget) {
+    return {
+      ok: false,
+      code: "BUDGET_RESERVE_DENIED",
+      message: "key references a budget account absent from the snapshot",
+    };
+  }
   const hardBudget = budget?.enforcement === "hard";
 
   // Fast path: nothing to enforce. Do NOT read the body — the request stream stays untouched so
@@ -201,7 +265,9 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
   }
   // Fail CLOSED on a non-finite numeric param (review MED config-F7): JSON.parse turns `1e999` into
   // Infinity; if it were merely dropped, a max_tokens ceiling would be silently bypassed and the raw
-  // value forwarded upstream. Reject before policy/reserve so the guard cannot be sidestepped.
+  // value forwarded upstream. Reject before policy/reserve so the guard cannot be sidestepped. A
+  // numeric-shaped STRING (review HIGH #1) is checked the same way — a client can spell the same
+  // out-of-range value as `"1e999"` and it must fail the same, not merely fail to coerce.
   if (parsed) {
     for (const [k, v] of Object.entries(parsed)) {
       if (typeof v === "number" && !Number.isFinite(v)) {
@@ -210,6 +276,16 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
           code: "POLICY_PARAM_REJECTED",
           message: `non-finite numeric parameter: ${k}`,
         };
+      }
+      if (typeof v === "string") {
+        const n = parseNumericString(v);
+        if (n !== undefined && !Number.isFinite(n)) {
+          return {
+            ok: false,
+            code: "POLICY_PARAM_REJECTED",
+            message: `non-finite numeric parameter: ${k}`,
+          };
+        }
       }
     }
   }

@@ -100,6 +100,26 @@ function isPrivateIpv6Groups(g: number[]): boolean {
   if (g[0] === 0x0064 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
     return isPrivateIpv4([g[6]! >> 8, g[6]! & 0xff, g[7]! >> 8, g[7]! & 0xff]);
   }
+  // 6to4 2002::/16 (RFC 3056): the tunneled IPv4 is embedded verbatim in bits 16-47 — the two
+  // hextets right after the 0x2002 prefix (2002:WWXX:YYZZ::/48 encodes W.X.Y.Z). A 6to4 tunnel to a
+  // private/metadata v4 (2002:7f00:1:: → 127.0.0.1) must classify private, same as NAT64/the
+  // IPv4-compatible forms above; a wrapped PUBLIC v4 (2002:808:808:: = 8.8.8.8) stays public.
+  if (first === 0x2002) {
+    return isPrivateIpv4([g[1]! >> 8, g[1]! & 0xff, g[2]! >> 8, g[2]! & 0xff]);
+  }
+  // Teredo 2001:0000::/32 (RFC 4380): the client's IPv4 is embedded, BIT-INVERTED (XOR 0xff per
+  // byte), in the last 32 bits (last two hextets) — server address/flags/port occupy the middle
+  // groups and don't affect classification. A Teredo tunnel obfuscating a private/metadata client v4
+  // (obfuscated 169.254.169.254) must classify private so it can't slip past the allowlist.
+  if (g[0] === 0x2001 && g[1] === 0) {
+    const inv = (x: number) => (~x) & 0xff;
+    return isPrivateIpv4([
+      inv(g[6]! >> 8),
+      inv(g[6]! & 0xff),
+      inv(g[7]! >> 8),
+      inv(g[7]! & 0xff),
+    ]);
+  }
   return false;
 }
 

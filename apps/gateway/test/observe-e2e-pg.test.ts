@@ -120,7 +120,7 @@ before(async () => {
   `);
 
   const reserver = new BudgetReserverAdapter(
-    makeDbBudgetReserveFn({ sql: pg.sql as unknown as Sql }),
+    makeDbBudgetReserveFn({ sql: pg.sql as unknown as Sql, workspaceId: WORKSPACE }),
   );
   realReserve = (input) => reserver.reserve(input);
 }, { timeout: 300_000 });

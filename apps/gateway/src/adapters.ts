@@ -24,8 +24,9 @@ import { bucketStart, reserve as budgetReserve } from "@manifold/budget";
 // `@manifold/database` is the sole owner of the postgres driver (§4.2): we take both its `Sql` type
 // and its `getClient` opener from it, so the reservation connection is created (and its json/jsonb
 // serializers applied) in the one place allowed to touch the driver — not re-opened here.
-import { getClient, type Sql } from "@manifold/database";
+import { getClient, setWorkspaceGuc, type Sql } from "@manifold/database";
 import { assertSnapshotTrusted } from "./snapshotVerify.ts";
+import { ingestTrace } from "./observe.ts";
 
 /** node:crypto-backed Crypto port (§14.3). */
 export class NodeCrypto implements Crypto {
@@ -146,6 +147,17 @@ interface BudgetAccountMetaRow {
 export interface DbBudgetReserverOptions {
   /** Postgres reservation client (postgres-js). */
   sql: Sql;
+  /**
+   * The workspace this gateway installation belongs to (SPEC §6.16/§15.2). `budget_account` is a
+   * FORCE-RLS workspace-scoped table (migration 0001 §9): under the non-superuser `manifold_app`
+   * connection (migration 0002) a read against it is invisible until `manifold.workspace_id` is set
+   * to the OWNING workspace — and that is exactly the value this read is trying to discover, so it
+   * cannot derive its own scope from itself (chicken/egg). It must be supplied out-of-band. This
+   * mirrors `@manifold/budget.reserve`'s own contract: it never derives `workspaceId` from an
+   * RLS-protected row either — the caller always hands it in. One `gateway_installation` row belongs
+   * to exactly one `workspace_id` (§7), so one running gateway process has exactly one answer here.
+   */
+  workspaceId: string;
   /** Wall clock; the reservation window + created_at anchor. Defaults to `Date`. */
   now?: () => Date;
 }
@@ -159,29 +171,45 @@ export interface DbBudgetReserverOptions {
 export function makeDbBudgetReserveFn(
   opts: DbBudgetReserverOptions,
 ): (input: BudgetReserveInput) => Promise<BudgetReserveResult> {
-  const { sql } = opts;
+  const { sql, workspaceId } = opts;
   const now = opts.now ?? (() => new Date());
   return async (input: BudgetReserveInput): Promise<BudgetReserveResult> => {
     // FAIL CLOSED on ANY driver/connection/deadlock error (review gateway-F4): a throw here would
     // propagate to the server's top-level catch — a 500 that both leaks internal detail and skips the
     // budget gate. A hard budget we cannot evaluate MUST deny, never dispatch unmetered.
     try {
-      const rows = await sql<BudgetAccountMetaRow[]>`
-        SELECT workspace_id, "window"
-        FROM budget_account
-        WHERE id = ${input.budgetAccountId}
-        LIMIT 1
-      `;
+      // Scope the tenant GUC BEFORE the pre-read, in the SAME transaction (review live-money-wiring
+      // #2): budget_account's FORCE-RLS policy is `workspace_id = current_setting('manifold.workspace_id')`.
+      // The prior code issued this SELECT with no GUC set at all — under the RLS-subject `manifold_app`
+      // role that matches ZERO rows (not an error), so `acct` was always undefined and EVERY hard-budget
+      // request denied closed in production; a superuser test connection is RLS-EXEMPT and never
+      // exposed this. `set_config(..., true)` is transaction-local, so the read must share the
+      // transaction that sets it (mirrors @manifold/budget.reserve / sweepExpiredForWorkspace).
+      const rows = await sql.begin(async (tx) => {
+        await setWorkspaceGuc(tx, workspaceId);
+        return tx<BudgetAccountMetaRow[]>`
+          SELECT workspace_id, "window"
+          FROM budget_account
+          WHERE id = ${input.budgetAccountId}
+          LIMIT 1
+        `;
+      });
       const acct = rows[0];
       // A hard budget whose account we cannot resolve is not honorable → fail closed.
       if (!acct) return { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+      // Defense in depth: the row's OWN workspace_id must match the configured workspace. A mismatch
+      // means the snapshot/config wired a budget account belonging to a DIFFERENT workspace than this
+      // installation's — never honor a cross-tenant reservation, fail closed instead.
+      if (acct.workspace_id !== workspaceId) {
+        return { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+      }
 
       const at = now();
       const result = await budgetReserve(sql, {
         budgetAccountId: input.budgetAccountId,
         requestId: reservationRequestId(input.requestId, at),
         estMicroUsd: input.estMicroUsd,
-        workspaceId: acct.workspace_id,
+        workspaceId,
         windowStart: bucketStart(acct.window, at),
         shard: 0,
         // Thread the token estimate so a unit=tokens hard budget enforces pre-dispatch (#3).
@@ -199,16 +227,93 @@ export function makeDbBudgetReserveFn(
 
 /**
  * Convenience factory: a `BudgetReserverAdapter` reserving against the Postgres connection named by
- * `url` (the gateway's reservation DB, from MANIFOLD_BUDGET_DB_URL / DATABASE_URL). Wired into
- * `buildContext` so the running gateway honors DB hard budgets; tests inject the in-memory
- * FakeBudgetReserver instead.
+ * `url` (the gateway's reservation DB, from MANIFOLD_BUDGET_DB_URL / DATABASE_URL), scoped to
+ * `workspaceId` (this installation's one workspace, §7). Wired into `buildContext` so the running
+ * gateway honors DB hard budgets; tests inject the in-memory FakeBudgetReserver instead.
  */
-export function makeDbBudgetReserver(url: string, now?: () => Date): BudgetReserverAdapter {
+export function makeDbBudgetReserver(
+  url: string,
+  workspaceId: string,
+  now?: () => Date,
+): BudgetReserverAdapter {
   // §2.4/§4.2: @manifold/database is the sole driver opener — getClient applies the max:1
   // serverless default (one connection per invocation against the pooler) and the json/jsonb
   // serializers for us.
   const sql = getClient(url);
-  return new BudgetReserverAdapter(makeDbBudgetReserveFn({ sql, now }));
+  return new BudgetReserverAdapter(makeDbBudgetReserveFn({ sql, workspaceId, now }));
+}
+
+// ── Real Postgres-backed ingest (ADR-0011/§8.3-8.4, review live-money-wiring #1) ─────────────────
+//
+// `IngestSink.emit` is called ONCE PER FLAT EVENT (`accepted`, zero-or-more `provider_attempt`, then
+// exactly one `terminal` closes the trace — gateway.test.ts (h)). `ingestTrace` (observe.ts) needs the
+// WHOLE trace's events at once to `reduce()` a single `Observation`. This sink buffers a trace's
+// events in memory by `traceId` and, on the terminal event, flushes the buffer through `ingestTrace`
+// against the configured Postgres — the ONLY code path that actually INSERTs usage_record/cost_ledger
+// and commits a hard-budget reservation reserved→committed on the running server.
+//
+// Before this existed, `buildContext` wired ONLY `JsonlIngestSink`: a terminal event carrying a
+// reservationId was appended to a log file and NEVER reconciled — cost_ledger was never written and
+// every hard-budget hold was stranded at 'reserved' until the (separately owned) expiry sweep.
+export interface DbIngestSinkOptions {
+  /** Postgres client the ingest INSERTs (usage_record/cost_ledger) run against. */
+  sql: Sql;
+  /** This installation's one workspace (§7) — threaded into ingestTrace's journal context + RLS GUC. */
+  workspaceId: string;
+  /** Producer (installation instance) id — the other half of the journal dedup anchor (§6.8). */
+  producerId: string;
+  /** An additional sink to ALSO emit every raw event to (e.g. JsonlIngestSink, kept as a dev/debug
+   *  trail independent of the DB write). Optional. */
+  also?: IngestSink;
+}
+
+export class DbIngestSink implements IngestSink {
+  private readonly sql: Sql;
+  private readonly workspaceId: string;
+  private readonly producerId: string;
+  private readonly also?: IngestSink;
+  // Per-trace event buffer. Bounded by construction: every trace's entry is deleted the moment its
+  // terminal event flushes, so a live process only ever holds IN-FLIGHT traces, never a fully history.
+  private readonly traces = new Map<string, HotPathObservationEvent[]>();
+
+  constructor(opts: DbIngestSinkOptions) {
+    this.sql = opts.sql;
+    this.workspaceId = opts.workspaceId;
+    this.producerId = opts.producerId;
+    this.also = opts.also;
+  }
+
+  async emit(event: HotPathObservationEvent): Promise<void> {
+    if (this.also) await this.also.emit(event);
+
+    const events = [...(this.traces.get(event.traceId) ?? []), event];
+    if (event.kind !== "terminal") {
+      this.traces.set(event.traceId, events);
+      return;
+    }
+    // The terminal ALWAYS closes a trace (gateway.test.ts (h)): flush now and drop the buffer.
+    this.traces.delete(event.traceId);
+    await ingestTrace({
+      sql: this.sql,
+      events,
+      workspaceId: this.workspaceId,
+      producerId: this.producerId,
+    });
+  }
+}
+
+/**
+ * Convenience factory: a `DbIngestSink` bound to the Postgres connection named by `url` (the SAME
+ * reservation/observability DB as `makeDbBudgetReserver`, from MANIFOLD_BUDGET_DB_URL / DATABASE_URL).
+ */
+export function makeDbIngestSink(
+  url: string,
+  workspaceId: string,
+  producerId: string,
+  also?: IngestSink,
+): DbIngestSink {
+  const sql = getClient(url);
+  return new DbIngestSink({ sql, workspaceId, producerId, also });
 }
 
 /** Redirect hops we follow before giving up (same order of magnitude as browser/undici defaults). */
@@ -269,7 +374,10 @@ export class EgressFetcher implements Fetcher {
   }
 
   async fetch(req: Request): Promise<Response> {
-    const originHost = new URL(req.url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    const originUrl = new URL(req.url);
+    const originHost = originUrl.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    // Default port per scheme so an implicit :443/:80 compares equal to an explicit one.
+    const originPort = originUrl.port || (originUrl.protocol === "https:" ? "443" : "80");
     let current = req;
     for (let hop = 0; ; hop++) {
       await this.assertDestinationAllowed(new URL(current.url));
@@ -281,14 +389,26 @@ export class EgressFetcher implements Fetcher {
       if (hop >= MAX_REDIRECTS) throw new Error("egress: too many redirects");
       const next = new URL(location, current.url);
       const nextHost = next.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-      // Refuse any CROSS-HOST redirect: the origin is the ONLY host gateway-core checked against the
-      // per-target allowlist. A redirect to a different host (evil.example / a private IP / cloud
-      // metadata) must NOT receive the injected provider secret.
-      if (nextHost !== originHost) {
-        throw new Error(`egress: refused cross-host redirect ${originHost} -> ${nextHost}`);
+      const nextPort = next.port || (next.protocol === "https:" ? "443" : "80");
+      // Refuse any CROSS-HOST *or* CROSS-PORT redirect: the origin (host AND port) is the ONLY
+      // destination gateway-core checked against the per-target allowlist. Comparing hostname alone
+      // let a same-host, DIFFERENT-PORT redirect (302 Location https://api.example.com:8443/steal)
+      // through with the injected provider secret still attached — a listener on another port is a
+      // different destination the allowlist never vetted.
+      if (nextHost !== originHost || nextPort !== originPort) {
+        throw new Error(
+          `egress: refused cross-host redirect ${originHost}:${originPort} -> ${nextHost}:${nextPort}`,
+        );
       }
-      // Same host: re-validate scheme + resolved-private-IP (catch an https→http downgrade or a name
-      // that now resolves private) before following.
+      // Refuse a scheme DOWNGRADE even on the same host:port (e.g. https origin → http redirect):
+      // that would send the still-attached provider secret in cleartext.
+      if (originUrl.protocol === "https:" && next.protocol !== "https:") {
+        throw new Error(
+          `egress: refused scheme downgrade on redirect ${originUrl.protocol} -> ${next.protocol}`,
+        );
+      }
+      // Same host:port, no downgrade: re-validate scheme + resolved-private-IP (catch a name that
+      // now resolves private) before following.
       await this.assertDestinationAllowed(next);
       await res.body?.cancel().catch(() => {});
       // Re-issue to the same host carrying method + headers. NOTE: a request body is not replayed on

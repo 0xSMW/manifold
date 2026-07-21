@@ -43,6 +43,26 @@ const EPOCH = new Date(0);
  *  reservation never expires mid-stream (§8.4); one hour is the safe default here. */
 const DEFAULT_TTL_MS = 60 * 60 * 1000;
 
+/** Max forward clock-skew tolerated between a `requestId` ULID's embedded timestamp and
+ *  wall-clock "now" (hardening for bug #4). `window_start` is derived from that timestamp
+ *  (§6.7), so `requestId` MUST be server-minted by the gateway at dispatch time (its
+ *  timestamp ≈ now) — never caller-chosen. A ULID minted arbitrarily far in the FUTURE would
+ *  resolve `bucketStart` into a not-yet-open window with a full, virgin headroom, letting a
+ *  request spend NOW against a period that hasn't started yet and bypass an exhausted current
+ *  bucket — a durable-overspend vector once that future window becomes "now". Past timestamps
+ *  are legitimate (retries across a partition boundary, `rolling_30d` backfill, §16.3) so only
+ *  the future direction is clamped; this is a fail-closed assertion, not a money-math change.
+ *
+ *  24h, not a tight clock-skew bound: same-UTC-day request/response latency and any reasonable
+ *  gateway/DB clock drift stay well inside it, so it never rejects a genuine server-minted
+ *  requestId. It still closes the durable multi-day/week/month bucket-skip this bug describes
+ *  (forging next month's/next year's window while the CURRENT one is exhausted); it does not
+ *  (and structurally cannot, without also rejecting legitimate same-day traffic) block forging
+ *  the NEXT calendar day's daily bucket a few hours early — that residual slice is why §16.3
+ *  requires `requestId` to be minted ONLY by the trusted gateway, never accepted from a
+ *  caller-supplied value. */
+const MAX_FUTURE_SKEW_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Bind a bigint (µ$ / tokens) as its decimal string. postgres-js serializes JS strings
  * as unknown-typed parameters, which Postgres coerces to `bigint` from column/operator
@@ -159,10 +179,25 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
   } = input;
 
   const createdAt = ulidCreatedAt(requestId);
+  // Bug #4 hardening: fail closed on a requestId whose embedded ULID timestamp is further in
+  // the future than a generous clock-skew tolerance — see MAX_FUTURE_SKEW_MS above. A
+  // server-minted requestId is always ≈ now; only a chosen/forged one lands far ahead.
+  if (createdAt.getTime() > Date.now() + MAX_FUTURE_SKEW_MS) {
+    return { ok: false, reason: BUDGET_RESERVE_DENIED };
+  }
   const expiresAt = input.expiresAt ?? new Date(createdAt.getTime() + DEFAULT_TTL_MS);
-  const est = BigInt(estMicroUsd);
+  // Non-negativity (bug #2; mirrors commit's actual clamp, §8.4): a negative est/estTokens
+  // would flow straight into the step-8 bump as `reserved_(microusd|tokens) + est`, i.e. a
+  // DECREMENT — freeing phantom headroom for a request that reserved nothing. Clamp every
+  // estimate to >= 0 before it ever reaches the guard (step 6) or the bump (step 8).
+  const rawEst = BigInt(estMicroUsd);
+  const est = rawEst < 0n ? 0n : rawEst;
+  const rawInputTokens = input.estimatedInputTokens ?? 0n;
+  const rawOutputTokens = input.maxOutputTokens ?? 0n;
+  const estimatedInputTokens = rawInputTokens < 0n ? 0n : rawInputTokens;
+  const maxOutputTokens = rawOutputTokens < 0n ? 0n : rawOutputTokens;
   // Token-unit budgets reserve on TOKEN counts (est_input + max_output), not µ$.
-  const estTokens = (input.estimatedInputTokens ?? 0n) + (input.maxOutputTokens ?? 0n);
+  const estTokens = estimatedInputTokens + maxOutputTokens;
 
   return db.begin(async (sql: TransactionSql): Promise<ReserveResult> => {
     // Tenant scope for RLS (§6.16); harmless (and correct) whether or not the caller
@@ -299,7 +334,7 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
         window_start, shard
       ) VALUES (
         ${reservationId}, ${workspaceId}, ${leaf.id}, ${requestId},
-        ${p(input.estimatedInputTokens ?? 0n)}, ${p(input.maxOutputTokens ?? 0n)},
+        ${p(estimatedInputTokens)}, ${p(maxOutputTokens)},
         ${p(est)}, ${p(estTokens)}, 'reserved', ${expiresAt}, ${createdAt},
         ${coords[0]!.windowStart}, ${coords[0]!.shard}
       )
@@ -355,6 +390,15 @@ export interface CommitResult {
   ok: boolean;
   status: BudgetReservationState;
   committedMicroUsd: MicroUsd;
+  /** Bug #1: true when this commit's `actual` (cost or tokens) exceeded the amount that was
+   *  actually held (`reserved_(microusd|tokens)` at reserve time) — i.e. this commit just
+   *  durably booked committed spend PAST what reserve() ever guarded against, including the
+   *  late expired→committed reconcile path (H1). The commit itself is still "money truth": the
+   *  actual is always booked in full (never clamped to the held estimate or the account limit,
+   *  §8.4) and `reserved` never releases more than it held — this flag exists so a caller CAN
+   *  detect/alert/audit the overspend instead of it passing silently. `false` for a no-op /
+   *  missing / blocked outcome (nothing was released, so there is nothing to compare). */
+  overspent: boolean;
 }
 
 /**
@@ -388,14 +432,23 @@ export async function commit(
     });
     switch (out.kind) {
       case "released":
-        return { ok: true, status: out.status, committedMicroUsd: actual };
+        // Bug #1: the actual is booked in FULL regardless of what was held (money truth, §8.4;
+        // this never clamps `actual` and never releases more than `out.heldMicroUsd` from
+        // `reserved` — see releaseReservation). `overspent` surfaces the durable over-limit
+        // commit for the caller to detect/alert/audit instead of it passing silently.
+        return {
+          ok: true,
+          status: out.status,
+          committedMicroUsd: actual,
+          overspent: actual > out.heldMicroUsd || actualToks > out.heldTokens,
+        };
       case "missing":
-        return { ok: false, status: "expired", committedMicroUsd: 0n };
+        return { ok: false, status: "expired", committedMicroUsd: 0n, overspent: false };
       case "noop":
         // Already terminal — no-op (idempotent reconcile); echoes the requested actual.
-        return { ok: false, status: out.status, committedMicroUsd: actual };
+        return { ok: false, status: out.status, committedMicroUsd: actual, overspent: false };
       case "blocked":
-        return { ok: false, status: out.status, committedMicroUsd: 0n };
+        return { ok: false, status: out.status, committedMicroUsd: 0n, overspent: false };
     }
   });
 }
@@ -499,7 +552,16 @@ async function releaseExpiredRows(
  *   - `blocked`  — the domain machine rejected the transition (status still `reserved`).
  */
 type ReleaseOutcome =
-  | { kind: "released"; status: BudgetReservationState }
+  | {
+      kind: "released";
+      status: BudgetReservationState;
+      /** The reservation's ORIGINAL held estimate (§8.4) — persisted on `budget_reservation` at
+       *  reserve time and never mutated by release, so it is available here in BOTH the normal
+       *  release path and the late expired→committed path (bug #1). Callers diff this against
+       *  the actual to detect an overspend. */
+      heldMicroUsd: bigint;
+      heldTokens: bigint;
+    }
   | { kind: "missing"; status: "expired" }
   | { kind: "noop"; status: BudgetReservationState }
   | { kind: "blocked"; status: BudgetReservationState };
@@ -590,7 +652,12 @@ async function releaseReservation(
             reconciled_at = now()
         WHERE id = ${reservationId} AND created_at = ${res.created_at}
       `;
-      return { kind: "released", status: "committed" };
+      return {
+        kind: "released",
+        status: "committed",
+        heldMicroUsd: BigInt(res.reserved_microusd),
+        heldTokens: BigInt(res.reserved_tokens ?? "0"),
+      };
     }
     return { kind: "noop", status: res.status };
   }
@@ -639,7 +706,7 @@ async function releaseReservation(
         reconciled_at = now()
     WHERE id = ${reservationId} AND created_at = ${res.created_at}
   `;
-  return { kind: "released", status: next.state };
+  return { kind: "released", status: next.state, heldMicroUsd, heldTokens };
 }
 
 /**
@@ -660,18 +727,39 @@ function releaseCoord(
 
 /**
  * Load a budget_account and its ancestor chain leaf→root via `parent_id` (§16.3 M13). Returns
- * the leaf first. Depth-bounded so a mis-seeded cycle can't loop forever. Reads budget_account
- * under RLS, so the tenant GUC must already be set by the caller.
+ * the leaf first. Reads budget_account under RLS, so the tenant GUC must already be set by
+ * the caller.
+ *
+ * Bug #3 hardening — two invariants the plain depth-bound alone did not enforce:
+ *   - CYCLE GUARD: `depth < 32` alone does not stop a cycle (e.g. a self-parent, or A<->B),
+ *     it only bounds it — a self-parent (`parent_id = id`) re-joined itself on every step and
+ *     produced 33 DUPLICATE rows for the same account. Every downstream consumer (the guard AND
+ *     the reserved/committed bump) iterates the returned array once per row, so that account's
+ *     counter row got bumped 33x for a single reservation. A `visited` id array, checked before
+ *     each recursive step, stops the walk the moment a parent would revisit an id already in the
+ *     chain, so a self/mutual-cycle chain always resolves to exactly the acyclic prefix (length 1
+ *     for a direct self-parent).
+ *   - SAME-WORKSPACE PARENT: a parent in a different workspace is invisible under RLS (the GUC
+ *     scopes every budget_account read to one workspace_id), so it silently drops out of the
+ *     recursion with no error — correct under RLS, but SILENT and unenforced for any RLS-exempt
+ *     caller (superuser/migration paths, or a future service role). Make the invariant explicit
+ *     in the query itself: a parent only joins the chain when its workspace_id matches its
+ *     child's, so a cross-workspace `parent_id` is deterministically excluded (never partially
+ *     applied) instead of relying solely on RLS to hide it.
  */
 async function loadChain(sql: TransactionSql, leafId: string): Promise<ChainAccount[]> {
   return sql<ChainAccount[]>`
     WITH RECURSIVE chain AS (
-      SELECT id, parent_id, limit_amount, "window", unit, workspace_id, 0 AS depth
+      SELECT id, parent_id, limit_amount, "window", unit, workspace_id, 0 AS depth,
+             ARRAY[id] AS visited
       FROM budget_account WHERE id = ${leafId}
       UNION ALL
-      SELECT p.id, p.parent_id, p.limit_amount, p."window", p.unit, p.workspace_id, c.depth + 1
+      SELECT p.id, p.parent_id, p.limit_amount, p."window", p.unit, p.workspace_id, c.depth + 1,
+             c.visited || p.id
       FROM budget_account p JOIN chain c ON p.id = c.parent_id
       WHERE c.depth < 32
+        AND NOT (p.id = ANY(c.visited))
+        AND p.workspace_id = c.workspace_id
     )
     SELECT id, parent_id, limit_amount, "window", unit, workspace_id FROM chain ORDER BY depth
   `;

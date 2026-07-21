@@ -12,8 +12,13 @@ export interface ResolvedProfile {
 export function normalizeHost(host: string | null): string {
   if (!host) return "";
   const h = host.trim().toLowerCase();
-  // Strip a trailing :port, but keep IPv6 brackets intact for exact-match lookup.
-  if (h.startsWith("[")) return h; // [::1]:port left as-is; snapshot keys it explicitly
+  // Bracketed IPv6 literal (e.g. `[::1]` or `[::1]:8080`): the snapshot keys profiles by the
+  // bracketed literal WITHOUT a port, so a trailing `:port` after the closing bracket must be
+  // stripped too, or a correctly-keyed IPv6 profile 404s as PROFILE_UNKNOWN.
+  if (h.startsWith("[")) {
+    const end = h.indexOf("]");
+    return end === -1 ? h : h.slice(0, end + 1);
+  }
   const colon = h.indexOf(":");
   return colon === -1 ? h : h.slice(0, colon);
 }

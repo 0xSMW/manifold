@@ -18,6 +18,7 @@ import {
   EgressFetcher,
   JsonlIngestSink,
   makeDbBudgetReserver,
+  makeDbIngestSink,
   NodeCrypto,
   SnapshotFileStore,
   SystemClock,
@@ -47,6 +48,15 @@ export interface ServerOptions {
    * BudgetReserverAdapter; tests inject the in-memory FakeBudgetReserver.
    */
   reserveBudget?: GatewayContext["reserveBudget"];
+  /**
+   * This installation's one workspace (SPEC §7/§6.16). Falls back to MANIFOLD_WORKSPACE_ID.
+   * REQUIRED whenever a reservation/observability DB is configured (MANIFOLD_BUDGET_DB_URL /
+   * DATABASE_URL): budget_account/usage_record/cost_ledger are FORCE-RLS workspace-scoped tables
+   * (§9), and the owning workspace cannot be safely discovered from an unscoped read under the
+   * non-superuser `manifold_app` role — it must be supplied out-of-band. One `gateway_installation`
+   * belongs to exactly one workspace, so one running gateway process has exactly one answer here.
+   */
+  workspaceId?: string;
 }
 
 /**
@@ -112,16 +122,38 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
     opts.pepper ?? resolveKeyPepper(process.env.MANIFOLD_KEY_PEPPER),
   );
 
-  // Hard-budget reservation (SPEC §16.3, ADR-0012): an explicit test override wins; otherwise, when
-  // a reservation DB is configured (MANIFOLD_BUDGET_DB_URL / DATABASE_URL), bind the REAL
-  // @manifold/budget.reserve transaction so the running gateway denies a DB hard-budget over-cap.
-  // With neither, `reserveBudget` stays undefined and a key carrying a hard budget fails closed in
-  // the core (never dispatched unmetered).
+  // Hard-budget reservation (SPEC §16.3, ADR-0012) + the observation/billing ingest (§8.3-8.4): an
+  // explicit test override (reserveBudget) wins for the reserver; otherwise, when a reservation DB
+  // is configured (MANIFOLD_BUDGET_DB_URL / DATABASE_URL), bind the REAL @manifold/budget.reserve
+  // transaction AND a real DbIngestSink so the running gateway both denies a DB hard-budget over-cap
+  // AND actually writes usage_record/cost_ledger + commits the reservation reserved→committed
+  // (review live-money-wiring #1: JsonlIngestSink alone never drove ingestTrace on the live path, so
+  // production never wrote cost_ledger and every hard-budget hold was stranded at 'reserved'). With
+  // no DB configured, `reserveBudget` stays undefined (a hard budget fails closed in the core, never
+  // dispatched unmetered) and ingest stays JSONL-only, exactly the prior dev behavior.
   const budgetDbUrl = process.env.MANIFOLD_BUDGET_DB_URL ?? process.env.DATABASE_URL;
+  const jsonlIngest = new JsonlIngestSink(opts.observationsPath ?? "./observations.log");
   let reserveBudget = opts.reserveBudget;
-  if (!reserveBudget && budgetDbUrl) {
-    const reserver = makeDbBudgetReserver(budgetDbUrl);
-    reserveBudget = (input) => reserver.reserve(input);
+  let ingest: GatewayContext["ingest"] = jsonlIngest;
+  if (budgetDbUrl) {
+    const workspaceId = opts.workspaceId ?? process.env.MANIFOLD_WORKSPACE_ID;
+    if (!workspaceId) {
+      // Fail LOUD at startup, not silently: without a workspace, a "fixed" reserveBudget would either
+      // (a) still fail-closed on every request (safe but a silent DoS on every hard budget) or (b) be
+      // skipped entirely, leaving hard budgets unmetered. Neither should happen quietly in production.
+      throw new Error(
+        "MANIFOLD_WORKSPACE_ID (or ServerOptions.workspaceId) must be set when a reservation/" +
+          "observability DB is configured (MANIFOLD_BUDGET_DB_URL / DATABASE_URL): budget_account, " +
+          "usage_record and cost_ledger are workspace-scoped RLS tables (§6.16) and the workspace " +
+          "cannot be discovered from an unscoped read — it must be supplied out-of-band.",
+      );
+    }
+    if (!reserveBudget) {
+      const reserver = makeDbBudgetReserver(budgetDbUrl, workspaceId);
+      reserveBudget = (input) => reserver.reserve(input);
+    }
+    // Keep JSONL too — a dev/debug trail of the raw flat events, independent of the DB write.
+    ingest = makeDbIngestSink(budgetDbUrl, workspaceId, installationId, jsonlIngest);
   }
 
   return {
@@ -129,7 +161,7 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
     snapshot,
     crypto: new NodeCrypto(),
     clock: new SystemClock(),
-    ingest: new JsonlIngestSink(opts.observationsPath ?? "./observations.log"),
+    ingest,
     fetcher: opts.fetcher ?? new EgressFetcher(opts.ssrfPolicy),
     pepper,
     resolveSecret: makeSecretResolver(opts.kek ?? resolveDataKek(process.env.MANIFOLD_DATA_KEK)),

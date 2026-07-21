@@ -70,6 +70,8 @@ const ACCOUNTS: AcctSeed[] = [
   { id: "ba_sweep_ws" }, // finding 3: workspace-scoped sweep under the RLS-subject role
   { id: "ba_fresh_shard", limit: EST * 5n }, // finding 4: fresh-shard cross-shard oversell
   { id: "ba_roll_straddle", window: "rolling_30d", limit: EST * 5n }, // finding 5: rolling anchor + no-oversell
+  // --- regression account for bug #3 (loadChain cycle detection) ---
+  { id: "ba_self_parent", limit: EST * 5n, parent: "ba_self_parent" }, // self-referential parent_id
 ];
 
 before(async () => {
@@ -548,6 +550,44 @@ test("HIERARCHICAL: a parent cap denies a leaf reserve even when the leaf has ro
   assert.equal(done.status, "committed");
   assert.equal((await windowRow(parentId, windowStart))!.reserved, EST * 4n, "commit releases the parent hold too");
   assert.equal((await windowRow(parentId, windowStart))!.committed, EST, "commit grows the parent committed");
+});
+
+// ---------------------------------------------------------------------------
+// BUG #3 — loadChain has no cycle guard: a self-referential parent_id (parent_id = own id)
+// re-joins the SAME row on every recursive step, bounded only by depth < 32, producing 33
+// DUPLICATE chain entries for one account. Every downstream bump/release loop iterates the
+// chain once per entry, so a single reservation bumps (and releases) that one counter row
+// 33 TIMES instead of once — a durable multi-bump that can blow straight past the account's
+// own limit on the bump side, and wildly over/under-shoot on the release side.
+// ---------------------------------------------------------------------------
+test("SELF-PARENT CYCLE (bug #3): a self-referential parent_id bumps/releases the counter row exactly ONCE, not 33x", async () => {
+  const budgetId = "ba_self_parent"; // parent_id = itself, limit = 5*EST
+  const windowStart = monthNow();
+  const requestId = ulid();
+
+  const r = await reserve(appSql, {
+    budgetAccountId: budgetId, requestId, estMicroUsd: EST,
+    workspaceId: WORKSPACE_ID, windowStart,
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+
+  // Under the bug the chain walk visits this one account 33 times (depth 0..32), so the bump
+  // loop (step 8 of reserve) adds `est` to the SAME row 33 times: reserved would land at
+  // 33*EST — already blowing past the account's own 5*EST limit on a single reserve. The fix
+  // (visited-set cycle guard) resolves the chain to length 1, so reserved is bumped exactly
+  // once.
+  const afterReserve = await windowRow(budgetId, windowStart);
+  assert.equal(afterReserve!.reserved, EST, "a single reserve must bump the self-parent row exactly ONCE, not 33x");
+
+  const c = await commit(appSql, r.reservationId, EST, WORKSPACE_ID);
+  assert.equal(c.status, "committed");
+
+  // Same argument on release: under the bug, releaseReservation's chain walk also visits the
+  // account 33 times, so committed would land at 33*EST instead of EST.
+  const afterCommit = await windowRow(budgetId, windowStart);
+  assert.equal(afterCommit!.reserved, 0n, "release brings reserved back to exactly zero, not a 33x-scaled value");
+  assert.equal(afterCommit!.committed, EST, "commit must grow committed by exactly one actual, not 33x");
 });
 
 // ---------------------------------------------------------------------------

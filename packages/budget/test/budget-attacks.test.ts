@@ -49,7 +49,8 @@ const LIMIT = EST * CAPACITY; // exactly 10 fit; the 11th must be denied
 
 // One monthly account per test (+ a daily account for the fresh-window test). Isolation by
 // account, NOT by faking window_start — so commit/rollback resolve the same row reserve did.
-const ACCOUNTS: Array<{ id: string; window: string }> = [
+const TOKEN_LIMIT = 10_000n; // token-unit cap for the negative-token-clamp regression test
+const ACCOUNTS: Array<{ id: string; window: string; unit?: string; limit?: bigint }> = [
   { id: "ba_race", window: "monthly" },
   { id: "ba_idem", window: "monthly" },
   { id: "ba_over", window: "monthly" },
@@ -57,6 +58,11 @@ const ACCOUNTS: Array<{ id: string; window: string }> = [
   { id: "ba_commit", window: "monthly" },
   { id: "ba_daily", window: "daily" },
   { id: "ba_release", window: "monthly" },
+  // --- regression accounts for bugs #1, #2, #4 ---
+  { id: "ba_overspend", window: "monthly", limit: EST * 2n }, // bug #1: durable overspend on commit
+  { id: "ba_neg_cost", window: "monthly" }, // bug #2: negative estMicroUsd clamp
+  { id: "ba_neg_tokens", window: "monthly", unit: "tokens", limit: TOKEN_LIMIT }, // bug #2: negative token clamp
+  { id: "ba_future_skew", window: "monthly" }, // bug #4: forged-future requestId clamp
 ];
 
 before(async () => {
@@ -72,8 +78,8 @@ before(async () => {
   // pricing_catalog_revision_id (CHECK hard_requires_pricing, §5.2); no FK on that column,
   // so a sentinel id is fine. Distinct scope_id keeps budget_scope_uq satisfied.
   const accountValues = ACCOUNTS.map(
-    (a) => `('${a.id}','${WORKSPACE_ID}','app','${a.id}','cost_microusd','${a.window}',` +
-      ` ${LIMIT}, 'hard', 'pcr_test')`,
+    (a) => `('${a.id}','${WORKSPACE_ID}','app','${a.id}','${a.unit ?? "cost_microusd"}','${a.window}',` +
+      ` ${a.limit ?? LIMIT}, 'hard', 'pcr_test')`,
   ).join(",\n      ");
   pg.psql(`
     INSERT INTO workspace (id, slug, name, region) VALUES
@@ -108,6 +114,18 @@ async function windowRow(
   `;
   const r = rows[0];
   return r ? { reserved: BigInt(r.reserved_microusd), committed: BigInt(r.committed_microusd) } : undefined;
+}
+
+async function windowTokens(
+  budgetId: string,
+  windowStart: Date,
+): Promise<{ reserved: bigint; committed: bigint } | undefined> {
+  const rows = await sql<{ reserved_tokens: string; committed_tokens: string }[]>`
+    SELECT reserved_tokens, committed_tokens FROM budget_window_state
+    WHERE budget_account_id = ${budgetId} AND window_start = ${windowStart} AND shard = 0
+  `;
+  const r = rows[0];
+  return r ? { reserved: BigInt(r.reserved_tokens), committed: BigInt(r.committed_tokens) } : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -349,4 +367,162 @@ test("ROLLBACK + SWEEP: released reservations return their held reserved to the 
   const swept = await sweepExpired(sql);
   assert.ok(swept >= 1, "at least one expired reservation swept");
   assert.equal((await windowRow(budgetId, windowStart))!.reserved, 0n, "sweep releases the expired hold");
+});
+
+// ---------------------------------------------------------------------------
+// BUG #1 — commit never re-checks committed+reserved <= limit when actual > held. The
+// commit must still book the real (over-limit) actual as money truth, but the overspend
+// must be DETECTABLE (not silent) and a subsequent reserve must be denied by the now-full
+// window, not silently admitted.
+// ---------------------------------------------------------------------------
+test("OVERSPEND (bug #1): a commit whose actual >> the held estimate books the true over-limit committed amount, flags overspent, and denies a subsequent reserve", async () => {
+  const budgetId = "ba_overspend"; // limit = EST * 2
+  const windowStart = monthNow();
+  const requestId = ulid();
+
+  const res = await reserve(sql, {
+    budgetAccountId: budgetId, requestId, estMicroUsd: EST,
+    workspaceId: WORKSPACE_ID, windowStart,
+  });
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+
+  // The real cost comes in WAY over both the held estimate AND the account's whole limit.
+  const hugeActual = EST * 100n;
+  const outcome = await commit(sql, res.reservationId, hugeActual);
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.status, "committed");
+  assert.equal(outcome.committedMicroUsd, hugeActual, "the actual is booked in full — money truth, never clamped");
+  assert.equal(outcome.overspent, true, "the over-limit commit must be flagged, not pass silently");
+
+  const after = await windowRow(budgetId, windowStart);
+  assert.equal(after!.reserved, 0n, "the held estimate (not the actual) is fully released from reserved");
+  assert.equal(after!.committed, hugeActual, "the window durably reflects the TRUE over-limit committed amount");
+
+  // A subsequent reserve against the now-overspent window must be denied — the guard sees
+  // committed (already > limit) + reserved + est > limit for ANY positive est.
+  const next = await reserve(sql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: 1n,
+    workspaceId: WORKSPACE_ID, windowStart,
+  });
+  assert.equal(next.ok, false, "an over-limit window must deny further reserves, not admit them");
+});
+
+// ---------------------------------------------------------------------------
+// BUG #2 — reserve() must clamp a NEGATIVE estMicroUsd/estTokens to >= 0. Unclamped, the
+// bump step adds the negative estimate directly to reserved_(microusd|tokens), DECREMENTING
+// the counter and freeing headroom for a request that reserved nothing.
+// ---------------------------------------------------------------------------
+test("NEGATIVE ESTIMATE (bug #2, cost unit): a negative estMicroUsd cannot free reserved headroom", async () => {
+  const budgetId = "ba_neg_cost";
+  const windowStart = monthNow();
+
+  // Fill the window to its limit (CAPACITY * EST) with legitimate reservations.
+  for (let i = 0; i < Number(CAPACITY); i++) {
+    const r = await reserve(sql, {
+      budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: EST,
+      workspaceId: WORKSPACE_ID, windowStart,
+    });
+    assert.equal(r.ok, true);
+  }
+  const full = await windowRow(budgetId, windowStart);
+  assert.equal(full!.reserved, LIMIT, "window is at capacity");
+
+  // Attack: reserve a NEGATIVE estimate. Unclamped, this ADDS a negative number to
+  // reserved_microusd at the bump step, freeing phantom headroom.
+  const attack = await reserve(sql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: -900_000n,
+    workspaceId: WORKSPACE_ID, windowStart,
+  });
+  // A negative estimate clamped to 0 still fits (0 <= headroom == 0), so it is legitimately
+  // admitted — the money-relevant assertion is that the counter never goes BELOW what was
+  // legitimately reserved.
+  const afterAttack = await windowRow(budgetId, windowStart);
+  assert.ok(
+    afterAttack!.reserved >= full!.reserved,
+    "a negative estimate must never DECREASE reserved below the real held total",
+  );
+
+  // With headroom still fully consumed (never freed by the negative estimate), a normal-size
+  // reserve must be denied.
+  const legit = await reserve(sql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: EST,
+    workspaceId: WORKSPACE_ID, windowStart,
+  });
+  assert.equal(legit.ok, false, "a full window stays full — the negative estimate freed no headroom");
+});
+
+test("NEGATIVE ESTIMATE (bug #2, token unit): negative estimatedInputTokens/maxOutputTokens cannot free reserved token headroom", async () => {
+  const budgetId = "ba_neg_tokens"; // TOKEN_LIMIT = 10_000
+  const windowStart = monthNow();
+
+  // Fill the token window to capacity.
+  const fill = await reserve(sql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: 0n,
+    estimatedInputTokens: TOKEN_LIMIT, maxOutputTokens: 0n,
+    workspaceId: WORKSPACE_ID, windowStart,
+  });
+  assert.equal(fill.ok, true);
+  const full = await windowTokens(budgetId, windowStart);
+  assert.equal(full!.reserved, TOKEN_LIMIT, "token window is at capacity");
+
+  // Attack: a negative maxOutputTokens. Unclamped, `estTokens = estimatedInputTokens +
+  // maxOutputTokens` goes negative and the bump step DECREMENTS reserved_tokens, freeing
+  // headroom nothing actually vacated.
+  await reserve(sql, {
+    budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: 0n,
+    estimatedInputTokens: 0n, maxOutputTokens: -5_000n,
+    workspaceId: WORKSPACE_ID, windowStart,
+  });
+  const afterAttack = await windowTokens(budgetId, windowStart);
+  assert.ok(
+    afterAttack!.reserved >= full!.reserved,
+    "a negative token estimate must never DECREASE reserved_tokens below the real held total",
+  );
+
+  // Headroom must still be exhausted — a legitimate token reserve is denied.
+  const legit = await reserve(sql, {
+    budgetAccountId: budgetId, requestId: ulid(),
+    estMicroUsd: 0n, estimatedInputTokens: 1n, maxOutputTokens: 0n,
+    workspaceId: WORKSPACE_ID, windowStart,
+  });
+  assert.equal(legit.ok, false, "a full token window stays full — the negative estimate freed no headroom");
+});
+
+// ---------------------------------------------------------------------------
+// BUG #4 — window_start is derived from the requestId ULID timestamp (§6.7), so a chosen
+// ULID minted far in the FUTURE would resolve into a not-yet-open, virgin window and bypass
+// an exhausted current bucket. requestId MUST be server-minted (≈ now); reserve() must fail
+// closed on a forged far-future timestamp instead of opening a fresh counter row for it.
+// ---------------------------------------------------------------------------
+test("FUTURE-FORGED REQUEST ID (bug #4): a requestId ULID minted far in the future is denied, not given a virgin window", async () => {
+  const budgetId = "ba_future_skew";
+  const windowStart = monthNow();
+
+  // Exhaust the REAL current-month window.
+  for (let i = 0; i < Number(CAPACITY); i++) {
+    const r = await reserve(sql, {
+      budgetAccountId: budgetId, requestId: ulid(), estMicroUsd: EST,
+      workspaceId: WORKSPACE_ID, windowStart,
+    });
+    assert.equal(r.ok, true);
+  }
+  assert.equal((await windowRow(budgetId, windowStart))!.reserved, LIMIT, "current window is exhausted");
+
+  // Forge a requestId whose embedded ULID timestamp is a year in the future — under the bug,
+  // createdAt derives a NEXT-YEAR monthly bucket with full headroom, admitting the reserve.
+  const futureMs = Date.now() + 365 * 24 * 60 * 60 * 1000;
+  const forgedRequestId = ulid(futureMs);
+  const futureWindowStart = bucketStart("monthly", new Date(futureMs));
+
+  const attack = await reserve(sql, {
+    budgetAccountId: budgetId, requestId: forgedRequestId, estMicroUsd: EST,
+    workspaceId: WORKSPACE_ID, windowStart: futureWindowStart,
+  });
+  assert.equal(attack.ok, false, "a far-future-forged requestId must be denied, not open a fresh window");
+  assert.equal(
+    await windowRow(budgetId, futureWindowStart),
+    undefined,
+    "no counter row is created for the forged future window",
+  );
 });

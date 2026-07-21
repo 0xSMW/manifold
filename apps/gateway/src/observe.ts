@@ -10,7 +10,7 @@
 // stay pure. The ingest TRANSPORT is in-process (call this directly with the collected events); the
 // DB writes and the §6.10 cost math are REAL. A durable queue/worker is the production transport, but
 // it reduces/projects with this exact code.
-import type { Sql, TransactionSql } from "@manifold/database";
+import { setWorkspaceGuc, type Sql, type TransactionSql } from "@manifold/database";
 import type { HotPathObservationEvent } from "@manifold/ports";
 import { commit, ulid, ulidCreatedAt, type CommitResult } from "@manifold/budget";
 import {
@@ -65,7 +65,16 @@ export async function ingestTrace(input: IngestTraceInput): Promise<IngestTraceR
 
   // Project-insert both rows in ONE transaction so the ledger and usage rows never diverge on a partial
   // failure (money reviewer #9). Both are ON CONFLICT DO NOTHING, so a redelivery is a clean no-op.
+  //
+  // Scope the tenant GUC FIRST, before either INSERT (review live-money-wiring #3): usage_record and
+  // cost_ledger are FORCE-RLS workspace-scoped tables (migration 0001 §9), and their policy governs
+  // INSERT's WITH CHECK too, not just SELECT. Under the RLS-subject `manifold_app` role (the
+  // production connection, migration 0002) an unset GUC makes WITH CHECK reject every row: the
+  // INSERT throws, the transaction rolls back, no cost_ledger row is ever written, and the caller's
+  // hard-budget reservation never reconciles reserved→committed. A superuser test connection is
+  // EXEMPT from RLS and would pass either way, which is exactly why this bug shipped invisibly.
   await sql.begin(async (tx) => {
+    await setWorkspaceGuc(tx, workspaceId);
     await insertUsageRecord(tx, observationId, occurredAt, usage);
     await insertCostLedger(tx, observationId, occurredAt, cost);
   });

@@ -40,6 +40,8 @@ const mustBlock = [
   "https://100.64.0.1/", // CGNAT lower bound
   "https://100.127.255.255/", // CGNAT upper bound
   "https://[64:ff9b::a9fe:a9fe]/", // NAT64 64:ff9b::/96 embedding 169.254.169.254 (metadata)
+  "https://[2002:7f00:1::]/", // 6to4 2002::/16 embedding 127.0.0.1 (loopback)
+  "https://[2001:0:0:0:0:0:5601:5601]/", // Teredo 2001:0::/32 embedding (inverted) 169.254.169.254
 ];
 
 for (const url of mustBlock) {
@@ -96,6 +98,11 @@ const privateIps = [
   "64:ff9b::a9fe:a9fe", // 169.254.169.254 (cloud metadata) via NAT64
   "64:ff9b::7f00:1", // 127.0.0.1 (loopback) via NAT64
   "64:ff9b::a00:1", // 10.0.0.1 (RFC-1918) via NAT64
+  // 6to4 2002::/16 (RFC 3056): embedded v4 in bits 16-47.
+  "2002:7f00:1::", // 127.0.0.1 (loopback) via 6to4
+  "2002:a9fe:a9fe::", // 169.254.169.254 (cloud metadata) via 6to4
+  // Teredo 2001:0::/32 (RFC 4380): embedded v4 in the last 32 bits, bit-inverted.
+  "2001:0:0:0:0:0:5601:5601", // 169.254.169.254 (cloud metadata) via Teredo
 ];
 for (const ip of privateIps) {
   test(`isPrivateIp('${ip}') === true`, () => assert.equal(isPrivateIp(ip), true));
@@ -109,6 +116,7 @@ const publicIps = [
   "100.128.0.1", // one above CGNAT
   "99.64.0.1", // shares the second octet but not the first
   "64:ff9b::808:808", // NAT64-wrapped 8.8.8.8 — a wrapped PUBLIC v4 must stay public (no false block)
+  "2002:808:808::", // 6to4-wrapped 8.8.8.8 — a wrapped PUBLIC v4 must stay public (no false block)
 ]; // real public v4/v6
 for (const ip of publicIps) {
   test(`isPrivateIp('${ip}') === false`, () => assert.equal(isPrivateIp(ip), false));

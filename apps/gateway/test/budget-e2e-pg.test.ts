@@ -139,7 +139,7 @@ before(async () => {
 
   // THE REAL RESERVER: @manifold/budget.reserve against the SAME Postgres container (NO fake).
   const reserver = new BudgetReserverAdapter(
-    makeDbBudgetReserveFn({ sql: pg.sql as unknown as Sql }),
+    makeDbBudgetReserveFn({ sql: pg.sql as unknown as Sql, workspaceId: "ws_be2e" }),
   );
   realReserve = (input) => reserver.reserve(input);
 }, { timeout: 300_000 });
