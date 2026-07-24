@@ -1,7 +1,15 @@
 # Manifold — Deployment Runbook
 
 Test/production deploy of Manifold: the **control plane** (Next.js 16, Vercel) plus the
-**gateway** (long-running `node:http` service, a container/VM — **not** Vercel serverless).
+**gateway** — which per SPEC **ADR-0018** is ALSO a Vercel deployment: a **Node / Fluid Compute
+function** (`maxDuration=300s`, `memory=1024MB`, region-pinned to Neon), NOT the Edge runtime.
+
+> **Gateway status:** the SPEC target is Vercel Fluid Compute. The gateway is **not yet packaged**
+> for it — `apps/gateway/src/server.ts` is currently a bare `node:http` `createServer().listen()`
+> dev entry, and `packages/adapters-vercel` (the SPEC §4.1 ports→Vercel adapter) does not exist yet.
+> Until that packaging lands, the gateway can only be run as the local Node server (§F, a **stopgap**,
+> not the production shape). The gateway-core pipeline is built + tested and runtime-agnostic (DI via
+> `ports/`), so wiring it onto Vercel Fluid is a packaging/adapter job, not a rewrite.
 
 > **Vercel target: the `ai-marketing` team.** The repo's `apps/control-plane/.vercel/project.json`
 > is already linked to team `ai-marketing` (`team_DfQFR8t3PzmQgeiSf4waLFrx`), project `manifold`.
@@ -20,7 +28,7 @@ Test/production deploy of Manifold: the **control plane** (Next.js 16, Vercel) p
                                     ▼
                             GET /api/v1/config/active  ──►  signed snapshot.json
                                     │
- API clients ──HTTPS──►  Gateway (container/VM, node:http :8787)  ──►  Neon (budget reservations)
+ API clients ──HTTPS──►  Gateway (SPEC: Vercel Fluid Node fn; now: local node:http :8787)  ──►  Neon (budget reservations)
                                     │ verifies snapshot (ed25519 public key), decrypts credmap (KEK)
                                     ▼
                             upstream provider (e.g. api.anthropic.com)
@@ -226,15 +234,27 @@ export MF_INSTALLATION=...    # gateway_installation id from the seed response
 
 ---
 
-## F. Run the gateway (container/VM — NOT Vercel)
+## F. Run the gateway
 
-The gateway is a long-running `node:http` server (`apps/gateway`, default port 8787). It holds a
-persistent DB pool and streams upstream responses — it is **not** a serverless function and must
-**not** be deployed to Vercel. Run it on a container/VM (Fly.io machine, Render/Railway service,
-an EC2/GCE VM under systemd, or a Docker host). Requirements: Node ≥ 22, outbound network to Neon
-and to the upstream providers, and a persistent process manager.
+**Production target (SPEC ADR-0018): a Vercel Node / Fluid Compute function** — same platform as the
+control plane, a second Vercel project (`manifold-gateway`) under `ai-marketing`, one hostname per
+ingress profile, configured `maxDuration=300s` / `memory=1024MB` / region-pinned to Neon. Fluid
+Compute is chosen precisely for the streaming-proxy workload: warm instances with in-instance
+concurrency serve many concurrent provider streams, and `after()`/`waitUntil` handle post-response
+ingest. This is NOT the Edge runtime and NOT a VM.
 
-**`RUN MANUALLY — requires the confirmed target`** (build + ship the image/host).
+> **BLOCKED — not yet buildable as specified.** Two pieces the SPEC requires do not exist yet:
+> (1) `packages/adapters-vercel` (implements `ports/` against Edge Config / Neon / `after()` / Vercel
+> Cron, §4.1); (2) a Vercel Fluid function entry for `apps/gateway` (today it is a bare `node:http`
+> `createServer().listen()` dev server). Building those + creating the `manifold-gateway` Vercel
+> project is the remaining work to run the data plane where it belongs.
+
+**Stopgap for a beta smoke test (NOT the production shape):** until the Vercel packaging lands, run
+the existing `node:http` server (`apps/gateway`, port 8787) locally or on any Node host against the
+same Neon DB + signed snapshot. This exercises the real request pipeline; it is a temporary way to
+test the data plane, not how it ships.
+
+**`RUN MANUALLY — requires the confirmed target`** (local/stopgap run).
 
 1. Produce a **signed** snapshot for the gateway to load. The bundled
    `apps/gateway/snapshot.example.json` is **unsigned** and will be **rejected** in production
@@ -301,15 +321,17 @@ curl -s -X POST http://<gateway-host>:8787/v1/messages \
 | D | `vercel env add …` (all vars, Production) | Vercel · ai-marketing |
 | E | `vercel deploy --prod` | Vercel · ai-marketing |
 | E | `POST /api/v1/admin/seed` (bootstrap token) | deployed CP |
-| F | build/ship gateway image; `npm start` on VM | container/VM |
+| F | **SPEC target:** package gateway as a Vercel Fluid fn + create `manifold-gateway` project (blocked: needs `adapters-vercel`). **Stopgap:** `npm start` the `node:http` server locally | Vercel · ai-marketing (target) / local (stopgap) |
 | F | `GET /api/v1/config/active` → snapshot.active.json | deployed CP |
 | G | `manifold ping` / `manifold key list` | deployed CP |
 
 ## Known blockers to a real deploy (verify before promising "done")
 
-- **Neon owner privileges.** Migrations create `manifold_app`, RLS, partitions, triggers, and
-  `ALTER DEFAULT PRIVILEGES` as the DB owner. Neon's owner is not a superuser; if any statement
-  is rejected, resolve it before the app can connect as `manifold_app`.
+- **Neon owner privileges — RESOLVED (verified 2026-07-24).** `0002` originally did
+  `ALTER ROLE … NOSUPERUSER NOBYPASSRLS`, which Neon's non-superuser owner rejects; it is now
+  portable (tries the full hardening, falls back on `insufficient_privilege` — a non-superuser-created
+  role is already NOSUPERUSER+NOBYPASSRLS). All migrations `0000–0007` apply cleanly on Neon, and a
+  live cross-tenant query as `manifold_app` (`rolbypassrls=f`) returned 1 row not 2 (RLS enforced).
 - **`0002` password placeholder.** `CHANGEME_APP_PASSWORD` must be replaced (edit the file or
   `ALTER ROLE`) or the pooled `DATABASE_URL` cannot authenticate.
 - **Signed snapshot required in prod.** The gateway rejects the unsigned `snapshot.example.json`;
