@@ -30,7 +30,27 @@ END$$;--> statement-breakpoint
 -- Defensive: guarantee the role can never bypass RLS even if a prior run created it
 -- differently. NOSUPERUSER + NOBYPASSRLS are the two attributes that would make RLS inert;
 -- NOCREATEROLE/NOCREATEDB keep the blast radius small.
-ALTER ROLE manifold_app NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;--> statement-breakpoint
+--
+-- PORTABILITY: on a self-hosted/Docker Postgres the migration runs as a SUPERUSER and the full
+-- explicit ALTER succeeds. On MANAGED Postgres (Neon, RDS, …) the connection owner is NOT a
+-- superuser and Postgres forbids it from setting the SUPERUSER/BYPASSRLS attributes at all
+-- ("permission denied to alter role" / "only roles with SUPERUSER may change the SUPERUSER
+-- attribute"). But a role CREATEd by a non-superuser is ALREADY NOSUPERUSER + NOBYPASSRLS by
+-- default (those attributes can only ever be granted BY a superuser), so RLS is still enforced.
+-- We therefore try the full hardening, and on insufficient_privilege fall back to the subset the
+-- owner is permitted to set — the security-critical NOBYPASSRLS holds either way.
+DO $$
+BEGIN
+	BEGIN
+		ALTER ROLE manifold_app NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB;
+	EXCEPTION WHEN insufficient_privilege THEN
+		BEGIN
+			ALTER ROLE manifold_app NOCREATEROLE NOCREATEDB;
+		EXCEPTION WHEN insufficient_privilege THEN
+			RAISE NOTICE 'manifold_app: relying on managed-Postgres defaults (NOSUPERUSER/NOBYPASSRLS/NOCREATEROLE/NOCREATEDB)';
+		END;
+	END;
+END$$;--> statement-breakpoint
 
 -- ---------------------------------------------------------------------------
 -- 2. Grants. Schema usage + DML on tenant tables (RLS then scopes the rows the app may
