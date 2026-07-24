@@ -9,3 +9,5 @@ apps/cli/bin/
 .env*.local
 observations.log
 *.tsbuildinfo
+.vercel
+.env*
