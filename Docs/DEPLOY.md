@@ -1,31 +1,23 @@
 # Manifold deployment and operations runbook
 
-This runbook is the source of truth for the Vercel control plane and gateway. The only approved
-Vercel scope is `ai-marketing`.
+This runbook describes a reusable Vercel control-plane and gateway deployment procedure. Do not
+place credential material, virtual keys, one-time installation keys, or release-specific evidence
+in this document.
 
-## Current state
+## Runtime and readiness
 
-Current deployment evidence is maintained in `Docs/GATEWAY_ACCEPTANCE.md`. Protected Preview and
-Production are configured for signed installation snapshots and a Gemini OpenAI-compatible
-provider, with live streaming/non-streaming billing, rotation, recovery, soak, and rollback
-evidence. Do not place credential material, virtual keys, or one-time installation keys in this
-document.
+Deploy the gateway as a Vercel Node.js 22.x Fluid Compute function in the selected region, with a
+gateway duration appropriate to the platform and workload. Configure Preview and Production
+independently for signed installation snapshots and an OpenAI-compatible provider.
 
-- Control plane project: `ai-marketing/manifold`.
-- Gateway project: `ai-marketing/manifold-gateway`
-  (`prj_QpvIko2eFo71p5Z3F3VlPLDXfVw7`).
-- Gateway production alias: `https://manifold-gateway.vercel.app`.
-- Gateway runtime: Vercel Node.js 22.x, Fluid Compute, `iad1`, 300-second gateway duration,
-  Standard memory, ARM64.
 - `/health` and `/api/health` are liveness-only and return `Cache-Control: no-store`.
 - `/ready` and `/api/ready` are the operational readiness gate; require 200 before a promotion.
 - Public provider traffic is limited to the explicitly supported OpenAI-compatible paths listed
-  below. Required Preview and Production-canary evidence is retained in
-  `Docs/GATEWAY_ACCEPTANCE.md`.
+  below.
 
-Vercel Fluid Standard currently provides 2 GB memory and 1 vCPU. The older 1 GB target in the
-specification is no longer a selectable Fluid memory class. See
-[Vercel function memory](https://vercel.com/docs/functions/configuring-functions/memory).
+Choose a supported Fluid memory class and verify its limits against the current
+[Vercel function memory](https://vercel.com/docs/functions/configuring-functions/memory)
+documentation before deployment.
 
 ## Topology
 
@@ -47,11 +39,11 @@ state before destructive work and resumes that state from the durable job ledger
 CLI / console
     |
     v
-Control plane: ai-marketing/manifold
+Control plane deployment
     |  signs immutable installation snapshots
     |  authenticates installation requests
     v
-Gateway: ai-marketing/manifold-gateway, Node 22 Fluid, iad1
+Gateway deployment, Node 22 Fluid
     |  verified isolate LKG snapshot cache
     |  DNS-pinned provider egress
     |  durable terminal job ledger + waitUntil + Cron
@@ -83,8 +75,8 @@ Project settings must remain:
 
 | Setting | Required value |
 |---|---|
-| Team | `ai-marketing` |
-| Project | `manifold-gateway` |
+| Team | designated deployment team |
+| Project | designated gateway project |
 | Node.js | `22.x` |
 | Fluid Compute | enabled |
 | Region | `iad1` |
@@ -95,8 +87,8 @@ Project settings must remain:
 Verify before every production promotion:
 
 ```bash
-vercel project inspect manifold-gateway --scope ai-marketing
-vercel pull --yes --environment=preview --cwd apps/gateway --scope ai-marketing
+vercel project inspect <gateway-project> --scope <team>
+vercel pull --yes --environment=preview --cwd apps/gateway --scope <team>
 vercel build --standalone --cwd apps/gateway
 jq . apps/gateway/.vercel/output/functions/api/gateway.func/.vc-config.json
 du -sh apps/gateway/.vercel/output
@@ -142,8 +134,8 @@ Migration procedure:
    Never run an unreviewed destructive down migration against production.
 
 Contracting migrations follow expand → backfill → switch → observe through the rollback window →
-contract. Retain the migration receipt, production-size rehearsal result, and recovery decision
-with the release evidence.
+contract. Retain the migration record, rehearsal result, and recovery decision with the release
+record.
 
 ## Gateway environment
 
@@ -195,8 +187,8 @@ vercel env ls preview
 vercel env ls production
 ```
 
-The production gateway has the required installation/runtime configuration. Configure Preview
-independently; never copy Production secret values into Preview or into release artifacts.
+Configure Preview and Production independently; never copy Production secret values into Preview
+or into release artifacts.
 
 ## Snapshot publication and revocation SLA
 
@@ -240,9 +232,9 @@ corepack pnpm install --frozen-lockfile --ignore-scripts
 Preview:
 
 ```bash
-vercel pull --yes --environment=preview --cwd apps/gateway --scope ai-marketing
+vercel pull --yes --environment=preview --cwd apps/gateway --scope <team>
 vercel build --standalone --cwd apps/gateway
-vercel deploy --prebuilt --target=preview --cwd apps/gateway --scope ai-marketing
+vercel deploy --prebuilt --target=preview --cwd apps/gateway --scope <team>
 ```
 
 Use authenticated Vercel curl when Preview Deployment Protection is enabled:
@@ -256,12 +248,12 @@ vercel curl /ready --deployment <preview-deployment-id> -- --include
 Production:
 
 ```bash
-vercel pull --yes --environment=production --cwd apps/gateway --scope ai-marketing
+vercel pull --yes --environment=production --cwd apps/gateway --scope <team>
 vercel build --prod --standalone --cwd apps/gateway
-vercel deploy --prebuilt --prod --cwd apps/gateway --scope ai-marketing
+vercel deploy --prebuilt --prod --cwd apps/gateway --scope <team>
 ```
 
-Never promote unless Preview readiness is 200 and every gate below has current artifacts.
+Never promote unless Preview readiness is 200 and every applicable gate below passes.
 
 ## Smoke and billing checks
 
@@ -339,11 +331,8 @@ Record these capacity artifacts for both Preview and the production canary:
 | Neon admission/reservation | peak planned rate | pool <80%; reservation errors <0.1%; admission and reservation P99 recorded separately |
 | ingest | sustained planned event rate | terminal-to-queryable P99 ≤5 seconds |
 
-The current release record includes 1,000/1,000 Production health requests at concurrency 16, a
-638/638 mixed streaming/non-streaming 15-minute Gemini soak, 1.79% observed Neon connection
-utilization, exact 1 MiB payload-boundary behavior, and the local 1 GiB bounded-RSS gate. Hosted
-Vercel memory, FD/socket, and duration panels are part of the explicitly deferred observability
-follow-up.
+Record the results for each load, soak, and capacity check. Validate platform memory, FD/socket,
+and duration behavior with the chosen observability tooling.
 
 The production Neon compute must remain warm for strict admission and hard budgets. Record its
 autosuspend setting, pool ceiling, observed connection peak, and cold-start probe; scale-to-zero
@@ -394,10 +383,8 @@ Page on:
 - Neon connection utilization above 80%;
 - any unexpected production config/signature/authentication failure.
 
-Vercel-hosted metrics, dashboards, and alert delivery are explicitly deferred by the user to a
-later follow-up. Keep this section as the required implementation runbook: no dashboard, alert,
-or paging control is considered configured until it has an owner, destination, query, and dated
-test-delivery receipt. This release does not claim those controls as evidence.
+No dashboard, alert, or paging control is considered configured until it has an owner,
+destination, query, and verified test delivery.
 
 The operator dashboard and alerts must implement these exact SLIs:
 
@@ -411,8 +398,8 @@ The operator dashboard and alerts must implement these exact SLIs:
 | terminal/health job DLQ | 0 new dead jobs | page on any new dead job |
 | Neon pool utilization | <80% | warn at 80%; page if saturation causes admission/readiness failures |
 
-Every alert record needs the metric/query, denominator, evaluation window, dashboard link, owner,
-notification destination, runbook anchor, and a dated test-delivery receipt.
+Every alert definition needs the metric/query, denominator, evaluation window, dashboard link,
+owner, notification destination, runbook anchor, and verified test delivery.
 
 ## Durable target-health publication
 
@@ -452,7 +439,7 @@ dashboard links, decision, approver, and any rollback timestamp.
 Code rollback:
 
 ```bash
-vercel rollback <known-good-production-deployment-url> --scope ai-marketing
+vercel rollback <known-good-production-deployment-url> --scope <team>
 ```
 
 Snapshot rollback uses the control-plane rollback operation and republishes a signed immutable
@@ -482,9 +469,8 @@ decrypt/provider smoke across warmed instances, then remove and destroy the old 
 republishing the prior wrapped-DEK snapshot while both KEKs remain trusted.
 
 Each rotation record identifies the owner, old/new key IDs, affected snapshot revisions,
-heartbeat convergence, live smoke result, retirement time, and recovery test. The corresponding
-keyring feature and live proof must be green in `Docs/GATEWAY_ACCEPTANCE.md` before using these
-procedures.
+heartbeat convergence, smoke result, retirement time, and recovery test. Complete and retain the
+corresponding keyring and live-validation checks before using these procedures.
 
 ## Incident actions
 
@@ -493,7 +479,7 @@ compromise, cross-tenant exposure, billing corruption, or broad gateway outage; 
 provider routing, queue lag, or capacity loss with a safe fallback. Record detection time, affected
 deployment/snapshot/workspaces, frozen changes, every operator action, and customer/status
 communications. Preserve deployment logs, safe metric exports, config operations, audit rows,
-job IDs/statuses, and migration receipts without copying secrets or request bodies.
+job IDs/statuses, and migration records without copying secrets or request bodies.
 
 Gateway 5xx or readiness failure:
 
@@ -542,7 +528,7 @@ Alert-delivery failure:
 1. declare the dashboard/alert channel impaired and establish a human watch on readiness, 5xx,
    queue age, reservation errors, snapshot failures, and Neon;
 2. repair the destination and send a labeled test alert;
-3. retain the delivery receipt and end manual watch only after the configured owner acknowledges it.
+3. verify delivery and end manual watch only after the configured owner acknowledges it.
 
 Recovery exit criteria are readiness continuously 200, the active/applied snapshot converged,
 no new dead work, reservations reconciled, provider smoke green, affected SLOs stable for 30
@@ -562,8 +548,7 @@ Production customer traffic remains blocked until all are true:
 - crash/deploy interruption recovery passes;
 - Neon/Fluid health load, authenticated soak, payload, and local bounded-memory gates pass;
 - canary and independent code/snapshot rollback rehearsals pass;
-- `Docs/GATEWAY_ACCEPTANCE.md` has no blocked, missing, or indirect proof.
+- launch evidence records direct, complete proof for every applicable gate.
 
-Vercel-hosted observability—including platform memory, FD/socket, and duration panels—is deferred
-outside the current delivery scope. Complete its dashboard/paging controls before using those
-signals as a customer-traffic SLO or automated promotion input.
+Complete dashboard and paging controls before using their signals as customer-traffic SLO or
+automated-promotion inputs.

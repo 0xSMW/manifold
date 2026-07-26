@@ -11,3 +11,4 @@ observations.log
 *.tsbuildinfo
 .vercel
 .env*
+/.internal/

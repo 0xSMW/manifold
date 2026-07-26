@@ -80,11 +80,6 @@ A checkmark means the provider and endpoint combination has explicit repository
 support or test coverage. The models.dev catalog contains additional providers
 for discovery and pricing; catalog presence does not constitute gateway support.
 
-Current production acceptance evidence covers Gemini chat, streaming, model
-discovery, and usage and cost accounting. See
-[`Docs/GATEWAY_ACCEPTANCE.md`](./Docs/GATEWAY_ACCEPTANCE.md) for the recorded
-release evidence.
-
 ## Supported OpenAI-compatible API surface
 
 | Endpoint | Method | Purpose |
@@ -134,7 +129,7 @@ budget reservations, and durable terminal reconciliation.
 
 - Node.js 22
 - Corepack and pnpm 10
-- Docker for real-Postgres, security, and storage release suites
+- Docker for database-backed development and test workflows
 - Go 1.24 or newer only when working on the experimental CLI
 
 ### Install and verify
@@ -187,22 +182,14 @@ Production uses two separately configured Vercel projects:
 - a Next.js control plane under `apps/control-plane`;
 - a Node.js 22 Fluid gateway under `apps/gateway`.
 
-The gateway is configured for Fluid Compute, a 300-second request duration,
-literal rewrites for the four supported API paths, readiness and liveness routes,
-and a one-minute durable job-ledger drain. One durable Postgres database is bound
-to one workspace. Runtime connections use the restricted application role; owner
-credentials are reserved for migrations and break-glass operations.
+The gateway uses Fluid Compute with literal rewrites for the four supported API
+paths, readiness and liveness routes, and durable terminal accounting. One
+durable Postgres database is bound to one workspace. Runtime connections use the
+restricted application role; owner credentials are reserved for migrations and
+break-glass operations.
 
-Before promotion, `/health` proves liveness and `/ready` proves that the gateway
-has a verified active snapshot and its strict runtime dependencies are available.
-
-Deployment and release sources of truth:
-
-- [`Docs/DEPLOY.md`](./Docs/DEPLOY.md): deployment and operations runbook;
-- [`Docs/GATEWAY_ACCEPTANCE.md`](./Docs/GATEWAY_ACCEPTANCE.md): recorded
-  production, rollback, soak, and capacity evidence;
-- [`Docs/CI_RELEASE_GATES.md`](./Docs/CI_RELEASE_GATES.md): required CI and
-  release gates.
+See [`Docs/DEPLOY.md`](./Docs/DEPLOY.md) for deployment topology, environment
+configuration, and installation bootstrap.
 
 ## Security and durability
 
@@ -245,10 +232,9 @@ packages/
   provider-registry/   models.dev catalog and price importer
   storage/             Retention, object export, compaction, and pressure policy
 
-scripts/               Repository, database, security, and release gates
+scripts/               Repository, database, and security utilities
 tools/conformance/     Provider adapter fixtures and capability matrix
-tools/load/            k6 and flat-memory release tooling
-test/release/          Release-tool contract tests
+tools/load/            k6 and flat-memory tooling
 ```
 
 The Node workspace is defined by `pnpm-workspace.yaml`. The Go CLI is built
@@ -260,52 +246,33 @@ make build
 ./bin/manifold --help
 ```
 
-## Testing and release evidence
+## Testing
 
-Useful local entrypoints:
+Run the usual local checks before contributing:
 
 ```bash
+pnpm run typecheck
 pnpm run test:packages
 pnpm run test:control-plane
 pnpm run test:playwright
-pnpm run conformance:replay
-pnpm run conformance:matrix:check
 ```
 
-Docker-backed release gates:
+Run the checks relevant to the packages and apps you change. The repository
+scripts list additional focused test commands.
 
-```bash
-pnpm run test:security
-pnpm run test:pg
-pnpm run test:storage-release
-pnpm run load:k6
-pnpm run load:flat-memory
-```
+## Project boundaries
 
-CI keeps the ordinary build and test gate separate from the security, tenant
-isolation, real-Postgres, storage, and bounded-memory gate. Real-target load tests
-run through a separately protected release environment.
-
-## Current boundaries
-
-- Production provider acceptance currently covers Gemini. Other checked providers
-  have repository conformance or local test coverage.
 - Exact provider-reported usage is preserved when present. Missing usage remains
   visibly `estimated` or `unknown` and is never silently treated as exact.
-- Vercel-hosted dashboards, alert delivery, paging, platform memory/file
-  descriptor/duration panels, and automated promotion remain follow-up work.
 - The Cloudflare edition remains planned behind the runtime adapter boundaries.
 - The Go CLI exposes the intended command tree, but several commands still return
   structured stub output.
 - The repository includes a local Node.js harness; a turnkey Compose deployment
   is not currently included.
-- Apache-2.0 is the intended project license in `SPEC.md`. `LICENSE` and `NOTICE`
-  files still need to be added before a public OSS release.
+- The intended project license is Apache-2.0; see `SPEC.md`.
 
 ## Documentation
 
 - [`SPEC.md`](./SPEC.md): product, security, data, and architecture specification
 - [`Docs/DEPLOY.md`](./Docs/DEPLOY.md): deployment and operations
-- [`Docs/GATEWAY_ACCEPTANCE.md`](./Docs/GATEWAY_ACCEPTANCE.md): release acceptance
-- [`Docs/CI_RELEASE_GATES.md`](./Docs/CI_RELEASE_GATES.md): CI and release gates
 - [`apps/gateway/README.md`](./apps/gateway/README.md): gateway development guide

@@ -114,17 +114,14 @@ ordering, rate/concurrency/request caps, byte-transparent SSE accounting, hard-b
 gating, signed snapshot freshness/LKG behavior, DNS pinning/rebinding/redirect attacks, durable
 job-ledger retry/DLQ/RLS behavior, and real Postgres billing reconciliation.
 
-## Current deployment state
+## Runtime readiness
 
-The production gateway runs on Vercel Fluid with the signed installation runtime configured. A
-protected Preview and Production deployment have exercised provider validation, model discovery,
-streaming and non-streaming chat, exact usage/cost projection, key revocation, credential rotation,
-deploy-interruption recovery, DLQ behavior, payload limits, signed-snapshot rollback, and restore.
-A 15-minute Production soak completed 638/638 authenticated Gemini requests with exact usage and
-cost rows for every trace while Neon peaked at 2 of 112 connections. `/health` is liveness-only;
-`/ready` remains the required release-promotion gate.
+The Vercel runtime loads installation-authenticated signed snapshots, atomically activates only
+verified last-known-good state, and fails closed after the configured maximum staleness. `/health`
+is liveness-only; `/ready` is the release-promotion gate and must return 200 before promotion.
 
-Vercel-hosted metrics, dashboards, and alert delivery are explicitly deferred to a later
-follow-up. The gateway continues to emit OpenTelemetry and durable observation events; the
-deferred platform memory, FD, duration, SLO, paging, and automated-promotion panels must be
-configured before those hosted controls are relied upon.
+Before serving customer traffic, validate provider connectivity, model discovery, streaming and
+non-streaming accounting, key revocation, credential rotation, interruption recovery, durable-job
+handling, payload limits, snapshot rollback, and restore behavior in the target environments.
+The gateway emits OpenTelemetry and durable observation events; configure and validate the
+monitoring, alerting, paging, and promotion controls required for the deployment.

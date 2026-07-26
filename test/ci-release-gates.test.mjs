@@ -34,27 +34,9 @@ test("CI installs Node 22 and keeps security/storage gates independent", async (
   assert.match(workflow, /Upload Playwright artifacts[\s\S]*?if: failure\(\)/);
 });
 
-test("protected real-target gate preflights isolated configuration before external probes", async () => {
-  const workflow = await read(".github/workflows/ci.yml");
-  assert.match(workflow, /^\s+real-target-release-gates:/m);
-  assert.match(workflow, /environment:\n\s+name: release-load/);
-  assert.match(workflow, /group: manifold-real-target-release-load/);
-  assert.match(workflow, /MANIFOLD_PUBLIC_VIRTUAL_KEY: \$\{\{ secrets\.MANIFOLD_PUBLIC_VIRTUAL_KEY \}\}/);
-  assert.match(workflow, /MANIFOLD_ENTERPRISE_VIRTUAL_KEY: \$\{\{ secrets\.MANIFOLD_ENTERPRISE_VIRTUAL_KEY \}\}/);
-  assert.match(workflow, /MANIFOLD_GATEWAY_MEMORY_PROBE_URL/);
-  assert.match(workflow, /MANIFOLD_GATEWAY_MEMORY_CONTRACT/);
-  assert.match(workflow, /MANIFOLD_GATEWAY_MEMORY_PROBE_URL: \$\{\{ vars\.MANIFOLD_GATEWAY_MEMORY_PROBE_URL \}\}/);
-  assert.match(workflow, /Verify isolated target configuration/);
-  assert.match(workflow, /Probe isolated public gateway path[\s\S]*?MANIFOLD_LOAD_PROFILE: public_app/);
-  assert.match(workflow, /Probe isolated enterprise gateway path and hard-budget cap[\s\S]*?MANIFOLD_LOAD_PROFILE: enterprise_egress/);
-  assert.match(workflow, /pnpm run load:k6:external/);
-  assert.match(workflow, /Probe isolated gateway streaming memory[\s\S]*?MANIFOLD_VIRTUAL_KEY: \$\{\{ secrets\.MANIFOLD_PUBLIC_VIRTUAL_KEY \}\}[\s\S]*?pnpm run load:flat-memory:external/);
-  assert.doesNotMatch(workflow, /echo\s+\$MANIFOLD_(?:PUBLIC|ENTERPRISE)_VIRTUAL_KEY/);
-});
-
 test("security/storage gate builds gateway-core before the local flat-memory release check", async () => {
   const workflow = await read(".github/workflows/ci.yml");
-  const job = workflow.slice(workflow.indexOf("  security-storage-gates:"), workflow.indexOf("  real-target-release-gates:"));
+  const job = workflow.slice(workflow.indexOf("  security-storage-gates:"));
   assert.ok(job.includes("pnpm --filter @manifold/gateway-core run build"), "gateway-core build is required in the security/storage job");
   assert.ok(job.indexOf("pnpm --filter @manifold/gateway-core run build") < job.indexOf("pnpm run load:flat-memory"), "gateway-core build must precede the flat-memory gate");
 });
