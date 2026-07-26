@@ -1,0 +1,5 @@
+[
+  { "name": "missing-model", "path": "/v1/chat/completions", "body": {}, "code": "REQUEST_MODEL_REQUIRED", "status": 400, "type": "invalid_request_error", "param": "model" },
+  { "name": "bad-content-type", "path": "/v1/responses", "body": { "model": "x" }, "headers": { "content-type": "text/plain" }, "code": "REQUEST_CONTENT_TYPE_UNSUPPORTED", "status": 415, "type": "invalid_request_error", "param": null },
+  { "name": "unsupported-endpoint", "path": "/v1/audio/speech", "body": { "model": "x" }, "code": "ROUTE_ENDPOINT_UNSUPPORTED", "status": 404, "type": "invalid_request_error", "param": null }
+]

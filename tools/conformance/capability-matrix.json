@@ -1,0 +1,59 @@
+{
+  "schema": "manifold.endpoint-provider-capability-matrix.v1",
+  "matrix": [
+    {
+      "endpoint": "chat",
+      "provider": "anthropic",
+      "revision": "anthropic-openai-bridge-v1",
+      "support": "supported"
+    },
+    {
+      "endpoint": "embeddings",
+      "provider": "anthropic",
+      "revision": "anthropic-openai-bridge-v1",
+      "support": "unsupported"
+    },
+    {
+      "endpoint": "responses",
+      "provider": "anthropic",
+      "revision": "anthropic-openai-bridge-v1",
+      "support": "unsupported"
+    },
+    {
+      "endpoint": "chat",
+      "provider": "azure-openai",
+      "revision": "azure-openai-v1",
+      "support": "supported"
+    },
+    {
+      "endpoint": "embeddings",
+      "provider": "azure-openai",
+      "revision": "azure-openai-v1",
+      "support": "supported"
+    },
+    {
+      "endpoint": "responses",
+      "provider": "azure-openai",
+      "revision": "azure-openai-v1",
+      "support": "supported"
+    },
+    {
+      "endpoint": "chat",
+      "provider": "openai",
+      "revision": "openai-compatible-v1",
+      "support": "supported"
+    },
+    {
+      "endpoint": "embeddings",
+      "provider": "openai",
+      "revision": "openai-compatible-v1",
+      "support": "supported"
+    },
+    {
+      "endpoint": "responses",
+      "provider": "openai",
+      "revision": "openai-compatible-v1",
+      "support": "supported"
+    }
+  ]
+}

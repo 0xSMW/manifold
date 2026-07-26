@@ -188,8 +188,8 @@ Decision: `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings` each have th
 **ADR-0011 — Observations are an append-only journal reduced deterministically. Accepted.**
 Decision: producers write `ObservationEvent`s (idempotency key + producer sequence); `Observation`, `TraceSummary`, and usage aggregates are deterministic reductions/projections with resumable checkpoints. Consequences: replay rebuilds any projection; ingest is idempotent; token chunks are never stored as events.
 
-**ADR-0012 — Hard budgets reserve on Neon; the public path stays DB-free by default. Accepted.**
-Decision: `enterprise_egress` requests against a hard budget take one Neon transaction to reserve before dispatch and reconcile at completion. `public_app` requests take zero DB reads unless a key opts into per-user budgets. Consequences: enterprise egress tolerates one round-trip of added latency (budgeted in §2.6 SLOs); Edge Config is never used for spend enforcement (it would oversell).
+**ADR-0012 — Hard budgets and strict fleet admission use Neon; auth/routing stay snapshot-only. Accepted, amended.**
+Decision: `enterprise_egress` requests against a hard budget take one Neon transaction to reserve before dispatch and reconcile at completion. Every production Vercel request also takes one short, RLS-scoped strict-admission transaction for fleet-wide RPM/TPM and concurrency. Authentication, route/model resolution, policy evaluation, credential resolution, and target selection remain zero-read snapshot operations. Consequences: the production data plane requires warm in-region Neon; budget and admission transactions remain separate latency/failure domains; Edge Config is never used for live counters.
 
 **ADR-0013 — CLI user-facing command is `manifold`. Accepted.**
 Decision: the binary and command is `manifold` (§12). `mfctl` is a deprecated alias that prints a deprecation notice and forwards, kept for one minor series for anyone who scripted the Pulse-era name. Consequences: docs, completion, and examples use `manifold`; the Go module is `github.com/0xsmw/manifold/cli`.
@@ -203,8 +203,8 @@ Decision: copy Pulse's tokens/components/charts, `lib/config` + `config-service`
 **ADR-0016 — Keyed hashes for keys/tokens; application-layer encryption for provider secrets. Accepted.**
 Decision: virtual keys and API tokens store a keyed hash (HMAC-SHA-256 with a server pepper) plus a display prefix; provider credentials are encrypted with envelope encryption (§14.3) and decrypt only inside the gateway process. Consequences: no plaintext key/token/secret is ever stored, logged, put in a header, snapshot, crash report, or metric; the snapshot carries key *hashes*, not keys.
 
-**ADR-0017 — Durable async ingest; never block the provider path. Accepted.**
-Decision: observation writes happen after the response starts streaming, via `after()` (Vercel) or a durable queue, with a Postgres job ledger backing retries. Consequences: provider latency is independent of ingest health; ingest lag is surfaced (the amber banner, §11) and bounded by SLO (§18).
+**ADR-0017 — Durable asynchronous reduction behind a synchronous outbox handoff. Accepted, amended.**
+Decision: a provider trace is synchronously enqueued in the Postgres job ledger before its response settles; reduction and projection happen asynchronously through `waitUntil` and Cron. Consequences: outbox latency is part of provider-response settlement, while reducer latency remains off-path; ingest lag is surfaced and bounded by SLO (§18).
 
 **ADR-0018 — v1 gateway runs as a Vercel Node/Fluid function, not the Edge runtime. Accepted (trigger to revisit: measured cold-start or fan-out cost).**
 Context: provider codecs, streaming tees, and crypto are simpler and faster to get correct on Node; Fluid Compute gives concurrency-per-instance and `after()`. Decision: gateway is a Node function under Fluid Compute; the *core* stays runtime-agnostic so an Edge/Workers host is a packaging change, not a rewrite. Consequences: cold-start and region placement are managed per §2.4; the Cloudflare edition (§3) is the Workers packaging of the same core.
@@ -222,7 +222,7 @@ Context: the storage-bounded mode (§13) measures footprint with `pg_total_relat
 Context: to decrypt a provider secret the gateway needs the ciphertext, which lives in `provider_credential.encrypted_secret` in Postgres — but ADR-0005 forbids a DB read on the dispatch path (B3). Decision: each snapshot target carries the AES-256-GCM *ciphertext* of its credential, its `dek_id`, and the KEK-wrapped DEK (authored in the `data_encryption_key` table, §6.4) — never the plaintext secret and never the KEK. The gateway unwraps the DEK once per isolate with the KEK (platform secret store), caches only the unwrapped DEK in memory, and decrypts in-process. Rotating or revoking a secret writes a new ciphertext and republishes the snapshot — the existing config path (§8.2) — so the prior ciphertext stops being served within the propagation window; there is no separate secret cache to invalidate. Consequences: credential retrieval is not a DB read (ADR-0005 holds); a leaked snapshot store still exposes no usable secret because the DEK/KEK are not in it (ADR-0016 holds); secret-rotation latency equals snapshot propagation latency (§2.3, §8.2), stated in the rotation runbook (§19.4); ciphertext counts against the 512 KB snapshot budget (§7.4).
 
 **ADR-0023 — Terminal-event intent is persisted synchronously before the response is released; `after()` is an optimization. Accepted (refines ADR-0017).**
-Context: `after()` (Vercel) is best-effort — an instance killed by `maxDuration`, deploy, or crash after the last provider byte but before `after()` runs loses the terminal event, and with it hard-budget reconciliation (H1/H9). Decision: durability is required only where money depends on it. On the **enterprise / hard-budget path**, the terminal-event intent is written to the durable `job_ledger` in the same transaction as the budget reconcile touch, *before* the final bytes are released, so reconciliation cannot be lost. On the **public path** (DB-free by ADR-0012) observation ingest stays best-effort via `after()` / the Queue: losing a log line to a crashed instance is acceptable, and public per-user budgets are opt-in — when enabled they promote that request to the enterprise durable path. Consequences: no synchronous Neon write is added to the DB-free public path (ADR-0012 and §16.4 preserved); the durability boundary is the synchronous ledger write for money and the platform queue for public logs; reconciliation is driven from the durable terminal `Observation` on the paths where it exists (§8.1, §8.4, §17.2); a completed request on a hard budget cannot silently escape accounting.
+Context: `after()` (Vercel) is best-effort — an instance killed by `maxDuration`, deploy, or crash after the last provider byte but before `after()` runs can lose the terminal event. Decision: every request that reached a provider writes its complete terminal trace to the durable `job_ledger` before the response settles. `waitUntil` starts an opportunistic drain only after that ledger write succeeds; Cron is the recovery path. Hard-budget requests use the same boundary for reconciliation. Consequences: provider attempts, billing, and target-health evidence share one idempotent outbox; a provider response fails closed when the ledger is unavailable; pre-dispatch denials may remain best-effort because no provider spend or health fact exists.
 
 **ADR-0024 — The snapshot-signing keypair is control-plane-owned and distinct from installation identity. Accepted (refines ADR-0016).**
 Context: §7.3/§14.3 previously said the gateway verifies a snapshot against "the installation's pinned public key," but `gateway_installation.public_key` is the installation's *ingest* identity — conflating them either lets the wrong key verify a snapshot or leaves rotation undefined (H10). Decision: two disjoint keypairs. (1) The **snapshot-signing keypair** is owned by the control plane (`MANIFOLD_SNAPSHOT_SIGNING_KEY`, §19.3); the gateway pins only its public half (`MANIFOLD_SNAPSHOT_PUBLIC_KEY`) and verifies every snapshot against it. (2) The **installation-identity keypair** (`gateway_installation.public_key`) authenticates the installation to the ingest endpoint and heartbeat and never verifies a snapshot. Consequences: snapshot integrity depends on the control-plane signing key alone; the two keys rotate independently (§19.4); a test asserts an installation-identity key cannot validate a snapshot and vice-versa (§21.8).
@@ -258,14 +258,14 @@ Why not the Edge runtime for the gateway in v1: ADR-0018. The core is runtime-ag
 
 ### 2.3 Data services
 
-- **Neon Postgres.** One database per workspace (ADR-0021). Access through the pooled connection string (PgBouncer, transaction pooling) for serverless functions; a second **direct** (unpooled) connection string is used only by migrations and the compaction job (which need session-level features: advisory locks, `SET LOCAL`, `VACUUM`). Drizzle + `postgres` driver (ADR-0019). Connection caps: functions use `max: 1` per invocation against the pooler; the compactor uses a single direct connection guarded by an advisory lock (§13.9). **Scale-to-zero:** any installation using hard budgets MUST either disable Neon scale-to-zero (Launch plan or higher) or run the DB keep-warm Cron (§2.7) that issues a trivial query every < 5 min, so the first reservation after idle does not incur a ~1.8–3.1 s cold start against the ≤ 8 ms reservation SLO (§16.3, H8). Advisory budgets and the public path tolerate a cold start; hard budgets do not.
+- **Neon Postgres.** One database per workspace (ADR-0021). Access through the pooled connection string (PgBouncer, transaction pooling) for serverless functions; a second **direct** (unpooled) connection string is used only by migrations and the compaction job. Drizzle + `postgres` driver (ADR-0019). Connection caps: functions use `max: 1` per invocation against the pooler; the compactor uses one direct connection guarded by an advisory lock (§13.9). **Scale-to-zero:** every production Vercel gateway uses strict Postgres admission and therefore MUST disable scale-to-zero or run the DB keep-warm Cron (§2.7). A cold database violates admission latency and the hard-budget reservation SLO.
 - **Vercel Edge Config (optional accelerator, ADR-0025).** When the snapshot fits one store (≈ **512 KB** on the Enterprise tier; 64 KB Pro, 8 KB Hobby), the active snapshot (§7) is mirrored there; reads are synchronous, in-region, < 15 ms P99, often < 1 ms, and do not count as DB reads. **Propagation after a write is up to 10 s** (not sub-second), which sets the destructive-change grace window (§8.2, §16.7). Writes go through the Vercel API from the control plane's config-service only (§8.2). The 512 KB size cap and the account/project store caps (10/account, 3/project) drive the compact snapshot schema and the boot-fallback rules in §7.4; a tenant whose snapshot exceeds the store serves from the Postgres-backed boot-fallback (§7.4), which is the default at scale, not a fault.
 
 ### 2.4 Regional placement
 
 - Pick one **primary region** = the Neon region (e.g. `iad1` ↔ Neon `us-east-2`). The control plane and its Neon writes are colocated to keep `/api/v1` and reservation transactions single-digit-ms to the database.
 - The gateway is pinned to the primary region by default. Provider egress latency dominates; colocating the gateway with Neon keeps the enterprise reservation round-trip cheap and keeps `after()` ingest writes local.
-- Multi-region gateway is **Provisional**: because hard-budget reservation needs a single serialization point, a multi-region gateway either (a) routes reservation to the primary-region Neon (accept cross-region RTT on enterprise hard-budget requests only), or (b) on Cloudflare, uses a Durable Object as the per-budget serialization point (§3.4). Public-app traffic, which is DB-free, may run multi-region freely. Do not build multi-region writes for v1; document the seam (§16.4).
+- Multi-region gateway is **Provisional**: strict admission and hard-budget reservation need serialization points. A multi-region gateway either routes both authorities to primary-region Neon or adopts equivalent globally consistent authorities such as Durable Objects. v1 stays single-write-region (§16.4).
 - Cold starts: Fluid keeps instances warm under load; a `GET /v1/models` health ping from Cron every 5 min per region keeps at least one instance warm in low-traffic installations. Cold-start budget is excluded from the streaming SLO but included in the `p99_ttfb` panel (§18).
 
 ### 2.5 Environments, isolation, and secrets
@@ -1263,7 +1263,7 @@ CREATE INDEX config_op_install_idx ON config_operation (installation_id, created
 ```sql
 CREATE TABLE job_ledger (                                 -- durable work; the portable queue substrate (§17)
   id text PRIMARY KEY, workspace_id text REFERENCES workspace(id),
-  kind text NOT NULL,          -- 'ingest_reduce','reconcile','config_followup','compact.hourly','registry_refresh',…
+  kind text NOT NULL,          -- 'ingest_reduce','reconcile','config_reconcile','target_health_rollup','target_health_publish',…
   payload jsonb NOT NULL, idempotency_key text,
   status text NOT NULL CHECK (status IN ('pending','claimed','done','failed','dead')) DEFAULT 'pending',
   attempts int NOT NULL DEFAULT 0, max_attempts int NOT NULL DEFAULT 12,
@@ -1523,7 +1523,7 @@ sequenceDiagram
   G->>P: upstream request (SSRF-checked, header allowlist)
   P-->>G: SSE / body stream
   G-->>C: passthrough stream (bounded tee)
-  G->>I: terminal-event intent → job_ledger (SYNC before final bytes on enterprise/money path; platform queue on public path), then emit accepted+attempt+terminal (ADR-0023)
+  G->>I: complete trace → job_ledger (SYNC before provider response settles), then waitUntil/Cron drains (ADR-0023)
   I->>I: reduce → observation → projections
   I->>N: reconcile reservation → committed from terminal Observation's actual cost (H1)
 ```
@@ -1539,7 +1539,7 @@ State machine `received → profiled → authenticated → authorized → reserv
 | dispatching→streaming | upstream returns first byte within timeout | `PROVIDER_TIMEOUT`/`PROVIDER_HTTP_5XX` (→ retry/failover §8.7) |
 | streaming→reconciled | terminal reached (ok or error) | always terminal; emits terminal event |
 
-**Failure modes:** upstream 5xx/timeout → retry/failover (§8.7); reservation succeeds but request then rejected pre-dispatch → immediate `rollback` (§8.4); client disconnect mid-stream → terminal event with `PROVIDER_STREAM_ABORTED`, reservation reconciled on bytes actually produced; on the enterprise/money path the terminal-event intent is written to `job_ledger` **synchronously before the final bytes are released**, so an instance killed after the last provider byte still lands reconciliation on the next drain (ADR-0023); the DB-free public path emits best-effort via `after()`/the Queue (a lost log is acceptable, no budget truth is at stake there) — `after()`/the Queue only performs the reduce as an optimization, and provider traffic is unaffected (ADR-0017). **Idempotency:** the trace id is the request idempotency anchor; reservation is unique per `(budget_account_id, request_id)` so a retried gateway invocation cannot double-reserve.
+**Failure modes:** upstream 5xx/timeout → retry/failover (§8.7); reservation succeeds but request then rejects pre-dispatch → immediate `rollback` (§8.4); client disconnect mid-stream → terminal event with `PROVIDER_STREAM_ABORTED`; every provider trace crosses the durable ledger boundary before the response settles, and `waitUntil`/Cron reduce it later (ADR-0023). A ledger failure fails the provider response closed. **Idempotency:** the trace id is the request/outbox anchor; reservation is unique per `(budget_account_id, request_id)` and observation jobs dedupe by trace.
 
 ### 8.2 Config publishing lifecycle
 
@@ -1651,7 +1651,7 @@ stateDiagram-v2
   exhausted --> [*]
 ```
 
-Each attempt is a `provider_attempt` child span carrying provider, offering, adapter revision, latency, status, and the retry/failover reason, so a failover reads at a glance in the trace waterfall (§11 Logs). Retry policy (`max_attempts`, `retry_on`, `backoff_ms`) and timeouts (`connect_ms`, `first_byte_ms`, `overall_ms`) come from the route revision. Circuit state per target lives in `gateway_target.health_state`, updated from a rolling error window; an `unhealthy` target is skipped and probed by the warm job (§2.7). Failover across targets is bounded by `overall_ms` so total latency is capped. **Idempotency toward providers:** only the first attempt that produced bytes is billed and reconciled; retried attempts that produced no tokens contribute latency spans but zero cost.
+Each attempt is a `provider_attempt` child span and durable fact carrying target id, route revision, signed snapshot revision, status, normalized outcome, and retry/failover reason. Retry policy (`max_attempts`, `retry_on`, `backoff_ms`) and timeouts come from the route revision. The control plane validates each fact against the active installation/snapshot/revision, reduces a five-minute window with recovery hysteresis, expires evidence to `unknown` after 120 seconds, and health-only publishes a fresh signed snapshot. `gateway_target` stays immutable. An `unhealthy` target is skipped; the per-isolate breaker remains the immediate local guard. Failover is bounded by `overall_ms`.
 
 ### 8.8 Data compaction lifecycle
 
@@ -2468,11 +2468,11 @@ One shard-row lock and one insert, sub-8 ms in-region P99 (§2.6) — **provided
 
 ### 16.4 Multi-region seam (Provisional)
 
-v1 is single-write-region (§2.4). The seam: hard-budget reservation needs one serialization point. If multi-region gateway is later required, either route reservations to the primary-region Neon (cross-region RTT on enterprise hard-budget requests only; public path unaffected) or adopt the Cloudflare DO model globally. Public-app traffic is DB-free and already multi-region-safe. Do not build multi-region writes for v1; the reservation interface (`BudgetReserver` port) is the injection point when it is needed.
+v1 is single-write-region (§2.4). Strict admission and hard-budget reservation use separate primary-region Neon transactions. A future multi-region gateway must route both authorities to the primary region or provide globally consistent replacements through their existing injection ports.
 
 ### 16.5 Rate-limit exactness delta
 
-Per-key rate limits are a token bucket. Vercel edition: bucket state per region (approximate globally; a documented worst-case overshoot of `regions × bucket` under simultaneous multi-region bursts), acceptable because rate limits are abuse controls, not billing. Cloudflare edition: a `RateLimitDO` per key gives globally exact limits. Both surface `RATE_LIMIT_KEY`; the difference is exactness, not contract (§3.7).
+Production Vercel uses `postgres_strict`: one short RLS transaction takes fixed-order installation/key advisory locks, reclaims expired concurrency leases, refills and debits RPM/TPM buckets from database time, and inserts a 330-second lease. Caps have zero overshoot at the database serialization boundary and fail closed when Neon is unavailable. The lease outlives the 300-second Function maximum, so a valid invocation cannot outlive its slot; crash capacity recovers within 330 seconds. Local development may use bounded process-local guards.
 
 ### 16.6 Projection consistency and ordering
 
@@ -2499,7 +2499,9 @@ Durable background work is a `job_ledger` row (§6.12), drained by whatever sche
 |---|---|---|---|
 | `ingest_reduce` | gateway `after()` / CF Queue | on terminal event | dedup on event key; reduce is pure |
 | `reconcile` | durable ingest terminal event / sweep | on terminal `Observation`; Cron sweep for expired | keyed by reservation id; reconciles `reserved→committed` to actual cost from the terminal Observation, sweep reconciles-to-actual-if-terminal-exists (H1) |
-| `config_followup` | `config apply` (store write retry) | on store-write failure | store write is idempotent by revision |
+| `config_publish_reconcile` | config apply/rollback/scoped publish | on durable DB activation | store write is idempotent by revision |
+| `target_health_rollup` | validated provider-attempt fact | event + one-minute Cron | coalesced per durable target; facts are append-only |
+| `target_health_publish` | health-state transition/expiry | after rollup + one-minute Cron | coalesced per installation; base hash rejects stale overlays |
 | `compact.hourly/daily/monthly` | Cron | schedule + pressure | advisory-locked, resumable (§13.9) |
 | `storage_measure` | Cron | 15 min | pure measurement, upsert stat |
 | `registry_refresh` | Cron | weekly | opens a PR, never auto-applies (§11.6) |
@@ -2575,7 +2577,7 @@ Preview / staging / production per §2.5. Preview gets a Neon branch per PR (iso
 
 ### 19.2 Regional placement
 
-Gateway and control plane pin to the Neon primary region (§2.4). Public-app traffic may scale multi-region (DB-free); enterprise hard-budget reservations route to the primary-region Neon (§16.4). Region is recorded on the workspace and surfaced in Settings.
+Gateway and control plane pin to the Neon primary region (§2.4). Public-app traffic may scale across Fluid isolates in that region while distributed admission and durable terminal handoff remain authoritative in Neon; enterprise hard-budget reservations use the same primary-region database (§16.4). Region is recorded on the workspace and surfaced in Settings.
 
 ### 19.3 Environment-variable contract
 
@@ -2836,7 +2838,7 @@ Only genuinely consequential choices where evidence does not yet force an answer
 
 **U3 — Name "Manifold".** Trademark + npm clearance (ADR-0002). Recommendation: clear before the public OSS release; keep the brand out of protocol constants so a rename is scripted. Trigger: OSS release date.
 
-**U4 — Per-user (public_app) budgets in v1.** The public path is DB-free by default; per-user budgets would add an opt-in Neon touch for consumer apps. Recommendation: ship the opt-in flag and schema but market it as beta; most indie users want rate limits, not per-user spend caps. Trigger: a public-app customer with per-end-user spend caps.
+**U4 — Per-user (public_app) budgets in v1.** Public-app requests already use Neon for distributed admission and durable terminal handoff; per-user monetary budgets would add reservation semantics and another budget dimension for consumer apps. Recommendation: ship the opt-in flag and schema but market it as beta; most indie users want rate limits, not per-user spend caps. Trigger: a public-app customer with per-end-user spend caps.
 
 **U5 — Non-OpenAI endpoints (realtime, image, audio, batch).** Out of v1 (ADR-0010) until their security + telemetry contracts are explicit (bounded capture for binary payloads, streaming audio memory bounds, batch idempotency). Recommendation: sequence image/embeddings-adjacent first (simplest capture), realtime last (hardest memory/telemetry). Trigger: a committed customer per modality with the capture contract designed.
 

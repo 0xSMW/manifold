@@ -1,0 +1,6 @@
+linkWorkspacePackages: true
+
+packages:
+  - "packages/*"
+  - "apps/control-plane"
+  - "apps/gateway"

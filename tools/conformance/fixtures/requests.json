@@ -1,0 +1,56 @@
+[
+  {
+    "name": "openai-chat-unknown-field",
+    "provider": "openai",
+    "endpoint": "chat",
+    "providerModel": "gpt-4o-mini",
+    "path": "/v1/chat/completions?trace=recorded&trace=preserved",
+    "body": { "model": "chat-model", "messages": [{ "role": "user", "content": "hello" }], "temperature": 0.2, "future_chat_field": { "keep": true } },
+    "recordedResponse": { "id": "chatcmpl_recorded", "object": "chat.completion", "choices": [], "future_response_field": { "keep": true } }
+  },
+  {
+    "name": "anthropic-chat-tool-shape",
+    "provider": "anthropic",
+    "endpoint": "chat",
+    "providerModel": "claude-3-5-haiku",
+    "path": "/v1/chat/completions",
+    "body": { "model": "chat-model", "messages": [{ "role": "user", "content": "use a tool" }], "tools": [{ "type": "function", "function": { "name": "weather", "parameters": { "type": "object" } } }], "future_adapter_field": ["preserve"] },
+    "recordedResponse": { "id": "chatcmpl_anthropic_recorded", "object": "chat.completion", "choices": [] }
+  },
+  {
+    "name": "openai-responses-unknown-field",
+    "provider": "openai",
+    "endpoint": "responses",
+    "providerModel": "gpt-4.1-mini",
+    "path": "/v1/responses?include=reasoning&include=output_text",
+    "body": { "model": "responses-model", "input": [{ "role": "user", "content": "hello" }], "store": false, "future_response_request": { "nested": [1, true] } },
+    "recordedResponse": { "id": "resp_recorded", "object": "response", "output": [], "future_response_field": "preserved" }
+  },
+  {
+    "name": "azure-responses-structured-output",
+    "provider": "azure-openai",
+    "endpoint": "responses",
+    "providerModel": "deployment-gpt-4.1",
+    "path": "/v1/responses",
+    "body": { "model": "responses-model", "input": "return JSON", "text": { "format": { "type": "json_object" } }, "vendor_preview": true },
+    "recordedResponse": { "id": "resp_azure_recorded", "object": "response", "output": [] }
+  },
+  {
+    "name": "openai-embeddings-multiple-inputs",
+    "provider": "openai",
+    "endpoint": "embeddings",
+    "providerModel": "text-embedding-3-small",
+    "path": "/v1/embeddings",
+    "body": { "model": "embedding-model", "input": ["alpha", "beta"], "dimensions": 256, "future_embedding_field": "keep" },
+    "recordedResponse": { "object": "list", "data": [], "model": "text-embedding-3-small" }
+  },
+  {
+    "name": "azure-embeddings-user-shape",
+    "provider": "azure-openai",
+    "endpoint": "embeddings",
+    "providerModel": "embedding-deployment",
+    "path": "/v1/embeddings?api-version=2025-01-01-preview",
+    "body": { "model": "embedding-model", "input": "hello", "user": "recorded-user", "vendor_extension": { "enabled": true } },
+    "recordedResponse": { "object": "list", "data": [], "model": "embedding-deployment" }
+  }
+]

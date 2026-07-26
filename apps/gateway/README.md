@@ -3,14 +3,15 @@
 A **real, runnable passthrough gateway** — the thin Node entry that implements the platform
 ports (SPEC §4.4) and delegates the request pipeline to `@manifold/gateway-core`.
 
-It authenticates the client's virtual key, resolves a route by `(profile, path)`, selects a
-target, injects the provider's auth fresh, applies the SSRF + header allowlist, and **streams**
-the upstream response back with flat memory (SPEC §8.1, §14.4, §14.5).
+It authenticates the client's virtual key, decodes OpenAI-compatible chat, Responses,
+embeddings, and models requests, resolves `(profile, endpoint, public model)`, selects a healthy
+target, substitutes the provider model, injects provider auth, pins egress to a validated DNS
+answer, and streams the response with bounded observation memory.
 
 ## Architecture
 
 ```
-apps/gateway (this)          Node adapters: node:http, node:crypto, node:dns, global fetch, JSONL sink
+apps/gateway (this)          Vercel Web handlers + local node:http harness + durable Neon adapters
   └─ @manifold/gateway-core   pure pipeline: handleRequest() — ZERO platform imports
        └─ @manifold/ports     platform-adapter interfaces + in-memory fakes (./testing)
             └─ @manifold/contracts  SCHEMA_VERSION, ReasonCode, error envelopes
@@ -26,30 +27,57 @@ touchpoint arrives by dependency injection through `@manifold/ports` (ADR-0004, 
 npm install
 npm run build            # builds contracts + ports + gateway-core to dist/
 
-# start the gateway (loads ./snapshot.example.json by default):
+# start the local node:http harness (loads ./snapshot.example.json by default):
 cd apps/gateway
-export ANTHROPIC_API_KEY=sk-ant-...   # the provider secret (skeleton reads it from env)
 npm start                             # → manifold gateway listening on http://127.0.0.1:8787
 # npm run dev                         # same, with --watch
 ```
 
-Environment:
+Local-harness environment:
 
 | var | default | meaning |
 |---|---|---|
 | `PORT` | `8787` | listen port |
 | `MANIFOLD_SNAPSHOT` | `./snapshot.example.json` | snapshot file to load |
 | `MANIFOLD_KEY_PEPPER` | `dev-pepper-not-for-production` | HMAC pepper for key hashing (§14.3) |
-| `ANTHROPIC_API_KEY` | — | provider secret injected upstream (skeleton; see TODO below) |
+| `MANIFOLD_KEY_PEPPERS` | unset | strict `[new, old]` overlap array; takes precedence during rotation |
+| `MANIFOLD_DATA_KEK` | development KEK outside production | unwraps the snapshot credential DEK |
+| `MANIFOLD_DATA_KEKS` | unset | strict `kekId → KEK` keyring for versioned snapshot targets |
 
 The example snapshot has: profile `localhost` → `public_app`; one virtual key
 (**plaintext test key: `sk-manifold-localtest-key`**, stored as its HMAC hash); one route
 `/v1/messages` → `https://api.anthropic.com` with Anthropic auth injection.
 
-## Proxy a REAL Anthropic request (single 1-token test)
+## Vercel Fluid function
 
-With `ANTHROPIC_API_KEY` exported and the server running, the client authenticates with the
-Manifold **virtual key** (not the provider key — that is injected fresh upstream):
+`api/gateway.ts` is the production Web `Request`/`Response` entrypoint. `vercel.json` enables
+Fluid Compute, pins `iad1`, sets a 300-second gateway duration, exposes `/health` and `/ready`,
+rewrites the four supported public endpoints (`/v1/models`, `/v1/chat/completions`,
+`/v1/responses`, and `/v1/embeddings`), and schedules the durable job-ledger drain every minute. Production loads
+installation-authenticated signed snapshots through `MANIFOLD_CONTROL_PLANE_URL`, atomically
+activates verified last-known-good state, and fails closed after the configured maximum staleness.
+It never relies on a writable runtime filesystem.
+
+See the root `.env.example` for the Vercel gateway variables. The gateway project requires the
+pooled `manifold_app` database URL, its installation/workspace binding, the snapshot public key,
+the shared pepper/KEK, the installation Ed25519 private key, and `CRON_SECRET`.
+
+Terminal accounting is a durable `job_ledger` write keyed by trace, followed by an immediate
+`waitUntil` drain and a once-per-minute Cron safety net. Claims use `FOR UPDATE SKIP LOCKED`,
+stale claims recover, failures back off to a bounded retry count, and exhausted work becomes DLQ
+state. Every completed provider response waits for durable terminal handoff before it settles.
+SSE holds its completion frame until final usage and terminal intent have been persisted.
+
+The Vercel runtime requires strict Postgres admission: one short RLS-scoped transaction atomically
+enforces fleet-wide per-key/global concurrency and RPM/TPM/burst, with a 330-second crash-recovery
+lease and fail-closed behavior. Request size and circuit state remain bounded per isolate. Provider
+attempts are durable observation events and OpenTelemetry child spans. DNS-pinned Undici egress
+keeps TLS SNI on the approved hostname and manually validates redirects.
+
+## Proxy a real provider request
+
+Once a signed active snapshot contains a sealed provider credential, the client authenticates
+with the Manifold **virtual key**. The gateway decrypts and injects the provider key in-process:
 
 ```bash
 curl -N http://localhost:8787/v1/messages \
@@ -62,10 +90,10 @@ curl -N http://localhost:8787/v1/messages \
   }'
 ```
 
-The gateway strips the inbound `Authorization`, injects `x-api-key: $ANTHROPIC_API_KEY` +
-`anthropic-version: 2023-06-01`, SSRF-checks `api.anthropic.com`, and streams Anthropic's
-response straight back. `X-Trace-Id` is returned before the body; an observation is appended to
-`./observations.log`.
+The gateway strips the inbound `Authorization`, decrypts the credential envelope, injects the
+provider authentication headers, SSRF-checks the destination, and streams the response.
+`X-Trace-Id` is returned before the body. The local harness can append JSONL; the Vercel function
+hands complete traces to the durable Postgres job ledger.
 
 Guard failures return OpenAI-shaped error envelopes (SPEC §0.3), e.g. a wrong key:
 
@@ -78,21 +106,25 @@ curl -s -X POST http://localhost:8787/v1/messages \
 ## Test (spends zero external tokens)
 
 ```bash
-cd apps/gateway && npm test    # node --test against a local mock upstream
+cd apps/gateway && npm test
 ```
 
-Asserts: (a) valid key streams mock chunks through; (b) bad key → 401 `AUTH_KEY_UNKNOWN`;
-(c) unknown route → `ROUTE_UNKNOWN`; (d) SSRF blocks loopback / RFC-1918; (e) inbound
-`Authorization` is not forwarded upstream; (f) memory stays flat streaming a 256 MB body;
-plus (g) a real `node:http` boot rejecting a bad key.
+The suite covers codecs/model collisions, retry/failover/circuit behavior, provider-attempt
+ordering, rate/concurrency/request caps, byte-transparent SSE accounting, hard-budget terminal
+gating, signed snapshot freshness/LKG behavior, DNS pinning/rebinding/redirect attacks, durable
+job-ledger retry/DLQ/RLS behavior, and real Postgres billing reconciliation.
 
-## Known skeleton shortcuts (TODOs)
+## Current deployment state
 
-- **Provider secret** comes from env, not the encrypted `credmap`. The real path (SPEC §14.3,
-  ADR-0022) decrypts `target.credentialCiphertext` in-proc with the KEK-unwrapped DEK via
-  `crypto.openAesGcm` — no env, no DB read. See `makeSecretResolver` in `src/server.ts`.
-- **Snapshot signature** (ed25519) and `contentHash` are not yet verified on load (SPEC §7.3);
-  the real `SnapshotStore` fails closed to the last-good snapshot. See `SnapshotFileStore`.
-- **DNS pinning** in `EgressFetcher` resolves-then-checks-then-fetches; true pinning (connect to
-  the exact validated address, no rebind) needs a custom dispatcher (§14.4).
-- Scope is **passthrough**, not codec translation — no policy/budget/codec stages yet (§8.1).
+The production gateway runs on Vercel Fluid with the signed installation runtime configured. A
+protected Preview and Production deployment have exercised provider validation, model discovery,
+streaming and non-streaming chat, exact usage/cost projection, key revocation, credential rotation,
+deploy-interruption recovery, DLQ behavior, payload limits, signed-snapshot rollback, and restore.
+A 15-minute Production soak completed 638/638 authenticated Gemini requests with exact usage and
+cost rows for every trace while Neon peaked at 2 of 112 connections. `/health` is liveness-only;
+`/ready` remains the required release-promotion gate.
+
+Vercel-hosted metrics, dashboards, and alert delivery are explicitly deferred to a later
+follow-up. The gateway continues to emit OpenTelemetry and durable observation events; the
+deferred platform memory, FD, duration, SLO, paging, and automated-promotion panels must be
+configured before those hosted controls are relied upon.

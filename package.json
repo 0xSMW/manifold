@@ -9,11 +9,33 @@
     "apps/gateway"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "scripts": {
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "tsc -b",
-    "dev:control-plane": "npm run dev -w apps/control-plane"
-  }
+    "typecheck": "tsc -b && pnpm --dir apps/control-plane exec tsc --noEmit -p tsconfig.json && pnpm --filter @manifold/gateway run typecheck",
+    "dev:control-plane": "npm run dev -w apps/control-plane",
+    "test:packages": "pnpm --recursive --if-present run test",
+    "test:control-plane": "pnpm --dir apps/control-plane exec tsx --tsconfig tsconfig.json --test test/*.test.ts test/*.test.mjs",
+    "test:pg": "node scripts/run-real-pg-gates.mjs",
+    "test:storage-release": "pnpm --filter @manifold/storage exec tsx --tsconfig tsconfig.json --test test/storage-pg.test.ts test/storage-seal-pg.test.ts test/storage-release-gates-pg.test.ts",
+    "test:security": "node scripts/run-security-gates.mjs",
+    "test:desktop": "pnpm --dir apps/control-plane exec playwright test --project=chromium",
+    "test:mobile": "pnpm --dir apps/control-plane exec playwright test --project=mobile",
+    "test:playwright": "pnpm run test:desktop && pnpm run test:mobile",
+    "lint:boundaries": "node scripts/lint-boundaries.mjs",
+    "lint:queries": "node scripts/lint-workspace-queries.mjs",
+    "check:migrations": "node scripts/check-migrations.mjs && node scripts/check-database-schema-freshness.mjs && node --test packages/database/test/migration-documentation.source.test.mjs",
+    "check:environment-isolation": "node scripts/check-environment-isolation.mjs",
+    "test:ci-release-gates": "node --test test/ci-release-gates.test.mjs",
+    "conformance:replay": "node --experimental-strip-types tools/conformance/replay-fixtures.ts",
+    "conformance:matrix": "node tools/conformance/generate-capability-matrix.mjs",
+    "conformance:matrix:check": "node tools/conformance/generate-capability-matrix.mjs --check",
+    "load:k6": "node scripts/run-k6-local-fixture.mjs",
+    "load:k6:external": "node tools/load/run-k6-release.mjs",
+    "load:flat-memory": "node scripts/run-flat-memory-fixture.mjs",
+    "load:flat-memory:external": "node tools/load/flat-memory-release.mjs",
+    "test:release-tools": "node --test test/release/*.test.mjs"
+  },
+  "packageManager": "pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489"
 }

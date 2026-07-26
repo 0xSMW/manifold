@@ -1,0 +1,8 @@
+{
+  "schema": "manifold.adapter-capabilities.v1",
+  "adapters": [
+    { "provider": "openai", "revision": "openai-compatible-v1", "endpoints": { "chat": "supported", "responses": "supported", "embeddings": "supported" } },
+    { "provider": "anthropic", "revision": "anthropic-openai-bridge-v1", "endpoints": { "chat": "supported", "responses": "unsupported", "embeddings": "unsupported" } },
+    { "provider": "azure-openai", "revision": "azure-openai-v1", "endpoints": { "chat": "supported", "responses": "supported", "embeddings": "supported" } }
+  ]
+}

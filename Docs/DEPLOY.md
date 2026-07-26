@@ -1,345 +1,569 @@
-# Manifold — Deployment Runbook
+# Manifold deployment and operations runbook
 
-Test/production deploy of Manifold: the **control plane** (Next.js 16, Vercel) plus the
-**gateway** — which per SPEC **ADR-0018** is ALSO a Vercel deployment: a **Node / Fluid Compute
-function** (`maxDuration=300s`, `memory=1024MB`, region-pinned to Neon), NOT the Edge runtime.
+This runbook is the source of truth for the Vercel control plane and gateway. The only approved
+Vercel scope is `ai-marketing`.
 
-> **Gateway status:** the SPEC target is Vercel Fluid Compute. The gateway is **not yet packaged**
-> for it — `apps/gateway/src/server.ts` is currently a bare `node:http` `createServer().listen()`
-> dev entry, and `packages/adapters-vercel` (the SPEC §4.1 ports→Vercel adapter) does not exist yet.
-> Until that packaging lands, the gateway can only be run as the local Node server (§F, a **stopgap**,
-> not the production shape). The gateway-core pipeline is built + tested and runtime-agnostic (DI via
-> `ports/`), so wiring it onto Vercel Fluid is a packaging/adapter job, not a rewrite.
+## Current state
 
-> **Vercel target: the `ai-marketing` team.** The repo's `apps/control-plane/.vercel/project.json`
-> is already linked to team `ai-marketing` (`team_DfQFR8t3PzmQgeiSf4waLFrx`), project `manifold`.
-> **Never** target any `klu` scope. GitHub org: `github.com/0xsmw`.
->
-> Every step tagged **`RUN MANUALLY — requires the confirmed target`** is outward-facing
-> (creates cloud resources, pushes secrets, or deploys). The maintainer runs these **after**
-> confirming the Neon project and the `ai-marketing` Vercel project are the intended targets.
-> This document does not run any of them.
+Current deployment evidence is maintained in `Docs/GATEWAY_ACCEPTANCE.md`. Protected Preview and
+Production are configured for signed installation snapshots and a Gemini OpenAI-compatible
+provider, with live streaming/non-streaming billing, rotation, recovery, soak, and rollback
+evidence. Do not place credential material, virtual keys, or one-time installation keys in this
+document.
+
+- Control plane project: `ai-marketing/manifold`.
+- Gateway project: `ai-marketing/manifold-gateway`
+  (`prj_QpvIko2eFo71p5Z3F3VlPLDXfVw7`).
+- Gateway production alias: `https://manifold-gateway.vercel.app`.
+- Gateway runtime: Vercel Node.js 22.x, Fluid Compute, `iad1`, 300-second gateway duration,
+  Standard memory, ARM64.
+- `/health` and `/api/health` are liveness-only and return `Cache-Control: no-store`.
+- `/ready` and `/api/ready` are the operational readiness gate; require 200 before a promotion.
+- Public provider traffic is limited to the explicitly supported OpenAI-compatible paths listed
+  below. Required Preview and Production-canary evidence is retained in
+  `Docs/GATEWAY_ACCEPTANCE.md`.
+
+Vercel Fluid Standard currently provides 2 GB memory and 1 vCPU. The older 1 GB target in the
+specification is no longer a selectable Fluid memory class. See
+[Vercel function memory](https://vercel.com/docs/functions/configuring-functions/memory).
 
 ## Topology
 
+### Workspace scheduler deployment
+
+ADR-0021 binds one durable Postgres database to one workspace. Deploy the control-plane storage
+Cron routes once for each workspace-bound control-plane deployment, with that deployment's
+`DATABASE_URL`, `DATABASE_URL_DIRECT`, and `CRON_SECRET` scoped to the same database. The routes
+intentionally discover only that database's single `workspace` row; they never enumerate a
+directory database or synthesize cross-workspace connection URLs. Installations are scheduled by
+their own deployment/trigger binding. A database with zero or more than one workspace row fails
+closed before storage measurement, enqueue, or compaction.
+
+The storage drainer has a dedicated 60-second function duration and starts at most one durable
+compaction job per fire, with a 50-second admission budget. Compaction persists its seal/export
+state before destructive work and resumes that state from the durable job ledger on later fires.
+
+```text
+CLI / console
+    |
+    v
+Control plane: ai-marketing/manifold
+    |  signs immutable installation snapshots
+    |  authenticates installation requests
+    v
+Gateway: ai-marketing/manifold-gateway, Node 22 Fluid, iad1
+    |  verified isolate LKG snapshot cache
+    |  DNS-pinned provider egress
+    |  durable terminal job ledger + waitUntil + Cron
+    +----> upstream providers
+    |
+    +----> pooled Neon manifold_app connection
+             budget reservations, usage/cost projections, job ledger
 ```
- CLI (manifold) ──HTTPS──►  Control plane (Vercel, ai-marketing)  ──►  Neon Postgres (role: manifold_app, pooled)
-                                    │ signs config snapshots (ed25519 private seed)
-                                    ▼
-                            GET /api/v1/config/active  ──►  signed snapshot.json
-                                    │
- API clients ──HTTPS──►  Gateway (SPEC: Vercel Fluid Node fn; now: local node:http :8787)  ──►  Neon (budget reservations)
-                                    │ verifies snapshot (ed25519 public key), decrypts credmap (KEK)
-                                    ▼
-                            upstream provider (e.g. api.anthropic.com)
-```
 
-## Shared-secret invariants (get these wrong and it fails closed)
+Authentication and routing read only the verified signed snapshot. A short Postgres transaction
+remains authoritative for distributed admission, hard monetary reservations, and durable
+terminal reconciliation.
 
-| Env var | Must match across | Why |
-|---|---|---|
-| `MANIFOLD_KEY_PEPPER` | control plane **and** gateway | gateway key hashes are `HMAC(pepper, key)`; mismatch → every key `AUTH_KEY_UNKNOWN` |
-| `MANIFOLD_DATA_KEK` | control plane **and** gateway | gateway decrypts the provider credmap sealed by the control plane |
-| `MANIFOLD_SNAPSHOT_PUBLIC_KEY` (GW) | = public half of `MANIFOLD_SNAPSHOT_SIGNING_KEY` (CP) | gateway verifies the snapshot signature; mismatch → refuses to load |
+## Immutable runtime configuration
 
----
+The checked-in gateway settings are in `apps/gateway/vercel.json`:
 
-## Prerequisites (local, safe)
+- `fluid: true`
+- region `iad1`
+- `api/gateway.ts` maximum duration 300 seconds
+- job drainer maximum duration 60 seconds
+- `/health` and `/ready` aliases
+- literal rewrites for `/v1/models`, `/v1/chat/completions`, `/v1/responses`, and
+  `/v1/embeddings` to the Web Request/Response gateway handler
+- one-minute `/api/internal/jobs/drain` Cron
+- workspace-aware install/build command
+
+Project settings must remain:
+
+| Setting | Required value |
+|---|---|
+| Team | `ai-marketing` |
+| Project | `manifold-gateway` |
+| Node.js | `22.x` |
+| Fluid Compute | enabled |
+| Region | `iad1` |
+| Function duration | 300 seconds |
+| Memory | Standard |
+| Files outside root | enabled |
+
+Verify before every production promotion:
 
 ```bash
-# From repo root. Installs the workspace and builds the 12 TS packages + control plane.
-npm install
-npm run build            # tsc -b across packages/*, then next build for control-plane
-
-# Tools the outward steps need:
-#   - vercel CLI      (npm i -g vercel)   — deploy + env
-#   - psql            (postgres client)   — apply migrations to Neon
-#   - neonctl or Neon console             — create the project (console is fine)
-#   - the Go CLI:  (cd apps/cli && make build)  → apps/cli/bin/manifold
+vercel project inspect manifold-gateway --scope ai-marketing
+vercel pull --yes --environment=preview --cwd apps/gateway --scope ai-marketing
+vercel build --standalone --cwd apps/gateway
+jq . apps/gateway/.vercel/output/functions/api/gateway.func/.vc-config.json
+du -sh apps/gateway/.vercel/output
 ```
 
----
+The emitted gateway runtime must be `nodejs22.x`; every emitted relative import must use `.js`.
 
-## A. Create the Neon project + get the pooled DATABASE_URL
+## Database and migrations
 
-**`RUN MANUALLY — requires the confirmed target`**
+Use two Neon URLs:
 
-Use the Neon console (or `neonctl`). Postgres 16 to match the test harness.
+- direct owner URL for migrations and break-glass repair;
+- pooled `manifold_app` URL for both Vercel runtimes.
 
-1. Create project `manifold` (region near the Vercel `iad1` region, e.g. `aws-us-east-1`).
-2. Capture **two** connection strings from Connection Details:
-   - **Direct** (non-pooler host) — used to apply migrations as the DB **owner** role
-     (e.g. `neondb_owner`). DDL, `CREATE ROLE`, `ALTER DEFAULT PRIVILEGES` need a session
-     connection, not the transaction pooler.
-     ```
-     export MANIFOLD_MIGRATE_URL='postgresql://neondb_owner:<owner_pw>@<project>.<region>.aws.neon.tech/<db>?sslmode=require'
-     ```
-   - **Pooled** (the `-pooler` host) — the runtime `DATABASE_URL`. We rewrite the role to
-     `manifold_app` in step C after the migrations create it:
-     ```
-     # after step C:
-     export MANIFOLD_APP_URL='postgresql://manifold_app:<app_pw>@<project>-pooler.<region>.aws.neon.tech/<db>?sslmode=require'
-     ```
-
-> Neon note: the project owner role is **not** a real superuser. `CREATE ROLE`, RLS,
-> partitioning, triggers, and `ALTER DEFAULT PRIVILEGES` all work as owner. If any migration
-> statement is rejected for privileges, that is a Neon-specific blocker to resolve before the
-> app can connect as `manifold_app` — see "Known blockers" at the bottom.
-
----
-
-## B. Apply the migrations 0000–0006 to Neon (IN ORDER)
-
-**`RUN MANUALLY — requires the confirmed target`**
-
-There is **no** `drizzle-kit migrate` wired in this repo. The canonical apply path (the one the
-test harness `packages/database/test/pg-harness.ts` uses) is: run each numbered `.sql` file in
-lexical order through `psql` with `ON_ERROR_STOP=1`. Do the same against Neon, using the
-**direct owner** URL.
-
-First, set the real `manifold_app` password inside migration `0002` (it ships a placeholder):
+Apply every numbered migration in lexical order. Never hard-code an ending migration number:
 
 ```bash
-# EITHER edit 0002 before applying (replace the literal CHANGEME_APP_PASSWORD):
-#   packages/database/migrations/0002_app_role.sql  →  CREATE ROLE manifold_app LOGIN PASSWORD '<app_pw>'
-# OR leave it and run `ALTER ROLE manifold_app PASSWORD '<app_pw>';` right after step B.
-```
-
-Apply every migration in order (exact command):
-
-```bash
-cd /Users/stephenwalker/Code/projects/manifold
-for f in $(ls packages/database/migrations/[0-9][0-9][0-9][0-9]_*.sql | sort); do
-  echo ">> applying $f"
-  psql "$MIGRATE_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f" || { echo "FAILED on $f"; exit 1; }
+for migration in packages/database/migrations/[0-9][0-9][0-9][0-9]_*.sql; do
+  psql "$MANIFOLD_MIGRATE_URL" -v ON_ERROR_STOP=1 -q -f "$migration" || exit 1
 done
-# $MIGRATE_DATABASE_URL = the DIRECT owner URL from step A (MANIFOLD_MIGRATE_URL).
 ```
 
-Order applied (idempotent DO-blocks where roles/partitions are created):
+Gateway launch requires both `0021_gateway_distributed_admission.sql` and
+`0022_gateway_target_health.sql`. The second migration adds append-only provider-attempt facts,
+the durable target-health projection, and due-workspace discovery for the rollup/publication
+worker.
 
-```
-0000_tiresome_piledriver.sql          base schema (§6)
-0001_partitions.sql                   RANGE/LIST partitions, RLS policies, immutability triggers
-0002_app_role.sql                     non-superuser manifold_app role + least-privilege grants
-0003_reservation_counter_coords.sql   reservation counter coords
-0004_cache_read_tokens_rename.sql     column rename
-0005_partition_rls_and_integrity.sql  partition RLS + integrity
-0006_provider_credential_revoke_signal.sql  credential revoke signal
-```
+The application role must be non-superuser with `rolbypassrls = false`. Verify from the pooled
+URL and run the repository's real-Postgres/RLS suites before promotion.
 
-If you did not edit 0002, set the app password now:
+Migration procedure:
+
+1. record the current code deployment, schema migration list, database branch/backup, operator,
+   and maintenance window;
+2. prove the currently deployed code is compatible with the additive target schema;
+3. apply migrations from the direct owner URL with lock and statement timeouts appropriate to the
+   production-size rehearsal;
+4. record each applied filename and completion time, then verify `manifold_app` remains
+   non-superuser, FORCE RLS is enabled, and cross-workspace reads return no rows;
+5. run gateway readiness, strict-admission, durable-ledger, and target-health checks before
+   promotion;
+6. on failure, freeze promotion and choose the documented forward fix or prior-code redeploy.
+   Never run an unreviewed destructive down migration against production.
+
+Contracting migrations follow expand → backfill → switch → observe through the rollback window →
+contract. Retain the migration receipt, production-size rehearsal result, and recovery decision
+with the release evidence.
+
+## Gateway environment
+
+Set the following separately for Preview and Production. Secret values must come from the
+password manager or the control plane's one-time installation-key response.
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | pooled Neon URL using `manifold_app` |
+| `MANIFOLD_INSTALLATION_ID` | installation bound to this gateway project |
+| `MANIFOLD_WORKSPACE_ID` | workspace owning that installation |
+| `MANIFOLD_CONTROL_PLANE_URL` | bare HTTPS control-plane origin |
+| `MANIFOLD_INSTALLATION_PRIVATE_KEY` | base64 PKCS#8 Ed25519 installation identity |
+| `MANIFOLD_SNAPSHOT_PUBLIC_KEY` | legacy single pinned snapshot-signing public key |
+| `MANIFOLD_SNAPSHOT_PUBLIC_KEYS` | preferred rotation keyring: strict JSON `signingKeyId → public key` map, maximum four |
+| `MANIFOLD_KEY_PEPPER` | legacy single key-hash pepper, matching the control plane |
+| `MANIFOLD_KEY_PEPPERS` | preferred rotation overlap: strict JSON `[new, old]`, maximum two |
+| `MANIFOLD_DATA_KEK` | legacy KEK for ID-less snapshots, matching the control plane |
+| `MANIFOLD_DATA_KEKS` | preferred rotation keyring: strict JSON `kekId → base64 KEK` map, maximum four |
+| `CRON_SECRET` | exact Bearer secret for the Vercel Cron drainer |
+| `MANIFOLD_ADMISSION_MODE` | must be `postgres_strict` |
+
+Recommended explicit controls:
+
+| Variable | Default |
+|---|---:|
+| `MANIFOLD_SNAPSHOT_FRESH_MS` | 5000 |
+| `MANIFOLD_SNAPSHOT_MAX_STALE_MS` | 60000 |
+| `MANIFOLD_SNAPSHOT_TIMEOUT_MS` | 2000 |
+| `MANIFOLD_SNAPSHOT_MAX_BYTES` | 1048576 |
+| `MANIFOLD_ADMISSION_LEASE_TTL_MS` | 330000 |
+| `MANIFOLD_MAX_REQUEST_BYTES` | 4000000 |
+| `MANIFOLD_MAX_KEY_CONCURRENCY` | 16 |
+| `MANIFOLD_MAX_CONCURRENCY` | 128 |
+| `MANIFOLD_CONCURRENCY_MAX_KEYS` | 10000 |
+| `MANIFOLD_CIRCUIT_FAILURE_THRESHOLD` | 5 |
+| `MANIFOLD_CIRCUIT_WINDOW_MS` | 60000 |
+| `MANIFOLD_CIRCUIT_RESET_MS` | 30000 |
+| `MANIFOLD_CIRCUIT_MAX_TARGETS` | 10000 |
+
+Optional snapshot accelerator variables are documented in `.env.example`. Its bearer token is
+separate from installation authentication and must never be sent to the control-plane origin.
+
+List environment names without printing values:
 
 ```bash
-psql "$MIGRATE_DATABASE_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE manifold_app PASSWORD '<app_pw>';"
+cd apps/gateway
+vercel env ls preview
+vercel env ls production
 ```
 
-Sanity check the app role can log in and RLS is active:
+The production gateway has the required installation/runtime configuration. Configure Preview
+independently; never copy Production secret values into Preview or into release artifacts.
+
+## Snapshot publication and revocation SLA
+
+The control plane is the authoritative snapshot source. A gateway refresh:
+
+1. optionally tries the accelerator;
+2. signs the control-plane request with the installation Ed25519 identity;
+3. caps response time and bytes;
+4. verifies installation ID, content hash, schema, and Ed25519 snapshot signature;
+5. atomically replaces isolate LKG only after all checks pass;
+6. serves LKG only through `MANIFOLD_SNAPSHOT_MAX_STALE_MS`, then fails closed.
+
+The configured revoke/rotation propagation objective is:
+
+```text
+freshness poll 5 seconds + one 2-second fetch window;
+absolute stale ceiling 60 seconds during dependency failure.
+```
+
+Before production traffic, prove against Preview:
+
+- revoked virtual key is rejected by every warmed instance inside the stated SLA;
+- rotated provider credential is adopted inside the SLA;
+- old snapshot signature, wrong installation, tampering, oversize, and rollback revisions cannot
+  replace verified LKG;
+- once LKG exceeds the maximum stale age, readiness and dispatch fail closed.
+
+## Build, test, and deploy
+
+Run from the repository root:
 
 ```bash
-psql "$MANIFOLD_APP_URL" -c "select current_user;"   # → manifold_app
+npm run build -w packages/ports
+npm run build -w packages/gateway-core
+npm test -w packages/gateway-core
+npm run typecheck -w apps/gateway
+npm test -w apps/gateway
+corepack pnpm install --frozen-lockfile --ignore-scripts
 ```
 
----
-
-## C. Generate the KEK / pepper / snapshot signing keys (local, safe)
-
-Run locally and paste the outputs into Vercel (step D) and the gateway env (step F).
-**Store them in a password manager — they cannot be recovered.**
+Preview:
 
 ```bash
-# Data KEK — base64 of exactly 32 bytes
-openssl rand -base64 32          # → MANIFOLD_DATA_KEK   (SAME value in gateway)
-
-# Key pepper — high-entropy string
-openssl rand -hex 32             # → MANIFOLD_KEY_PEPPER  (SAME value in gateway)
-
-# Seed-route guard secret
-openssl rand -hex 32             # → MANIFOLD_SEED_SECRET
-
-# ed25519 snapshot signing keypair (prints BOTH halves, base64 of raw 32 bytes)
-node -e 'const{generateKeyPairSync}=require("node:crypto");const{publicKey,privateKey}=generateKeyPairSync("ed25519");const pk=privateKey.export({format:"der",type:"pkcs8"});const pub=publicKey.export({format:"der",type:"spki"});console.log("MANIFOLD_SNAPSHOT_SIGNING_KEY="+Buffer.from(pk.subarray(pk.length-32)).toString("base64"));console.log("MANIFOLD_SNAPSHOT_PUBLIC_KEY="+Buffer.from(pub.subarray(pub.length-32)).toString("base64"))'
-# → MANIFOLD_SNAPSHOT_SIGNING_KEY  (control plane)
-# → MANIFOLD_SNAPSHOT_PUBLIC_KEY   (gateway; must be the public half of the same key)
+vercel pull --yes --environment=preview --cwd apps/gateway --scope ai-marketing
+vercel build --standalone --cwd apps/gateway
+vercel deploy --prebuilt --target=preview --cwd apps/gateway --scope ai-marketing
 ```
 
-Choose stable ids: `MANIFOLD_DATA_KEK_ID=kek_prod_1`, `MANIFOLD_SNAPSHOT_SIGNING_KEY_ID=snap_prod_1`.
-
----
-
-## D. Set the Vercel env vars on the `ai-marketing` team
-
-**`RUN MANUALLY — requires the confirmed target`**
-
-The project is already linked (`apps/control-plane/.vercel/project.json` → team `ai-marketing`,
-project `manifold`). Set these for the **Production** environment. Set the Node.js version to
-**22.x** in Project Settings → General (matches `engines.node >=22`).
+Use authenticated Vercel curl when Preview Deployment Protection is enabled:
 
 ```bash
-cd /Users/stephenwalker/Code/projects/manifold/apps/control-plane
-# (if the link is ever lost:  vercel link --scope ai-marketing --project manifold  — RUN MANUALLY)
-
-vercel env add DATABASE_URL production                 # the POOLED manifold_app URL (MANIFOLD_APP_URL)
-vercel env add MANIFOLD_DATA_KEK production             # from step C
-vercel env add MANIFOLD_DATA_KEK_ID production          # kek_prod_1
-vercel env add MANIFOLD_KEY_PEPPER production           # from step C
-vercel env add MANIFOLD_SNAPSHOT_SIGNING_KEY production # ed25519 private seed (step C)
-vercel env add MANIFOLD_SNAPSHOT_SIGNING_KEY_ID production   # snap_prod_1
-vercel env add MANIFOLD_REQUIRE_REAL_KEYS production    # 1
-vercel env add MANIFOLD_SEED_SECRET production          # from step C
-vercel env add MANIFOLD_SEED_DB_URL production          # the DIRECT owner URL (for the one-time seed)
-# NODE_ENV=production is set by Vercel automatically.
+cd apps/gateway
+vercel curl /health --deployment <preview-deployment-id> -- --include
+vercel curl /ready --deployment <preview-deployment-id> -- --include
 ```
 
----
-
-## E. Deploy the control plane to Vercel
-
-**`RUN MANUALLY — requires the confirmed target`**
-
-`apps/control-plane/vercel.json` pins the build so the workspace TS packages (whose `dist/` is
-gitignored) are compiled before `next build`:
-
-```
-buildCommand: "tsc -b ../../tsconfig.json && next build"
-framework:    "nextjs"
-```
-
-Root Directory in the Vercel project must be **`apps/control-plane`** (Vercel runs `npm install`
-at the workspace root automatically).
+Production:
 
 ```bash
-cd /Users/stephenwalker/Code/projects/manifold/apps/control-plane
-vercel deploy --prod                 # RUN MANUALLY — deploys to ai-marketing/manifold
-# capture the resulting URL, e.g.:  export MF_URL=https://manifold-<hash>-ai-marketing.vercel.app
+vercel pull --yes --environment=production --cwd apps/gateway --scope ai-marketing
+vercel build --prod --standalone --cwd apps/gateway
+vercel deploy --prebuilt --prod --cwd apps/gateway --scope ai-marketing
 ```
 
-Smoke the deploy's DB wiring immediately:
+Never promote unless Preview readiness is 200 and every gate below has current artifacts.
+
+## Smoke and billing checks
+
+Required Preview checks:
+
+1. `/health` returns 200 and `no-store`.
+2. `/ready` returns 200 with only safe snapshot revision/built-at/age metadata.
+3. invalid virtual key returns OpenAI-shaped 401 without provider egress.
+4. `/v1/models` returns only active public names for the resolved profile.
+5. one non-streaming provider call writes one terminal trace, one usage row, one cost row, and
+   commits its reservation at provider-reported actual cost.
+6. one SSE call relays bytes unchanged, withholds the `[DONE]` frame until durable terminal
+   enqueue, records final provider usage, and commits the exact actual cost.
+7. an aborted/incomplete SSE call records `PROVIDER_STREAM_ABORTED` and reconciles the hold.
+8. one transient failure emits a `provider_attempt`, safely retries/fails over, and exposes the
+   attempt waterfall in tracing.
+9. DNS changes between validation and connection cannot reach a private address.
+10. Cron retries a forced ingest failure, stale claims recover, and exhausted work reaches DLQ.
+
+## Load, soak, and platform limits
+
+Run the load harness from a protected Preview deployment using synthetic provider endpoints.
+Capture deployment ID, git SHA, snapshot revision, test command, and raw result artifact.
+
+Health/load example:
 
 ```bash
-curl -s "$MF_URL/api/v1/health" | jq .     # expect { "status":"ok", "checks": { "db":"ok" } }
+VERCEL_AUTOMATION_BYPASS_SECRET='<preview-bypass-secret>' \
+npm run load:smoke -w apps/gateway -- \
+  --url https://<preview-deployment-url> \
+  --endpoint /health \
+  --concurrency 16 \
+  --requests 1000 \
+  --expect-status 200
 ```
 
-### Bootstrap the first workspace + API token (one-time)
+Authenticated provider/soak example (the virtual key is accepted as an argument or through
+`MANIFOLD_VIRTUAL_KEY`, and is never emitted in the JSON artifact):
 
 ```bash
-curl -s -X POST "$MF_URL/api/v1/admin/seed" \
-  -H "x-seed-secret: $MANIFOLD_SEED_SECRET" \
-  -H "content-type: application/json" \
-  -d '{"slug":"acme","name":"Acme","email":"owner@acme.test"}' | jq .
-# Returns the api_token (mf_tok_...) ONCE, plus the workspace + installation ids. Save the token.
-export MF_TOKEN=mf_tok_...
-export MF_INSTALLATION=...    # gateway_installation id from the seed response
+VERCEL_AUTOMATION_BYPASS_SECRET='<preview-bypass-secret>' \
+MANIFOLD_VIRTUAL_KEY='<preview-key>' \
+npm run load:smoke -w apps/gateway -- \
+  --url https://<preview-deployment-url> \
+  --endpoint /v1/chat/completions \
+  --body-file ./fixtures/load-chat.json \
+  --concurrency 16 \
+  --duration-s 900 \
+  --expect-status 200
 ```
 
----
+Minimum gates:
 
-## F. Run the gateway
+- payload: exact request limit accepted; limit + 1 rejected before egress;
+- memory: long SSE stream has a flat bounded heap profile;
+- duration: streams near 300 seconds close cleanly; no test exceeds the platform cap;
+- FD/socket: concurrency does not exhaust the Vercel function's file-descriptor allowance;
+- Neon: pooled connections remain within project limits under Fluid concurrency;
+- rate/concurrency: strict Postgres admission admits exactly the configured fleet-wide caps under
+  burst; measure admission latency and Neon pool utilization independently from hard-budget work;
+- interruption: kill/deploy after provider final usage and before drain, then prove the ledger
+  recovers exactly once;
+- soak: sustained traffic has no growth in heap, open sockets, stale claims, reservation age, or
+  snapshot age.
 
-**Production target (SPEC ADR-0018): a Vercel Node / Fluid Compute function** — same platform as the
-control plane, a second Vercel project (`manifold-gateway`) under `ai-marketing`, one hostname per
-ingress profile, configured `maxDuration=300s` / `memory=1024MB` / region-pinned to Neon. Fluid
-Compute is chosen precisely for the streaming-proxy workload: warm instances with in-instance
-concurrency serve many concurrent provider streams, and `after()`/`waitUntil` handle post-response
-ingest. This is NOT the Edge runtime and NOT a VM.
+Record these capacity artifacts for both Preview and the production canary:
 
-> **BLOCKED — not yet buildable as specified.** Two pieces the SPEC requires do not exist yet:
-> (1) `packages/adapters-vercel` (implements `ports/` against Edge Config / Neon / `after()` / Vercel
-> Cron, §4.1); (2) a Vercel Fluid function entry for `apps/gateway` (today it is a bare `node:http`
-> `createServer().listen()` dev server). Building those + creating the `manifold-gateway` Vercel
-> project is the remaining work to run the data plane where it belongs.
+| Workload | Minimum run | Pass threshold |
+|---|---:|---|
+| health baseline | 1,000 requests, concurrency 16 | zero unexpected status/transport errors |
+| strict admission burst | configured cap plus one from separate clients | exactly cap admitted; cap+1 denied; zero overshoot |
+| authenticated provider soak | 15 minutes, concurrency 16 | gateway 5xx <1%; no monotonic heap/socket/job-age growth |
+| streaming memory | 1 GiB synthetic SSE | bounded parser memory; no response buffering or FD exhaustion |
+| long stream | 290 seconds | clean completion and terminal reconciliation before the 300-second cap |
+| Neon admission/reservation | peak planned rate | pool <80%; reservation errors <0.1%; admission and reservation P99 recorded separately |
+| ingest | sustained planned event rate | terminal-to-queryable P99 ≤5 seconds |
 
-**Stopgap for a beta smoke test (NOT the production shape):** until the Vercel packaging lands, run
-the existing `node:http` server (`apps/gateway`, port 8787) locally or on any Node host against the
-same Neon DB + signed snapshot. This exercises the real request pipeline; it is a temporary way to
-test the data plane, not how it ships.
+The current release record includes 1,000/1,000 Production health requests at concurrency 16, a
+638/638 mixed streaming/non-streaming 15-minute Gemini soak, 1.79% observed Neon connection
+utilization, exact 1 MiB payload-boundary behavior, and the local 1 GiB bounded-RSS gate. Hosted
+Vercel memory, FD/socket, and duration panels are part of the explicitly deferred observability
+follow-up.
 
-**`RUN MANUALLY — requires the confirmed target`** (local/stopgap run).
+The production Neon compute must remain warm for strict admission and hard budgets. Record its
+autosuspend setting, pool ceiling, observed connection peak, and cold-start probe; scale-to-zero
+invalidates the latency gate.
 
-1. Produce a **signed** snapshot for the gateway to load. The bundled
-   `apps/gateway/snapshot.example.json` is **unsigned** and will be **rejected** in production
-   (`MANIFOLD_SNAPSHOT_PUBLIC_KEY` pinned). After you have created routes/keys and run
-   `manifold config apply` against the control plane, fetch the signed active snapshot:
+Production requires `MANIFOLD_ADMISSION_MODE=postgres_strict`. One short, RLS-scoped Postgres
+transaction serializes each installation/key admission, so RPM/TPM and concurrency have zero
+overshoot at the database boundary. The gateway fails closed when that authority is unavailable.
+An expiring 330-second lease recovers capacity after an isolate crash and outlives the function's
+300-second maximum duration. Local development may omit the distributed adapter and use bounded
+per-process guards. Circuit state remains per-isolate; hard budgets remain authoritative in
+Postgres through their separate transaction.
 
-   ```bash
-   curl -s "$MF_URL/api/v1/config/active?installationId=$MF_INSTALLATION" \
-     -H "authorization: Bearer $MF_TOKEN" > snapshot.active.json
-   ```
+## Observability, dashboards, and alerts
 
-2. Set the gateway env (see `.env.example`), then start it:
+`@vercel/otel` registers OpenTelemetry for the gateway. The request lifecycle emits:
 
-   ```bash
-   cd /Users/stephenwalker/Code/projects/manifold/apps/gateway
-   export NODE_ENV=production
-   export DATABASE_URL="$MANIFOLD_APP_URL"            # same Neon DB (pooled, manifold_app)
-   export MANIFOLD_KEY_PEPPER=...                     # IDENTICAL to the control plane
-   export MANIFOLD_DATA_KEK=...                       # IDENTICAL to the control plane
-   export MANIFOLD_SNAPSHOT_PUBLIC_KEY=...            # public half of the signing key
-   export MANIFOLD_REQUIRE_REAL_KEYS=1
-   export MANIFOLD_REQUIRE_SIGNED=1
-   export MANIFOLD_SNAPSHOT=./snapshot.active.json
-   export PORT=8787
-   npm start                                         # → gateway listening on :8787
-   ```
+- `manifold.gateway.request` spans;
+- `manifold.gateway.provider_attempt` child spans;
+- request/attempt duration histograms and counters;
+- cardinality-bounded structured completion logs;
+- durable accepted/provider-attempt/terminal observation events.
 
-   Reference container recipe (documentation only): `FROM node:22-slim`, copy the repo, run
-   `npm ci && npm run build`, `WORKDIR /app/apps/gateway`, `CMD ["npm","start"]`, expose 8787,
-   put it behind TLS (the provider secrets and virtual keys ride the wire).
+Configure a Vercel Trace/Log Drain or standard `OTEL_EXPORTER_OTLP_*` destination. Create one
+gateway dashboard with:
 
----
+- request rate, error/deny rate, p50/p95/p99 duration;
+- provider attempts, retries, failovers, status, and duration;
+- snapshot age/revision divergence and heartbeat age;
+- terminal queue pending/retry/dead count and oldest age;
+- reservation failures, reserved age, released/committed counts;
+- exact/estimated/unknown cost fidelity;
+- circuit open/half-open target count;
+- function memory, duration, FD/socket, and Neon pool utilization.
 
-## G. Smoke test with the CLI
+Page on:
 
-Build the CLI once: `cd apps/cli && make build` → `apps/cli/bin/manifold`.
+- readiness non-200 for 2 consecutive minutes;
+- snapshot age above 30 seconds warning, above 60 seconds critical;
+- active vs applied revision divergence above 60 seconds;
+- terminal queue oldest pending/retry above 2 minutes or any new dead job;
+- target-health rollup/publication oldest pending above 2 minutes or any new dead job;
+- durable target health remaining unhealthy/unknown beyond its route SLO;
+- hard-budget reconciliation failure or reservation age above 5 minutes;
+- provider 5xx/timeout above 5% for 5 minutes;
+- gateway 5xx above 1% for 5 minutes;
+- p99 latency above the route SLO for 10 minutes;
+- Neon connection utilization above 80%;
+- any unexpected production config/signature/authentication failure.
 
-```bash
-# (a) liveness — real HTTP GET against the deployed control plane's /api/v1/health
-manifold ping --base-url "$MF_URL"
-#     (alias of `manifold installation health`)
+Vercel-hosted metrics, dashboards, and alert delivery are explicitly deferred by the user to a
+later follow-up. Keep this section as the required implementation runbook: no dashboard, alert,
+or paging control is considered configured until it has an owner, destination, query, and dated
+test-delivery receipt. This release does not claim those controls as evidence.
 
-# (b) authenticated list — real GET $MF_URL/api/v1/keys with the bearer token
-manifold key list --base-url "$MF_URL" --token "$MF_TOKEN"
-```
+The operator dashboard and alerts must implement these exact SLIs:
 
-Gateway smoke (once routes/keys exist in the active snapshot) — see `apps/gateway/README.md`:
-
-```bash
-curl -s -X POST http://<gateway-host>:8787/v1/messages \
-  -H "authorization: Bearer <virtual-key>" -H "content-type: application/json" -d '{}'
-# a bad/unknown key → 401 AUTH_KEY_UNKNOWN envelope proves auth + snapshot are live.
-```
-
----
-
-## Summary — every MANUAL outward step
-
-| Step | Command | Target |
+| SLI | Target | Warning / page |
 |---|---|---|
-| A | Create Neon project; capture direct + pooled URLs | Neon |
-| B | `for f in …0000..0006.sql; do psql "$MIGRATE_URL" -v ON_ERROR_STOP=1 -f "$f"; done` | Neon (owner) |
-| B | `ALTER ROLE manifold_app PASSWORD '…'` | Neon |
-| D | `vercel env add …` (all vars, Production) | Vercel · ai-marketing |
-| E | `vercel deploy --prod` | Vercel · ai-marketing |
-| E | `POST /api/v1/admin/seed` (bootstrap token) | deployed CP |
-| F | **SPEC target:** package gateway as a Vercel Fluid fn + create `manifold-gateway` project (blocked: needs `adapters-vercel`). **Stopgap:** `npm start` the `node:http` server locally | Vercel · ai-marketing (target) / local (stopgap) |
-| F | `GET /api/v1/config/active` → snapshot.active.json | deployed CP |
-| G | `manifold ping` / `manifold key list` | deployed CP |
+| successful gateway requests / eligible gateway requests | 99.9% monthly | multi-window error-budget burn freezes non-critical releases |
+| gateway-added request overhead P99 | public ≤15 ms; proxied TTFB overhead ≤20 ms | warn on 10-minute breach; page on sustained customer SLO impact |
+| terminal-to-queryable ingest lag P99 | ≤5 seconds | warn above 5 seconds; page above 60 seconds |
+| reservation transaction errors / reservation attempts | <0.1% | page at or above 0.1% for 5 minutes |
+| snapshot verification failures | 0 | page immediately on any production failure |
+| terminal/health job DLQ | 0 new dead jobs | page on any new dead job |
+| Neon pool utilization | <80% | warn at 80%; page if saturation causes admission/readiness failures |
 
-## Known blockers to a real deploy (verify before promising "done")
+Every alert record needs the metric/query, denominator, evaluation window, dashboard link, owner,
+notification destination, runbook anchor, and a dated test-delivery receipt.
 
-- **Neon owner privileges — RESOLVED (verified 2026-07-24).** `0002` originally did
-  `ALTER ROLE … NOSUPERUSER NOBYPASSRLS`, which Neon's non-superuser owner rejects; it is now
-  portable (tries the full hardening, falls back on `insufficient_privilege` — a non-superuser-created
-  role is already NOSUPERUSER+NOBYPASSRLS). All migrations `0000–0007` apply cleanly on Neon, and a
-  live cross-tenant query as `manifold_app` (`rolbypassrls=f`) returned 1 row not 2 (RLS enforced).
-- **`0002` password placeholder.** `CHANGEME_APP_PASSWORD` must be replaced (edit the file or
-  `ALTER ROLE`) or the pooled `DATABASE_URL` cannot authenticate.
-- **Signed snapshot required in prod.** The gateway rejects the unsigned `snapshot.example.json`;
-  a real signed snapshot from `/config/active` (after a config apply) is mandatory before the
-  gateway will serve traffic.
-- **Provider credentials.** The gateway skeleton still reads the provider secret from
-  `ANTHROPIC_API_KEY`; the real path decrypts the sealed credmap (KEK). Confirm which path this
-  build uses before pointing it at production traffic (`apps/gateway/README.md` TODOs).
-- **`dist/` is gitignored.** A fresh Vercel/container checkout has no package `dist/`. The pinned
-  `buildCommand` (`tsc -b ../../tsconfig.json && next build`) and the gateway image's
-  `npm run build` are what compile them — do not skip them.
+## Durable target-health publication
+
+Provider attempts enter the same RLS-scoped durable observation transaction as terminal usage and
+cost. The control-plane minute Cron drains `target_health_rollup`, reduces a five-minute evidence
+window, and publishes a signed health-only snapshot revision through `target_health_publish`.
+Targets become unhealthy after at least five transient failures at a 50% or greater failure
+ratio, recover after the three literal newest qualifying attempts succeed, and expire to unknown
+after 120 seconds without evidence. Permanent failures are neutral for recovery.
+
+Set the same `CRON_SECRET` on the control-plane project and its target-health Cron caller. Before
+launch, prove the complete chain in Preview: force target A to fail, observe a newly signed
+unhealthy snapshot, confirm the gateway skips A, then record three consecutive successes and
+confirm a newly signed healthy snapshot makes A eligible again. Capture rollup/publish job age,
+retry, stale-claim recovery, and DLQ evidence.
+
+## Canary, rollback, and rotations
+
+Canary:
+
+1. record the candidate deployment ID, source revision, snapshot revision, baseline window, owner,
+   and rollback deployment;
+2. deploy Preview and complete all gates;
+3. deploy Production with `--skip-domain`, then smoke the immutable deployment through authenticated
+   `vercel curl`;
+4. send synthetic and operator traffic to that artifact for 30 minutes;
+5. promote the alias only when gateway 5xx is below 1%, reservation errors are below 0.1%,
+   snapshot verification failures and new dead jobs are zero, readiness is continuously 200, and
+   latency/ingest targets above hold;
+6. observe the promoted alias for another 30 minutes. Any threshold breach freezes promotion and
+   invokes code or snapshot rollback. Vercel aliasing provides a gated full cutover, so a percentage
+   canary requires a separately configured traffic controller.
+
+The canary record contains start/end timestamps, request volume, deployment and snapshot IDs,
+dashboard links, decision, approver, and any rollback timestamp.
+
+Code rollback:
+
+```bash
+vercel rollback <known-good-production-deployment-url> --scope ai-marketing
+```
+
+Snapshot rollback uses the control-plane rollback operation and republishes a signed immutable
+revision. Verify gateway heartbeats converge before declaring rollback complete.
+
+Credential rotation:
+
+1. create and validate the replacement credential;
+2. publish a snapshot referencing the replacement;
+3. wait for all gateway heartbeats/readiness to report the new revision;
+4. smoke the provider;
+5. revoke the old credential;
+6. prove old material is rejected and no stale gateway uses it.
+
+Snapshot-signing-key rotation requires an overlap deployment: first deploy gateways that trust
+both old and new key IDs, then publish snapshots signed by the new private key, verify every
+heartbeat has converged, and only then deploy a trust set without the old key and destroy the old
+signer. Abort by restoring the overlap trust set and the last old-key-signed revision.
+
+Pepper rotation requires dual-read support: deploy gateways with `[new, old]`, configure the
+control plane to hash newly published virtual-key records with `new`, republish, prove old and new
+virtual keys across warmed instances, then remove `old`. Never switch the control plane first.
+
+KEK rotation requires an overlap keyring: create a versioned new KEK, re-wrap each active DEK
+without decrypting provider ciphertext, publish targets carrying the new KEK ID, prove live
+decrypt/provider smoke across warmed instances, then remove and destroy the old KEK. Abort by
+republishing the prior wrapped-DEK snapshot while both KEKs remain trusted.
+
+Each rotation record identifies the owner, old/new key IDs, affected snapshot revisions,
+heartbeat convergence, live smoke result, retirement time, and recovery test. The corresponding
+keyring feature and live proof must be green in `Docs/GATEWAY_ACCEPTANCE.md` before using these
+procedures.
+
+## Incident actions
+
+Declare severity and an incident commander before mutation: SEV-1 for credential/signing
+compromise, cross-tenant exposure, billing corruption, or broad gateway outage; SEV-2 for degraded
+provider routing, queue lag, or capacity loss with a safe fallback. Record detection time, affected
+deployment/snapshot/workspaces, frozen changes, every operator action, and customer/status
+communications. Preserve deployment logs, safe metric exports, config operations, audit rows,
+job IDs/statuses, and migration receipts without copying secrets or request bodies.
+
+Gateway 5xx or readiness failure:
+
+1. freeze production promotion and config changes;
+2. inspect `/health`, `/ready`, deployment logs, snapshot age, heartbeat, queue age, and Neon;
+3. identify code, snapshot, provider, database, or credential boundary;
+4. rollback code or snapshot independently;
+5. keep dispatch failed closed if signature, tenant binding, credentials, or hard-budget
+   reconciliation is uncertain.
+
+Provider outage:
+
+1. confirm provider-attempt spans and circuit state;
+2. disable unhealthy targets in a signed snapshot;
+3. publish and verify heartbeat convergence;
+4. monitor retry amplification and deadline exhaustion.
+
+Terminal/DLQ incident:
+
+1. stop promotions and preserve job rows;
+2. restore the dependency;
+3. drain bounded batches;
+4. verify idempotent projections and reservation reconciliation;
+5. manually replay dead work only after payload and failure cause review.
+
+Credential or signing compromise:
+
+1. freeze code/config publication and page SEV-1;
+2. disable the affected credential/key or signer and publish a signed revocation with an unaffected
+   trusted signer;
+3. verify every heartbeat converges inside the stale ceiling and old material fails on every warmed
+   instance;
+4. rotate dependent credentials/keys, inspect audit/config operations, and restore traffic only
+   after a clean live smoke and zero snapshot verification failures.
+
+Neon saturation or admission outage:
+
+1. keep strict admission and hard budgets failed closed;
+2. inspect pool utilization, transaction latency, active/expired leases, reservation age, and
+   oldest ledger work;
+3. stop load, restore/warm Neon, drain bounded work, and prove lease recovery plus exact budget
+   reconciliation before restoring traffic.
+
+Alert-delivery failure:
+
+1. declare the dashboard/alert channel impaired and establish a human watch on readiness, 5xx,
+   queue age, reservation errors, snapshot failures, and Neon;
+2. repair the destination and send a labeled test alert;
+3. retain the delivery receipt and end manual watch only after the configured owner acknowledges it.
+
+Recovery exit criteria are readiness continuously 200, the active/applied snapshot converged,
+no new dead work, reservations reconciled, provider smoke green, affected SLOs stable for 30
+minutes, and the incident commander recording the close/next actions.
+
+Never copy credentials, virtual keys, prompts, provider bodies, DSNs, or installation private
+keys into logs, tickets, or chat.
+
+## Launch gates
+
+Production customer traffic remains blocked until all are true:
+
+- required Preview and Production environment variables are present;
+- signed snapshot readiness is 200;
+- live non-streaming and SSE provider billing checks pass;
+- revoke and credential-rotation SLA passes across warmed instances;
+- crash/deploy interruption recovery passes;
+- Neon/Fluid health load, authenticated soak, payload, and local bounded-memory gates pass;
+- canary and independent code/snapshot rollback rehearsals pass;
+- `Docs/GATEWAY_ACCEPTANCE.md` has no blocked, missing, or indirect proof.
+
+Vercel-hosted observability—including platform memory, FD/socket, and duration panels—is deferred
+outside the current delivery scope. Complete its dashboard/paging controls before using those
+signals as a customer-traffic SLO or automated promotion input.
