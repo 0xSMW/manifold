@@ -11,6 +11,8 @@ export type AppShellProps = {
   pendingChanges?: number;
   nav?: ShellNavGroup[];
   onProfileChange?: (profile: WorkspaceProfile) => void;
-  onLogout?: () => void;
+  onLogout?: () => void | Promise<void>;
+  loggingOut?: boolean;
+  logoutError?: string | null;
   telemetrySearch?: { range: "1h" | "24h" | "7d" | "30d"; profile: WorkspaceProfile };
 };

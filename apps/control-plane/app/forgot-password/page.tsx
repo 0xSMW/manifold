@@ -1,0 +1,7 @@
+"use client";
+import { useState, type FormEvent } from "react";
+import { AuthCard, AuthNotice } from "@/components/auth/auth-card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/field";
+import { apiRequest } from "@/lib/api-client";
+export default function ForgotPasswordPage() { const [email, setEmail] = useState(""), [done, setDone] = useState(false), [working, setWorking] = useState(false); const submit = async (event: FormEvent) => { event.preventDefault(); setWorking(true); try { await apiRequest("/auth/password/forgot", { method: "POST", body: { email } }); } finally { setWorking(false); setDone(true); } }; return <AuthCard description="We will send a password reset link if this address can sign in." title="Reset your password">{done ? <AuthNotice tone="success">Check your email for a password reset link. If no message arrives, try again later or contact your workspace owner.</AuthNotice> : <form className="console-form" onSubmit={submit}><label className="console-field"><span>Email</span><Input autoComplete="email" autoFocus onChange={(event) => setEmail(event.target.value)} required type="email" value={email} /></label><Button disabled={working || !email} type="submit" variant="primary">{working ? "Sending link" : "Email reset link"}</Button></form>}<div className="auth-links"><a href="/login">Back to sign in</a></div></AuthCard>; }

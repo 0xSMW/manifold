@@ -56,7 +56,7 @@ async function apiFixture(page: Page, persona: Persona) {
     const method = request.method();
     const member = { id: "member-1", email: `${persona}@example.test`, name: persona === "owner" ? "Olivia Owner" : "Vera Viewer", role: persona };
     const me = { member, role: persona, workspace: { id: "workspace-1", slug: "acme", name: "Acme", region: "us-east-1" }, scopes: persona === "owner" ? ownerScopes : ["observations:read"], availableIngressProfiles: profiles };
-    if (path === "/session/login" && method === "POST") return json(route, { member, expiresAt: "2026-07-25T08:00:00.000Z" });
+    if (path === "/auth/login" && method === "POST") return json(route, {});
     if (path === "/session/logout") return json(route, { ok: true });
     if (path === "/me") return json(route, me);
     if (path === "/health") return json(route, { status: "ok", ingest_lag_seconds: 0 });

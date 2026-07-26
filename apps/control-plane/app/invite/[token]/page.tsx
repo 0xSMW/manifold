@@ -1,0 +1,13 @@
+"use client";
+import { useEffect, useState, type FormEvent } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { AuthCard, AuthNotice } from "@/components/auth/auth-card";
+import { PasswordFields } from "@/components/auth/password-fields";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/field";
+import { apiRequest } from "@/lib/api-client";
+type Invitation = { workspace: { name: string }; email: string; role: string; expiresAt: string };
+export default function InvitePage() { const { token } = useParams<{ token: string }>(), router = useRouter(); const [invite, setInvite] = useState<Invitation | null>(null), [name, setName] = useState(""), [password, setPassword] = useState(""), [confirmation, setConfirmation] = useState(""), [error, setError] = useState<string | null>(null), [working, setWorking] = useState(false);
+  useEffect(() => { void apiRequest<Invitation>("/auth/invitation/inspect", { method: "POST", body: { token } }).then(setInvite).catch(() => setError("This invitation is invalid, expired, or has already been used.")); }, [token]);
+  const submit = async (event: FormEvent) => { event.preventDefault(); if (password !== confirmation) return setError("Passwords do not match."); setWorking(true); setError(null); try { await apiRequest("/auth/invitation/accept", { method: "POST", body: { token, name, password } }); router.replace("/"); router.refresh(); } catch (caught) { setError(caught instanceof Error ? caught.message : "We could not accept this invitation."); } finally { setWorking(false); } };
+  return <AuthCard description="Join the workspace with the account invited to this link." title="Workspace invitation">{error && !invite ? <AuthNotice>{error}</AuthNotice> : null}{!invite && !error ? <p aria-busy="true">Checking invitation…</p> : null}{invite ? <><dl className="auth-summary"><div><dt>Workspace</dt><dd>{invite.workspace.name}</dd></div><div><dt>Invited email</dt><dd>{invite.email}</dd></div><div><dt>Role</dt><dd>{invite.role}</dd></div></dl><form className="console-form" onSubmit={submit}><label className="console-field"><span>Your name</span><Input autoComplete="name" onChange={(event) => setName(event.target.value)} required value={name} /></label><PasswordFields confirmation={confirmation} onConfirmation={setConfirmation} onPassword={setPassword} password={password} />{error ? <AuthNotice>{error}</AuthNotice> : null}<Button disabled={working} type="submit" variant="primary">{working ? "Joining workspace" : "Accept invitation"}</Button></form></> : null}<div className="auth-links"><a href="/login">Already have an account? Sign in</a></div></AuthCard>; }

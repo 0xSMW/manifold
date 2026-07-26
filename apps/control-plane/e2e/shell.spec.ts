@@ -3,8 +3,9 @@ import AxeBuilder from "@axe-core/playwright";
 
 test("browser login establishes a session and owner navigation follows profile availability gates", async ({ consolePage: page }) => {
   await page.goto("/login?next=%2F");
-  await page.getByLabel("API token").fill("member-token");
-  await page.getByRole("button", { name: "Start session" }).click();
+  await page.getByLabel("Email").fill("owner@example.test");
+  await page.getByLabel("Password").fill("a-safe-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "Overview" })).toBeVisible();
   const nav = page.getByRole("complementary", { name: "Main navigation" });
   await expect(nav.getByRole("link", { name: "Policies" })).toBeVisible();

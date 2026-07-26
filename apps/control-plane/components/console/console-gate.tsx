@@ -48,7 +48,7 @@ export function ConsoleGate({
   enterpriseOnly = false,
 }: {
   children: ReactNode;
-  minRole?: Exclude<MemberRole, "billing">;
+  minRole?: MemberRole;
   enterpriseOnly?: boolean;
 }) {
   const router = useRouter();
@@ -58,6 +58,8 @@ export function ConsoleGate({
   const [error, setError] = useState<string | null>(null);
   const [profile, setProfile] = useState<WorkspaceProfile>("public_app");
   const [pendingChanges, setPendingChanges] = useState(0);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -169,14 +171,24 @@ export function ConsoleGate({
     }
   };
   const logout = async () => {
-    await apiRequest("/session/logout", { method: "POST" });
-    router.replace("/login");
-    router.refresh();
+    setLoggingOut(true);
+    setLogoutError(null);
+    try {
+      await apiRequest("/auth/logout", { method: "POST" });
+      router.replace("/login");
+      router.refresh();
+    } catch (caught) {
+      setLogoutError(caught instanceof Error ? caught.message : "Unable to log out. Try again.");
+    } finally {
+      setLoggingOut(false);
+    }
   };
 
   return (
     <AppShell
       onLogout={logout}
+      logoutError={logoutError}
+      loggingOut={loggingOut}
       onProfileChange={selectProfile}
       pendingChanges={pendingChanges}
       profile={profile}

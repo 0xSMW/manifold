@@ -2,68 +2,17 @@
 
 import { useState, type FormEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { AuthCard, AuthNotice, safeNext } from "@/components/auth/auth-card";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/field";
 import { apiRequest, ControlPlaneApiError } from "@/lib/api-client";
 
 export default function LoginPage() {
-  const router = useRouter();
-  const search = useSearchParams();
-  const [token, setToken] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    setLoading(true);
-    setError(null);
-    try {
-      await apiRequest("/session/login", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setToken("");
-      const next = search.get("next");
-      router.replace(next?.startsWith("/") ? next : "/");
-      router.refresh();
-    } catch (caught) {
-      const message =
-        caught instanceof ControlPlaneApiError
-          ? caught.payload.remediation ?? caught.message
-          : "Unable to start browser session";
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <main className="console-login">
-      <Card className="console-login-card">
-        <div>
-          <h1>Sign in to Manifold</h1>
-          <p>Exchange an active member API token for a secure browser session</p>
-        </div>
-        <form className="console-form" onSubmit={submit}>
-          <label className="console-field">
-            <span>API token</span>
-            <Input
-              autoComplete="off"
-              autoFocus
-              onChange={(event) => setToken(event.target.value)}
-              placeholder="Paste token"
-              required
-              type="password"
-              value={token}
-            />
-          </label>
-          {error ? <p className="console-form-error" role="alert">{error}</p> : null}
-          <Button disabled={loading || !token} type="submit" variant="primary">
-            {loading ? "Starting session" : "Start session"}
-          </Button>
-        </form>
-      </Card>
-    </main>
-  );
+  const router = useRouter(); const search = useSearchParams();
+  const [email, setEmail] = useState(""); const [password, setPassword] = useState(""); const [error, setError] = useState<string | null>(null); const [working, setWorking] = useState(false);
+  const submit = async (event: FormEvent) => { event.preventDefault(); setWorking(true); setError(null); try {
+    await apiRequest("/auth/login", { method: "POST", body: { email, password } });
+    setPassword(""); router.replace(safeNext(search.get("next"))); router.refresh();
+  } catch (caught) { setError(caught instanceof ControlPlaneApiError ? caught.payload.message : "Unable to sign in. Try again."); } finally { setWorking(false); } };
+  return <AuthCard description="Sign in to your workspace." title="Welcome back"><form className="console-form" onSubmit={submit}><label className="console-field"><span>Email</span><Input autoComplete="email" autoFocus onChange={(event) => setEmail(event.target.value)} required type="email" value={email} /></label><label className="console-field"><span>Password</span><Input autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} required type="password" value={password} /></label>{error ? <AuthNotice>{error}</AuthNotice> : null}<Button disabled={working || !email || !password} type="submit" variant="primary">{working ? "Signing in" : "Sign in"}</Button></form><div className="auth-links"><a href="/forgot-password">Forgot password?</a><a href="/activate">Set up your workspace</a></div></AuthCard>;
 }

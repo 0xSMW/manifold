@@ -1,0 +1,8 @@
+"use client";
+import { useState, type FormEvent } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { AuthCard, AuthNotice } from "@/components/auth/auth-card";
+import { PasswordFields } from "@/components/auth/password-fields";
+import { Button } from "@/components/ui/button";
+import { apiRequest } from "@/lib/api-client";
+export default function ResetPasswordPage() { const router = useRouter(), search = useSearchParams(), token = search.get("token"); const [password, setPassword] = useState(""), [confirmation, setConfirmation] = useState(""), [notice, setNotice] = useState<string | null>(null), [working, setWorking] = useState(false); const submit = async (event: FormEvent) => { event.preventDefault(); if (!token) return setNotice("This reset link is invalid or incomplete."); if (password !== confirmation) return setNotice("Passwords do not match."); setWorking(true); setNotice(null); try { await apiRequest("/auth/password/reset", { method: "POST", body: { token, password } }); router.replace("/login"); } catch (caught) { setNotice(caught instanceof Error ? caught.message : "This reset link is no longer valid."); } finally { setWorking(false); } }; return <AuthCard description="Choose a new password for your account." title="Choose a new password"><form className="console-form" onSubmit={submit}><PasswordFields confirmation={confirmation} onConfirmation={setConfirmation} onPassword={setPassword} password={password} />{notice ? <AuthNotice>{notice}</AuthNotice> : null}<Button disabled={working || !token} type="submit" variant="primary">{working ? "Resetting password" : "Reset password"}</Button></form></AuthCard>; }
