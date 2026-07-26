@@ -133,6 +133,45 @@ test("#4 control: hard TOKEN budget over an unpriced offering still reserves (no
   assert.equal(res.ok, true);
 });
 
+test("hard cost reservation covers the most expensive eligible failover target", async () => {
+  const expensiveTarget = { ...target, offeringId: "off-expensive", credentialId: "c-expensive" };
+  let estimate: bigint | undefined;
+  const res = await enforceRequest({
+    snapshot: {
+      budgets: { ba: { id: "ba", enforcement: "hard", unit: "cost_microusd" } },
+      offerings: {
+        off: {
+          price: {
+            inputPerMtokMicroUsd: "0",
+            outputPerMtokMicroUsd: "1000000",
+          },
+        },
+        "off-expensive": {
+          price: {
+            inputPerMtokMicroUsd: "0",
+            outputPerMtokMicroUsd: "3000000",
+          },
+        },
+      },
+    } as unknown as Snapshot,
+    profile: profile(null),
+    key: key("ba"),
+    request: req('{"model":"m","max_tokens":10}'),
+    traceId: "t",
+    target,
+    reservationTargets: [target, expensiveTarget],
+    reserveBudget: async (input) => {
+      estimate = input.estMicroUsd;
+      return { ok: true, reservationId: "r" };
+    },
+  });
+  assert.equal(res.ok, true);
+  assert.equal(estimate, 30n);
+  if (res.ok) {
+    assert.deepEqual(res.reservationFallback?.usage, { inputTokens: 8, outputTokens: 10 });
+  }
+});
+
 // HIGH #1 — a STRING max_tokens ("1000000") must be visible to a policy clamp ceiling exactly like
 // a JSON number. Pre-fix, `numericParams` only accepted `typeof v === "number"`, so the string value
 // was silently dropped from `params`: no clamp constraint ever saw it (evaluated as "param absent"),

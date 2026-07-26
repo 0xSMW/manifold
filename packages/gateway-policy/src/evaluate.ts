@@ -128,3 +128,39 @@ export function evaluate(input: PolicyInput, policy: PolicyRevision): PolicyDeci
   }
   return { outcome: "allow", reasonCodes: [] };
 }
+
+/**
+ * Evaluate a policy for every subject facet carried by an authenticated key.
+ *
+ * The gateway authorizer uses this when a key has multiple scopes/apps: every
+ * subject must be entitled (deny-first), while constraints are evaluated once
+ * because they are subject-independent. The Policies simulator passes exactly
+ * one subject through this same adapter, keeping its result on the production
+ * authorization path rather than a lookalike implementation.
+ */
+export function evaluateForSubjects(
+  input: Omit<PolicyInput, "subject">,
+  policy: PolicyRevision,
+  subjects: readonly PolicySubject[],
+): PolicyDecision {
+  // An authenticated key always supplies at least one subject. Treat a malformed empty set as
+  // no entitlement rather than accidentally allowing it through a vacuous loop.
+  if (subjects.length === 0) {
+    return { outcome: "deny", reasonCodes: [POLICY_MODEL_DENIED] };
+  }
+
+  // Entitlements are subject-dependent. Check all subjects before constraints so an explicit
+  // deny on any facet always wins over an otherwise rejecting/clamping parameter.
+  const entitlementOnly: PolicyRevision = {
+    modelEntitlements: policy.modelEntitlements,
+    requestConstraints: [],
+  };
+  for (const subject of subjects) {
+    const entitlement = evaluate({ ...input, subject }, entitlementOnly);
+    if (entitlement.outcome === "deny") return entitlement;
+  }
+
+  // Constraints are independent of the subject. One allowed subject is sufficient here because
+  // every subject was already proven entitled above.
+  return evaluate({ ...input, subject: subjects[0]! }, policy);
+}

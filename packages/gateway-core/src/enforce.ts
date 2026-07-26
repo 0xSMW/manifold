@@ -5,10 +5,16 @@
 // gateway-core stays pure: policy is the pure @manifold/gateway-policy evaluator (allowed by §4.2);
 // the hard-budget reservation goes through the injected BudgetReserver PORT (ADR-0012/§4.4) — no
 // @manifold/budget, no DB import here.
-import { evaluate, type PolicyDecision, type PolicySubject } from "@manifold/gateway-policy";
+import {
+  evaluateForSubjects,
+  type PolicyDecision,
+  type PolicyRevision,
+  type PolicySubject,
+} from "@manifold/gateway-policy";
 import { parseMicroUsdString } from "@manifold/ports/price";
 import type {
   BudgetReserver,
+  ObservationUsage,
   Snapshot,
   SnapshotKey,
   SnapshotPolicyRevision,
@@ -24,7 +30,15 @@ import type {
  * (no policy, no hard budget) ran: the body was never touched and the caller streams it through.
  */
 export type EnforceResult =
-  | { ok: true; forwardBody?: string; reservationId?: string }
+  | {
+    ok: true;
+    forwardBody?: string;
+    reservationId?: string;
+    /** Conservative token tuple matching the hard-budget hold, for terminal usage fallback. */
+    reservationFallback?: {
+      usage: ObservationUsage;
+    };
+  }
   | { ok: false; code: string; message: string };
 
 export interface EnforceArgs {
@@ -36,6 +50,11 @@ export interface EnforceArgs {
   traceId: string;
   /** The dispatch target selected for this request; its offering price drives the reserve estimate (§6.10). */
   target: SnapshotTarget;
+  /**
+   * Every target this request may safely fail over to. Cost reservations use the
+   * highest estimate so a more expensive retry target cannot exceed the hold.
+   */
+  reservationTargets?: readonly SnapshotTarget[];
   /** Injected hard-budget reserver (ADR-0012). Absent ⇒ a hard budget cannot be honored → fail closed. */
   reserveBudget?: BudgetReserver["reserve"];
 }
@@ -66,6 +85,19 @@ function subjectsFromKey(key: SnapshotKey): PolicySubject[] {
     }
   }
   return subjects;
+}
+
+/**
+ * Gateway policy-authorizer adapter. Kept as a named seam so parity tests can
+ * invoke the same call path as `enforceRequest`, including multi-facet keys.
+ */
+export function evaluateGatewayPolicy(
+  policy: PolicyRevision,
+  canonicalModelId: string,
+  params: Record<string, number>,
+  key: SnapshotKey,
+): PolicyDecision {
+  return evaluateForSubjects({ canonicalModelId, params }, policy, subjectsFromKey(key));
 }
 
 /** A JSON-number-shaped string (optional sign, digits, optional fraction/exponent). Used to
@@ -105,9 +137,19 @@ function numericParams(obj: Record<string, unknown>): Record<string, number> {
 /** µ$ per 1,000,000 tokens — the §6.10 price denominator. */
 const MICRO_PER_MTOK = 1_000_000n;
 
+/** Positive-only banker rounding, kept equivalent to the durable cost projection's §6.10 math. */
+function roundHalfEven(numerator: bigint): bigint {
+  const quotient = numerator / MICRO_PER_MTOK;
+  const remainder = numerator % MICRO_PER_MTOK;
+  const doubled = remainder * 2n;
+  if (doubled > MICRO_PER_MTOK) return quotient + 1n;
+  if (doubled === MICRO_PER_MTOK && quotient % 2n !== 0n) return quotient + 1n;
+  return quotient;
+}
+
 /**
  * Parse a §6.10 per-mtok price (a DECIMAL µ$ string, per `SnapshotPrice`) to a non-negative bigint,
- * truncating any fractional µ$. Absent / empty / unparseable ⇒ 0 (that token class is unpriced).
+ * parsing any fractional µ$. Absent / empty / unparseable ⇒ 0 (that token class is unpriced).
  * Delegates to the ONE shared `parseMicroUsdString` (owned next to `SnapshotPrice`) so this reserve
  * path and the observability cost mapper parse identically; here an absent price collapses to µ$0.
  */
@@ -175,7 +217,9 @@ function reservedEstimateMicroUsd(
     return maxOut > 0n ? maxOut : 1n; // no price → token-count proxy, floored at 1 µ$
   }
   const inputEst = estimateInputTokens(rawBody);
-  const est = (inputEst * inputPrice) / MICRO_PER_MTOK + (maxOut * outputPrice) / MICRO_PER_MTOK;
+  // Keep reserve and durable projection aligned: §6.10 rounds each token class half-to-even,
+  // rather than flooring their sum. That lets the terminal fallback commit the exact held amount.
+  const est = roundHalfEven(inputEst * inputPrice) + roundHalfEven(maxOut * outputPrice);
   return est > 0n ? est : 1n;
 }
 
@@ -297,48 +341,20 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
   // The hard-budget reservation to reconcile on the terminal event (§8.4); undefined unless a
   // hard budget actually reserved below.
   let reservationId: string | undefined;
+  let reservationFallback: Extract<EnforceResult, { ok: true }>["reservationFallback"];
 
   // ── Policy (deny-first across EVERY subject the key carries) ──────────────
   if (policy) {
-    // The evaluator does two things: (Rule 1) a SUBJECT-DEPENDENT model-entitlement check, and
-    // (Rule 2) SUBJECT-INDEPENDENT request-constraint clamp/reject. Running the full `evaluate`
-    // per subject (scope × app × team × cost-center) re-ran Rule 2's constraint loop once for
-    // every subject even though its verdict is identical each time. Separate the two concerns:
-    //
-    //   1. Entitlements are checked PER subject, deny-first — the FIRST subject whose model is
-    //      denied blocks the whole request (an explicit deny or a deny-by-default on ANY
-    //      scope/app, not just scopes[0]). We check this against an entitlement-only view of the
-    //      revision so the constraint loop never runs on this per-subject path.
-    //   2. Constraints are subject-independent, so they run ONCE, on the first subject that clears
-    //      the entitlement gate (any allowing subject reaches Rule 2 with the same verdict).
-    //
-    // Interleaving the single constraint evaluation at the first allowing subject preserves the
-    // original deny-first ordering exactly: a model deny that precedes the first allowing subject
-    // still wins (POLICY_MODEL_DENIED), and a rejecting constraint still fires at the first
-    // allowing subject (POLICY_PARAM_REJECTED) — identical to breaking on the first `evaluate` deny.
-    const entitlementOnly = { modelEntitlements: policy.modelEntitlements, requestConstraints: [] };
-    let constraint: PolicyDecision | undefined; // Rule 2 verdict, computed once (subject-independent)
-    for (const subject of subjectsFromKey(key)) {
-      const entitlement = evaluate({ subject, canonicalModelId: model, params }, entitlementOnly);
-      if (entitlement.outcome === "deny") {
-        // Model denied for this subject → deny-first blocks. Carry the evaluator's own code.
-        const code = entitlement.reasonCodes[0] ?? "POLICY_MODEL_DENIED";
-        return { ok: false, code, message: `request denied by policy (${code})` };
-      }
-      // Model allowed for this subject. Evaluate the subject-independent constraints exactly once
-      // (on the first allowing subject); later allowing subjects reuse the cached verdict.
-      if (constraint === undefined) {
-        constraint = evaluate({ subject, canonicalModelId: model, params }, policy);
-      }
-      if (constraint.outcome === "deny") {
-        // A rejecting constraint denies the request (POLICY_PARAM_REJECTED).
-        const code = constraint.reasonCodes[0] ?? "POLICY_PARAM_REJECTED";
-        return { ok: false, code, message: `request denied by policy (${code})` };
-      }
+    // `evaluateForSubjects` is also the control-plane simulator adapter. It checks entitlement
+    // against every key facet before evaluating the subject-independent constraints once.
+    const decision = evaluateGatewayPolicy(policy, model, params, key);
+    if (decision.outcome === "deny") {
+      const code = decision.reasonCodes[0] ?? "POLICY_MODEL_DENIED";
+      return { ok: false, code, message: `request denied by policy (${code})` };
     }
-    if (constraint?.outcome === "clamp" && constraint.clamps && parsed) {
+    if (decision.outcome === "clamp" && decision.clamps && parsed) {
       // Rewrite the clamped params back into the forwarded body — the provider sees the safe values.
-      for (const [param, value] of Object.entries(constraint.clamps)) parsed[param] = value;
+      for (const [param, value] of Object.entries(decision.clamps)) parsed[param] = value;
       forwardBody = JSON.stringify(parsed);
     }
   }
@@ -350,16 +366,24 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
       // an unmetered request that could blow the cap.
       return { ok: false, code: "BUDGET_RESERVE_DENIED", message: "budget reserver unavailable" };
     }
-    const price = snapshot.offerings?.[target.offeringId]?.price;
+    const reservationTargets = args.reservationTargets?.length
+      ? args.reservationTargets
+      : [target];
+    const prices = reservationTargets.map(
+      (reservationTarget) => snapshot.offerings?.[reservationTarget.offeringId]?.price,
+    );
     // Fail CLOSED when a µ$ (cost_microusd) hard budget rides an offering with NO known price
     // (review #4): the reserve estimate AND the committed actual would both be ~$0, letting unbounded
     // spend slip under the cap. A token-unit budget caps tokens (not µ$) and needs no price, so scope
     // the guard to cost_microusd budgets — token budgets over unpriced offerings still enforce.
     const budgetUnit = budget?.unit ?? "cost_microusd";
-    const priceKnown =
-      !!price &&
-      (priceMtok(price.inputPerMtokMicroUsd) > 0n || priceMtok(price.outputPerMtokMicroUsd) > 0n);
-    if (budgetUnit === "cost_microusd" && !priceKnown) {
+    const allPricesKnown = prices.every(
+      (price) =>
+        !!price &&
+        (priceMtok(price.inputPerMtokMicroUsd) > 0n ||
+          priceMtok(price.outputPerMtokMicroUsd) > 0n),
+    );
+    if (budgetUnit === "cost_microusd" && !allPricesKnown) {
       return {
         ok: false,
         code: "BUDGET_PRICE_UNKNOWN",
@@ -372,10 +396,15 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
     const maxOutputTokens = BigInt(
       Math.max(0, Math.ceil(params.max_tokens ?? params.max_output_tokens ?? 0)),
     );
+    const estimateCandidates = prices.map((price) => reservedEstimateMicroUsd(rawBody, params, price));
+    const estMicroUsd = estimateCandidates.reduce(
+      (maximum, candidate) => candidate > maximum ? candidate : maximum,
+      1n,
+    );
     const reservation = await reserveBudget({
       budgetAccountId: budgetAccountId!,
       requestId: traceId,
-      estMicroUsd: reservedEstimateMicroUsd(rawBody, params, price),
+      estMicroUsd,
       estimatedInputTokens: estimateInputTokens(rawBody),
       maxOutputTokens,
     });
@@ -386,7 +415,17 @@ export async function enforceRequest(args: EnforceArgs): Promise<EnforceResult> 
     // ACTUAL cost once usage is known (§8.4). Without this the hold is only ever released by the
     // expiry sweep and real spend is never committed.
     reservationId = reservation.reservationId;
+    // If a provider succeeds but never reports usage (including an aborted SSE), the terminal uses
+    // this conservative token tuple rather than committing the hold as $0. Terminal pricing stays
+    // tied to the target that actually served the request, preserving ledger provenance after a
+    // failover; this tuple exists solely to preserve the held token envelope.
+    reservationFallback = {
+      usage: {
+        inputTokens: Number(estimateInputTokens(rawBody)),
+        outputTokens: Number(maxOutputTokens),
+      },
+    };
   }
 
-  return { ok: true, forwardBody, reservationId };
+  return { ok: true, forwardBody, reservationId, ...(reservationFallback ? { reservationFallback } : {}) };
 }

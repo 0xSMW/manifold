@@ -31,16 +31,29 @@ export async function authenticate(
   profileId: string,
   snapshot: Snapshot,
   crypto: Crypto,
-  pepper: Uint8Array,
+  pepper: Uint8Array | readonly Uint8Array[],
   now: Date,
 ): Promise<AuthResult> {
   const key = presentedKey(request);
   if (!key) {
     return { ok: false, reason: "AUTH_KEY_UNKNOWN", message: "no api key presented" };
   }
-  const digest = await crypto.hmacSha256(pepper, new TextEncoder().encode(key));
-  const keyHash = toHex(digest);
-  const record = snapshot.keys[keyHash];
+  // Bound overlap work even if a direct caller supplies an untrusted context. Runtime accepts at
+  // most two peppers; a malformed list fails as AUTH_KEY_UNKNOWN rather than scanning keys.
+  const peppers = Array.isArray(pepper) ? pepper : [pepper];
+  if (peppers.length === 0 || peppers.length > 2 || peppers.some((candidate) => candidate.byteLength === 0)) {
+    return { ok: false, reason: "AUTH_KEY_UNKNOWN", message: "api key not recognized" };
+  }
+  let keyHash = "";
+  let record: SnapshotKey | undefined;
+  for (const candidate of peppers) {
+    const digest = await crypto.hmacSha256(candidate, new TextEncoder().encode(key));
+    keyHash = toHex(digest);
+    record = snapshot.keys[keyHash];
+    // Preserve first-record semantics: a collision/profile mismatch in the leading pepper must
+    // not be bypassed by a later overlap entry.
+    if (record) break;
+  }
   if (!record) {
     return { ok: false, reason: "AUTH_KEY_UNKNOWN", message: "api key not recognized" };
   }

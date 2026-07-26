@@ -1,7 +1,7 @@
 // selectTarget(route) — SPEC §8.1 reserved→dispatching guard. Picks a target by the route's
 // mode (ordered by priority, or weighted). Returns null when no target exists →
-// ROUTE_NO_HEALTHY_TARGET (§0.2). Health tracking (circuit breaking, §8.7) is a later WP; this
-// skeleton treats every target as healthy.
+// ROUTE_NO_HEALTHY_TARGET (§0.2). Explicitly unhealthy targets are excluded; older snapshots with
+// no health state remain eligible as unknown during migration.
 import type { SnapshotRoute, SnapshotTarget } from "@manifold/ports";
 
 /** Deterministic in tests: pass a seeded rand. Defaults to Math.random. */
@@ -9,7 +9,7 @@ export function selectTarget(
   route: SnapshotRoute,
   rand: () => number = Math.random,
 ): SnapshotTarget | null {
-  const targets = route.targets;
+  const targets = route.targets.filter((target) => target.healthState !== "unhealthy");
   if (targets.length === 0) return null;
 
   if (route.mode === "ordered") {

@@ -6,6 +6,13 @@
 // dedup anchor the reducer uses as its cross-partition backstop.
 import type { ReasonCode } from "@manifold/contracts";
 import type { PriceMicroUsd, TokenCounts } from "@manifold/domain";
+type ObservationCapture = {
+  mode: "redacted" | "full";
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  truncated?: boolean;
+  bytes: number;
+};
 
 /** The terminal-observation status set (SPEC §6.8 `observation.status`). */
 export type ObservationStatus = "ok" | "error" | "denied" | "clamped" | "timeout";
@@ -14,7 +21,12 @@ export type ObservationStatus = "ok" | "error" | "denied" | "clamped" | "timeout
 export type CostFidelity = "exact" | "estimated" | "unknown";
 
 /** The single provider attempt outcome recorded on a `provider_attempt` event. */
-export type ProviderAttemptOutcome = "ok" | "error" | "timeout";
+/**
+ * Legacy journal rows used `ok`/`error`/`timeout`; retain them for deterministic
+ * historical reduction. Newly ingested gateway attempts use the normalized
+ * health vocabulary and carry the immutable attribution fields below.
+ */
+export type ProviderAttemptOutcome = "success" | "transient_failure" | "permanent_failure" | "ok" | "error" | "timeout";
 
 /** Fields present on every journal event (SPEC §6.8). */
 export interface BaseEvent {
@@ -54,6 +66,12 @@ export interface ProviderAttemptEvent extends BaseEvent {
   kind: "provider_attempt";
   payload: {
     provider: string;
+    /** Immutable gateway_target identity. Required for newly ingested durable health facts. */
+    targetId?: string;
+    /** Immutable route revision that selected this target. */
+    routeRevisionId?: string;
+    /** Signed snapshot revision that authorized this dispatch. */
+    snapshotRevision?: string;
     offeringId?: string;
     outcome: ProviderAttemptOutcome;
     httpStatus?: number;
@@ -83,6 +101,8 @@ export interface TerminalEvent extends BaseEvent {
     teamId?: string;
     appId?: string;
     virtualKeyId?: string;
+    /** Gateway-produced bounded capture; never participates in reduction. */
+    capture?: ObservationCapture;
   };
 }
 

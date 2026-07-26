@@ -14,12 +14,15 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
-    "test": "node --test test/*.test.ts"
+    "test": "npm run build && tsx --test test/*.test.ts"
   },
   "dependencies": {
     "@manifold/contracts": "0.0.0",
     "@manifold/gateway-policy": "0.0.0",
     "@manifold/ids": "0.0.0",
     "@manifold/ports": "0.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.1"
   }
 }

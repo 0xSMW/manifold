@@ -30,6 +30,14 @@ export function shapeForCode(code: string): ErrorShape {
       return { status: 404, type: "invalid_request_error", param: "model" };
     case "ROUTE_ENDPOINT_UNSUPPORTED":
       return { status: 404, type: "invalid_request_error", param: null };
+    case "REQUEST_METHOD_UNSUPPORTED":
+      return { status: 405, type: "invalid_request_error", param: null };
+    case "REQUEST_CONTENT_TYPE_UNSUPPORTED":
+      return { status: 415, type: "invalid_request_error", param: null };
+    case "REQUEST_JSON_MALFORMED":
+      return { status: 400, type: "invalid_request_error", param: null };
+    case "REQUEST_MODEL_REQUIRED":
+      return { status: 400, type: "invalid_request_error", param: "model" };
     case "ROUTE_NO_HEALTHY_TARGET":
       return { status: 503, type: "api_error", param: null };
     // Policy denial (SPEC §11, §0.2). A denied model / a rejecting param constraint: 403, never
@@ -47,6 +55,8 @@ export function shapeForCode(code: string): ErrorShape {
     // Hard µ$ budget over an offering with no known price (review #4): can't meter → fail closed, 402.
     case "BUDGET_PRICE_UNKNOWN":
       return { status: 402, type: "invalid_request_error", param: null };
+    case "RATE_LIMIT_KEY":
+      return { status: 429, type: "rate_limit_error", param: null };
     case "PROVIDER_TIMEOUT":
       return { status: 504, type: "api_error", param: null };
     case "PROVIDER_HTTP_5XX":
@@ -79,4 +89,3 @@ export function errorResponse(code: string, message: string, traceId: string): R
     },
   });
 }
-

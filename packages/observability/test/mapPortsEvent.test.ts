@@ -75,6 +75,16 @@ test("(1) a zero-count token class does not need a price to stay 'exact'", () =>
   assert.equal(journal.payload.costFidelity, "exact");
 });
 
+test("(1) an explicit conservative fallback remains estimated even with complete prices", () => {
+  const e = terminalEvent({
+    usage: { inputTokens: 1_000, outputTokens: 500 },
+    price: { inputPerMtokMicroUsd: "3000000", outputPerMtokMicroUsd: "15000000" },
+    costFidelity: "estimated",
+  });
+  const journal = journalFromPortsEvent(e, CTX) as TerminalEvent;
+  assert.equal(journal.payload.costFidelity, "estimated");
+});
+
 // ---------------------------------------------------------------------------------------------
 // (2) terminal reasonCodes must survive into the journal payload, not just feed mapStatus().
 // ---------------------------------------------------------------------------------------------

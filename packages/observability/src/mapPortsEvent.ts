@@ -18,6 +18,9 @@ import type {
   SnapshotPrice,
 } from "@manifold/ports";
 import { parseMicroUsdString } from "@manifold/ports/price";
+type CapturableHotPathEvent = HotPathObservationEvent & {
+  capture?: { mode: "redacted" | "full"; request?: Record<string, unknown>; response?: Record<string, unknown>; truncated?: boolean; bytes: number };
+};
 import type { PriceMicroUsd, TokenCounts } from "@manifold/domain";
 import type {
   AcceptedEvent,
@@ -117,12 +120,6 @@ function mapStatus(e: HotPathObservationEvent): ObservationStatus {
   return s === 0 ? "ok" : "error";
 }
 
-function mapOutcome(status: number | null): ProviderAttemptOutcome {
-  const s = status ?? 0;
-  if (s >= 200 && s < 300) return "ok";
-  return "error";
-}
-
 /**
  * Map ONE flat `HotPathObservationEvent` to the journal event `reduce()` consumes. The dedup
  * anchor is `(workspaceId, producerId, `${traceId}:${seq}`)`: `seq` is unique per (trace, producer),
@@ -155,13 +152,22 @@ export function journalFromPortsEvent(
   }
 
   if (e.kind === "provider_attempt") {
+    // Gateway-core supplies these for every actual dispatch. Keeping this
+    // assertion here prevents an alternate adapter from silently writing an
+    // unsafe, unattributable health fact into the durable journal.
+    if (!e.targetId || !e.routeRevisionId || !e.snapshotRevision || !e.attemptOutcome) {
+      throw new TypeError("provider_attempt requires targetId, routeRevisionId, snapshotRevision, and attemptOutcome");
+    }
     const attempt: ProviderAttemptEvent = {
       ...base,
       kind: "provider_attempt",
       payload: {
         provider: e.offeringId ?? "",
+        targetId: e.targetId,
+        routeRevisionId: e.routeRevisionId,
+        snapshotRevision: e.snapshotRevision,
         ...(e.offeringId ? { offeringId: e.offeringId } : {}),
-        outcome: mapOutcome(e.status),
+        outcome: e.attemptOutcome as ProviderAttemptOutcome,
         ...(e.status !== null ? { httpStatus: e.status } : {}),
         ...(e.reasonCodes.length > 0 ? { reasonCodes: e.reasonCodes } : {}),
       },
@@ -182,11 +188,14 @@ export function journalFromPortsEvent(
       // Cost fidelity is `exact` only when EVERY billed token class has a matching price; a
       // partially-priced usage record is `estimated`, never `exact` (§6.10) — an under-count must
       // not masquerade as authoritative.
-      costFidelity: costFidelityFor(tokens, price),
+      costFidelity: e.costFidelity ?? costFidelityFor(tokens, price),
       ...(e.offeringId ? { finalOfferingId: e.offeringId } : {}),
       ...(e.priceRevisionId ? { priceRevisionId: e.priceRevisionId } : {}),
       ...(e.budgetAccountId ? { budgetAccountId: e.budgetAccountId } : {}),
       ...(e.keyId ? { virtualKeyId: e.keyId } : {}),
+      ...((e as CapturableHotPathEvent).capture
+        ? { capture: (e as CapturableHotPathEvent).capture }
+        : {}),
       // Carry the HotPath reasonCodes (POLICY_*/AUTH_*/SSRF_*/etc.) into the journal terminal so
       // the reduced Observation retains the denial cause — mapStatus() alone only derives the
       // coarse `status`, dropping the specific reason if not also threaded through here (§6.8).
