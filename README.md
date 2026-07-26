@@ -1,94 +1,311 @@
 # Manifold
 
-An OpenAI-compatible, self-hostable AI gateway that is also its own logging and
-governance product. One runtime-agnostic core serves two front doors — an indie
-developer's own gateway-plus-logs (`public_app`) and an enterprise's governed
-internal model exit (`enterprise_egress`). Designed to run on Vercel + Postgres
-(Neon) first; a Cloudflare edition is planned from the same core.
+Manifold is an OpenAI-compatible AI gateway and operations control plane for teams
+that need one place to route model traffic, issue client keys, enforce policy and
+spend controls, and investigate usage.
 
-**License:** Apache-2.0 · **Schema:** `manifold.v1`
+The production edition runs as a Vercel Fluid gateway with a Next.js control plane
+and Neon Postgres. Its request pipeline is runtime-agnostic, and a local Node.js
+harness is included for development and testing.
+
+**Protocol schema:** `manifold.v1`
+
+## Key capabilities
+
+### Route AI traffic
+
+- Present stable public model names while routing to provider-specific models.
+- Select targets by trusted ingress profile, endpoint, route, priority, weight,
+  and health.
+- Retry transient failures, fail over to healthy targets, and skip open circuits.
+- Preserve OpenAI-compatible request and response shapes while changing only the
+  configured provider model and authentication.
+- Stream responses with bounded observation memory.
+
+### Control access and governance
+
+- Mint, scope, rotate, and revoke copy-once virtual keys.
+- Separate developer-facing `public_app` traffic from governed
+  `enterprise_egress` traffic through trusted-host bindings.
+- Apply deny-first model entitlements and request parameter constraints.
+- Enforce fleet-wide concurrency, RPM, TPM, and burst limits through strict
+  Postgres admission.
+- Reserve and reconcile hard budgets before and after provider execution.
+- Stage, review, approve, publish, reconcile, and roll back immutable
+  configuration revisions.
+
+### Observe and operate
+
+- Investigate requests through traces, provider attempts, retries, failovers,
+  latency, usage, cost, and stable reason codes.
+- Preserve cost fidelity as `exact`, `estimated`, or `unknown`.
+- Persist terminal accounting through an idempotent job ledger with retry,
+  stale-claim recovery, and dead-letter state.
+- Search append-only audit events and verify their hash chain.
+- Monitor deployment readiness, provider health, snapshot freshness, and
+  configuration convergence.
+- Measure storage pressure, configure retention, and compact durable telemetry
+  into bounded rollups.
+
+### Manage the product through the control plane
+
+The control plane includes working screens and APIs for:
+
+- providers and encrypted credentials;
+- routes and immutable route revisions;
+- model discovery, capabilities, price provenance, and overrides;
+- virtual keys and access scopes;
+- configuration planning, approval, publication, history, and rollback;
+- request logs, trace details, usage, and cost;
+- enterprise policies and budgets;
+- audit destinations and verification;
+- gateway installations, ingress profiles, diagnostics, and readiness;
+- storage, retention, thresholds, and compaction;
+- workspace members, teams, cost centers, applications, actions, and CLI
+  authorization.
+
+Enterprise governance areas appear when an `enterprise_egress` profile is
+configured.
+
+## Supported providers
+
+| Provider | Chat Completions | Responses | Embeddings |
+|---|:---:|:---:|:---:|
+| Google Gemini | ✅ | — | — |
+| OpenAI | ✅ | ✅ | ✅ |
+| Azure OpenAI | ✅ | ✅ | ✅ |
+| Anthropic bridge | ✅ | — | — |
+
+A checkmark means the provider and endpoint combination has explicit repository
+support or test coverage. The models.dev catalog contains additional providers
+for discovery and pricing; catalog presence does not constitute gateway support.
+
+Current production acceptance evidence covers Gemini chat, streaming, model
+discovery, and usage and cost accounting. See
+[`Docs/GATEWAY_ACCEPTANCE.md`](./Docs/GATEWAY_ACCEPTANCE.md) for the recorded
+release evidence.
+
+## Supported OpenAI-compatible API surface
+
+| Endpoint | Method | Purpose |
+|---|:---:|---|
+| `/v1/models` | `GET` | List models available to the authenticated key and ingress profile |
+| `/v1/chat/completions` | `POST` | OpenAI-compatible chat, including streaming |
+| `/v1/responses` | `POST` | OpenAI Responses-compatible requests |
+| `/v1/embeddings` | `POST` | OpenAI-compatible embeddings |
+
+`/v1/models` is assembled from the active signed Manifold configuration. It is a
+profile-scoped gateway capability rather than a provider-specific endpoint.
+Gateway errors use OpenAI-shaped envelopes and return a trace ID before the body
+streams.
+
+## How it works
+
+```text
+Client or application
+        |
+        | OpenAI-compatible request + Manifold virtual key
+        v
+Vercel Fluid gateway
+        |-- authenticate and resolve trusted ingress profile
+        |-- route public model to a healthy provider target
+        |-- enforce policy, admission, and hard budgets
+        |-- decrypt and inject the provider credential
+        |-- relay the response and persist terminal accounting
+        |
+        +------> upstream provider
+        |
+        +------> Neon Postgres
+                   admission, budgets, observations, usage, cost, job ledger
+
+Control plane
+        |-- manage providers, routes, keys, policy, budgets, and retention
+        |-- publish signed immutable snapshots
+        +------> gateway verified last-known-good configuration
+```
+
+Authentication, routing, and static policy read from a verified signed snapshot.
+Short Postgres transactions remain authoritative for distributed admission, hard
+budget reservations, and durable terminal reconciliation.
+
+## Quickstart
+
+### Prerequisites
+
+- Node.js 22
+- Corepack and pnpm 10
+- Docker for real-Postgres, security, and storage release suites
+- Go 1.24 or newer only when working on the experimental CLI
+
+### Install and verify
+
+```bash
+corepack enable
+corepack pnpm install --frozen-lockfile
+
+pnpm run typecheck
+pnpm run build
+```
+
+### Run the local gateway harness
+
+```bash
+pnpm --filter @manifold/gateway start
+# listening on http://127.0.0.1:8787
+```
+
+The local harness loads `apps/gateway/snapshot.example.json` by default. It is a
+development fixture with local key material and must never be used as production
+configuration. Production loads installation-authenticated signed snapshots from
+the control plane and does not depend on a writable local filesystem.
+
+See [`apps/gateway/README.md`](./apps/gateway/README.md) for gateway environment,
+snapshot, and adapter details.
+
+### Run the control plane
+
+The control plane requires a Postgres 16+ database with the repository migrations
+applied in lexical order. Migrations use a direct owner connection; the running
+application uses a pooled, non-superuser `manifold_app` connection.
+
+After configuring `DATABASE_URL` and the required development values from
+[`.env.example`](./.env.example):
+
+```bash
+pnpm run dev:control-plane
+# http://localhost:3000
+# http://localhost:3000/api/v1/health
+```
+
+Use [`Docs/DEPLOY.md`](./Docs/DEPLOY.md) for the migration procedure, environment
+contract, installation bootstrap, and production topology.
+
+## Production deployment
+
+Production uses two separately configured Vercel projects:
+
+- a Next.js control plane under `apps/control-plane`;
+- a Node.js 22 Fluid gateway under `apps/gateway`.
+
+The gateway is configured for Fluid Compute, a 300-second request duration,
+literal rewrites for the four supported API paths, readiness and liveness routes,
+and a one-minute durable job-ledger drain. One durable Postgres database is bound
+to one workspace. Runtime connections use the restricted application role; owner
+credentials are reserved for migrations and break-glass operations.
+
+Before promotion, `/health` proves liveness and `/ready` proves that the gateway
+has a verified active snapshot and its strict runtime dependencies are available.
+
+Deployment and release sources of truth:
+
+- [`Docs/DEPLOY.md`](./Docs/DEPLOY.md): deployment and operations runbook;
+- [`Docs/GATEWAY_ACCEPTANCE.md`](./Docs/GATEWAY_ACCEPTANCE.md): recorded
+  production, rollback, soak, and capacity evidence;
+- [`Docs/CI_RELEASE_GATES.md`](./Docs/CI_RELEASE_GATES.md): required CI and
+  release gates.
+
+## Security and durability
+
+- Provider credentials are envelope-encrypted and carried only as ciphertext in
+  signed snapshots.
+- The gateway decrypts credentials in-process, strips inbound authorization, and
+  injects provider authentication only after target selection.
+- Signed snapshots are tenant-bound, freshness-checked, and activated atomically
+  with a verified last-known-good fallback.
+- Trusted host bindings select the ingress profile before authentication; request
+  headers, claims, query parameters, and bodies cannot upgrade it.
+- Outbound provider traffic validates DNS answers, rejects private targets, pins
+  the approved address, retains TLS SNI, and validates redirects.
+- Workspace-scoped database access uses explicit transaction context plus FORCE
+  RLS as defense in depth.
+- Route, policy, price, and published configuration revisions are immutable and
+  content-addressed.
+- Completed provider responses wait for durable terminal handoff before settling.
 
 ## Repository layout
 
-```
+```text
 apps/
-  control-plane/   Next.js 16 — UI + /api/v1 (Vercel-friendly)
-  gateway/         Node passthrough gateway (local / self-host)
-  cli/             Go `manifold` CLI (module github.com/0xsmw/manifold/cli)
+  control-plane/       Next.js operations console and /api/v1 control API
+  gateway/             Vercel Fluid handlers and local Node.js harness
+  cli/                 Experimental Go CLI; API backing is still partial
+
 packages/
-  contracts/           Zod wire schemas, reason/error codes, SCHEMA_VERSION
-  domain/              Money (µ$), content hashes, state machines
-  database/            Drizzle schema, migrations, typed DB access
-  ports/               Platform-adapter interfaces + in-memory fakes
-  gateway-core/        Pure request pipeline (no platform imports)
-  gateway-policy/      Deny-first policy evaluator + simulator
-  budget/              Hard-budget reserve / commit / rollback
-  config/              Snapshot builder + plan/apply/rollback
-  crypto/              Envelope encryption (AES-GCM, KEK-wrapped DEKs)
-  observability/       Observation reduce + usage/cost projection
-  provider-registry/   Offline models.dev → offerings/prices importer
+  budget/              Hard-budget reservation and reconciliation
+  config/              Snapshot build, plan, publish, reconcile, and rollback
+  contracts/           Wire schemas, error envelopes, and reason codes
+  crypto/              Envelope encryption and key handling
+  database/            Drizzle schema, migrations, RLS, and typed access
+  domain/              Money, hashes, state machines, and core vocabulary
+  gateway-core/        Runtime-agnostic request pipeline
+  gateway-policy/      Deny-first policy evaluator and simulator
+  ids/                 Shared identifiers and ULID handling
+  observability/       Observation reduction and usage/cost projection
+  ports/               Runtime adapter interfaces and in-memory fakes
+  provider-registry/   models.dev catalog and price importer
+  storage/             Retention, object export, compaction, and pressure policy
+
+scripts/               Repository, database, security, and release gates
+tools/conformance/     Provider adapter fixtures and capability matrix
+tools/load/            k6 and flat-memory release tooling
+test/release/          Release-tool contract tests
 ```
 
-## Develop
-
-Requires **Node 22+**. The CLI needs **Go 1.24+**.
+The Node workspace is defined by `pnpm-workspace.yaml`. The Go CLI is built
+separately:
 
 ```bash
-npm install            # workspaces: packages/* + control-plane + gateway
-npm run typecheck      # tsc -b (project references)
-npm run build          # build all JS workspaces
-
-# Control plane
-npm run dev:control-plane        # http://localhost:3000  ·  /api/v1/health
-
-# Gateway (passthrough; loads apps/gateway/snapshot.example.json)
-cd apps/gateway
-export ANTHROPIC_API_KEY=sk-ant-...   # provider secret for the example route
-npm start                             # http://127.0.0.1:8787
-# Test key in the example snapshot: sk-manifold-localtest-key
-
-# CLI
-cd apps/cli && make build        # -> ./bin/manifold
+cd apps/cli
+make build
 ./bin/manifold --help
-bash scripts/walk_help.sh        # exercises every command (--help, exit 0)
 ```
 
-## Deploy
+## Testing and release evidence
 
-The control plane is a standalone Next.js app under `apps/control-plane`:
+Useful local entrypoints:
 
 ```bash
-vercel link  --cwd apps/control-plane --yes
-vercel deploy --cwd apps/control-plane
+pnpm run test:packages
+pnpm run test:control-plane
+pnpm run test:playwright
+pnpm run conformance:replay
+pnpm run conformance:matrix:check
 ```
 
-Point it at a Postgres 16+ database (Neon works well) and set the connection
-string via your host's env config. The gateway can run anywhere Node 22 runs;
-see [`apps/gateway/README.md`](./apps/gateway/README.md) for local and
-self-host details.
+Docker-backed release gates:
 
-## Status
+```bash
+pnpm run test:security
+pnpm run test:pg
+pnpm run test:storage-release
+pnpm run load:k6
+pnpm run load:flat-memory
+```
 
-Early but real — a working vertical slice, plus stubs for the rest.
+CI keeps the ordinary build and test gate separate from the security, tenant
+isolation, real-Postgres, storage, and bounded-memory gate. Real-target load tests
+run through a separately protected release environment.
 
-**Working today:**
-- `@manifold/domain` — integer-`µ$` Money (banker's rounding, multi-term cost incl.
-  cache-write/audio) + state machines · 37/37 tests.
-- `@manifold/database` — full schema (47 tables, partitioned + RLS), applied and
-  attack-tested against real Postgres 16 (composite-PK partitions, immutability
-  triggers, fail-closed tenant isolation).
-- `@manifold/crypto`, `budget`, `config`, `gateway-policy`, `observability`,
-  `provider-registry` — implemented libraries with unit/integration coverage.
-- `packages/ports` + `gateway-core` + `apps/gateway` — passthrough gateway (key
-  auth, SSRF, header allowlist, flat-memory streaming). Proven end-to-end with a
-  live provider call routed through the gateway.
-- `apps/control-plane` — Next.js app with `/api/v1/health` plus early
-  providers/keys/routes/config endpoints.
-- `apps/cli` — full command tree (153 invocations), correct exit codes; most
-  commands still stub output. `manifold ping` hits `/api/v1/health` for real.
+## Current boundaries
 
-**Still rough / not finished:** console UI, full control-plane CRUD, snapshot
-publish wired end-to-end from DB → gateway, envelope-encrypted credentials on
-the hot path (gateway currently takes provider secrets from env), observation
-ingest/reduce in production, budget reservation on the live request path,
-storage-bounded compaction, and the Cloudflare edition.
+- Production provider acceptance currently covers Gemini. Other checked providers
+  have repository conformance or local test coverage.
+- Exact provider-reported usage is preserved when present. Missing usage remains
+  visibly `estimated` or `unknown` and is never silently treated as exact.
+- Vercel-hosted dashboards, alert delivery, paging, platform memory/file
+  descriptor/duration panels, and automated promotion remain follow-up work.
+- The Cloudflare edition remains planned behind the runtime adapter boundaries.
+- The Go CLI exposes the intended command tree, but several commands still return
+  structured stub output.
+- The repository includes a local Node.js harness; a turnkey Compose deployment
+  is not currently included.
+- Apache-2.0 is the intended project license in `SPEC.md`. `LICENSE` and `NOTICE`
+  files still need to be added before a public OSS release.
+
+## Documentation
+
+- [`SPEC.md`](./SPEC.md): product, security, data, and architecture specification
+- [`Docs/DEPLOY.md`](./Docs/DEPLOY.md): deployment and operations
+- [`Docs/GATEWAY_ACCEPTANCE.md`](./Docs/GATEWAY_ACCEPTANCE.md): release acceptance
+- [`Docs/CI_RELEASE_GATES.md`](./Docs/CI_RELEASE_GATES.md): CI and release gates
+- [`apps/gateway/README.md`](./apps/gateway/README.md): gateway development guide
