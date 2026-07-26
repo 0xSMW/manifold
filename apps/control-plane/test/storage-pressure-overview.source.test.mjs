@@ -10,3 +10,8 @@ test("storage overview treats persisted pressure state as authoritative and has 
   assert.match(source, /captureMode: "full" as const, payloadSampleRate: 1, journalMode: "full" as const, source: "fallback"/);
   assert.match(source, /source: "persisted" as const/);
 });
+
+test("storage overview projects the nullable claim timestamp expected by the compaction UI", () => {
+  assert.match(source, /SELECT id, status, created_at, claimed_at, updated_at, last_error, payload/);
+  assert.match(source, /claimedAt: result\.compaction\.claimed_at/);
+});

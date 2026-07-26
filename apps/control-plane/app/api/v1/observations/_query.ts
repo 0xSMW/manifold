@@ -238,6 +238,12 @@ function integerString(value: string | number | null): string | null {
   return value === null ? null : String(value);
 }
 
+/** PostgreSQL timestamp text is not necessarily accepted by the public ISO contract. */
+function isoTimestamp(value: string): string {
+  const milliseconds = Date.parse(value);
+  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : value;
+}
+
 export function serializeObservation(row: ObservationListRow): Record<string, unknown> {
   return {
     id: row.id,
@@ -282,8 +288,8 @@ export function serializeObservation(row: ObservationListRow): Record<string, un
     failovers: row.failovers,
     reason_codes: Array.isArray(row.reason_codes) ? row.reason_codes : [],
     compacted: row.compacted,
-    occurred_at: row.occurred_at,
-    created_at: row.created_at,
+    occurred_at: isoTimestamp(row.occurred_at),
+    created_at: isoTimestamp(row.created_at),
   };
 }
 

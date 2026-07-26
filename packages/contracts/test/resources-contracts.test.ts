@@ -51,3 +51,14 @@ test("storage retention contracts pin strict named query, request, and response 
   assert.deepEqual(StorageContracts.retentionResponse.parse(response), response);
   assert.equal(StorageContracts.retentionResponse.safeParse({ ...response, exportLocation: "leaked" }).success, false);
 });
+
+test("storage overview accepts a pending compaction before it has been claimed", () => {
+  const overview = {
+    measuredAt: null, usedBytes: null, ceilingBytes: null, usedPct: null, tier: null,
+    pressure: null, thresholds: null, tables: null, indexesBytes: null, toastBytes: null,
+    growthBytesPerDay: null, forecastExhaustionAt: null,
+    retention: { available: true, observationRetentionDays: null, exportTarget: "disabled", exportConfigured: false, enabled: false, destructiveDeletion: "blocked", checkpoints: {} },
+    lastCompaction: { id: "job_1", status: "pending", queuedAt: "2026-07-26T00:00:00.000Z", claimedAt: null, updatedAt: "2026-07-26T00:00:00.000Z", error: null, freedBytes: null, progress: null },
+  };
+  assert.deepEqual(StorageContracts.overviewResponse.parse(overview), overview);
+});
