@@ -2,24 +2,48 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	keyring "github.com/zalando/go-keyring"
 )
 
-// session is the skeleton's stand-in for the OS-keyring-backed token from
-// SPEC.md §12.5. It is NOT the real device-auth flow — it is a small local
-// marker file so `login` / `whoami` / `logout` demonstrate a real state
-// transition (and a real exit-3 auth error when logged out) without wiring
-// an actual control-plane or OS keyring integration.
+const keyringService = "manifold.cli"
+
+// session contains context metadata only. The bearer token is deliberately
+// absent: it exists solely in the operating system credential store.
 type session struct {
-	Context   string    `json:"context"`
-	Workspace string    `json:"workspace"`
-	Principal string    `json:"principal"`
-	Scopes    []string  `json:"scopes"`
-	IssuedAt  time.Time `json:"issued_at"`
+	Context    string    `json:"context"`
+	Workspace  string    `json:"workspace,omitempty"`
+	BaseURL    string    `json:"base_url,omitempty"`
+	Principal  string    `json:"principal,omitempty"`
+	Scopes     []string  `json:"scopes,omitempty"`
+	IssuedAt   time.Time `json:"issued_at,omitempty"`
+	KeyringRef string    `json:"keyring_ref,omitempty"`
 }
+
+type credentialStore interface {
+	Set(service, account, secret string) error
+	Get(service, account string) (string, error)
+	Delete(service, account string) error
+}
+
+type systemCredentialStore struct{}
+
+func (systemCredentialStore) Set(service, account, secret string) error {
+	return keyring.Set(service, account, secret)
+}
+func (systemCredentialStore) Get(service, account string) (string, error) {
+	return keyring.Get(service, account)
+}
+func (systemCredentialStore) Delete(service, account string) error {
+	return keyring.Delete(service, account)
+}
+
+var credentials credentialStore = systemCredentialStore{}
 
 func configDir() string {
 	if v := os.Getenv("MANIFOLD_CONFIG_DIR"); v != "" {
@@ -32,13 +56,6 @@ func configDir() string {
 	return filepath.Join(base, "manifold")
 }
 
-// safeContextName reduces an arbitrary, attacker-controlled --context value to
-// a single, harmless path component. Only [A-Za-z0-9._-] survive; every other
-// byte (crucially the path separators '/' and '\') is replaced with '_', so the
-// result can never introduce a new path segment. A value that would still be a
-// traversal component on its own ("", ".", "..") falls back to "default". This
-// guarantees sessionPath() always resolves to a direct child of configDir(),
-// even for inputs like "../../.ssh/authorized_keys" or "/etc/passwd".
 func safeContextName(contextName string) string {
 	if contextName == "" {
 		return "default"
@@ -46,10 +63,7 @@ func safeContextName(contextName string) string {
 	var b strings.Builder
 	for _, r := range contextName {
 		switch {
-		case r >= 'A' && r <= 'Z',
-			r >= 'a' && r <= 'z',
-			r >= '0' && r <= '9',
-			r == '.', r == '_', r == '-':
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
 			b.WriteRune(r)
 		default:
 			b.WriteByte('_')
@@ -63,10 +77,17 @@ func safeContextName(contextName string) string {
 }
 
 func sessionPath(contextName string) string {
-	return filepath.Join(configDir(), "session-"+safeContextName(contextName)+".json")
+	return filepath.Join(configDir(), "context-"+safeContextName(contextName)+".json")
 }
+func keyringAccount(contextName string) string { return "context:" + safeContextName(contextName) }
 
 func saveSession(s session) error {
+	if s.Context == "" {
+		s.Context = "default"
+	}
+	if s.KeyringRef == "" {
+		s.KeyringRef = keyringAccount(s.Context)
+	}
 	if err := os.MkdirAll(configDir(), 0o700); err != nil {
 		return err
 	}
@@ -86,13 +107,40 @@ func loadSession(contextName string) (*session, error) {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return nil, err
 	}
+	if s.Context == "" {
+		s.Context = safeContextName(contextName)
+	}
+	if s.KeyringRef == "" {
+		s.KeyringRef = keyringAccount(s.Context)
+	}
 	return &s, nil
 }
 
 func clearSession(contextName string) error {
-	err := os.Remove(sessionPath(contextName))
+	s, err := loadSession(contextName)
+	if err == nil {
+		if err := credentials.Delete(keyringService, s.KeyringRef); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+			return err
+		}
+	}
+	err = os.Remove(sessionPath(contextName))
 	if os.IsNotExist(err) {
 		return nil
 	}
 	return err
+}
+
+func tokenForContext(contextName string) (string, error) {
+	s, err := loadSession(contextName)
+	if err != nil {
+		return "", err
+	}
+	token, err := credentials.Get(keyringService, s.KeyringRef)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(token) == "" {
+		return "", errors.New("empty credential in keyring")
+	}
+	return token, nil
 }

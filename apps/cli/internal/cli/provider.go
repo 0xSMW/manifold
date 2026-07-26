@@ -57,7 +57,7 @@ func newProviderCmd() *cobra.Command {
 // ({provider,label,secret,baseUrl?,allowedHosts?}) from the command's flags and rendering the
 // control-plane JSON response.
 func providerCreateSpecial(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(flags)
+	client, err := clientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}
@@ -88,7 +88,7 @@ func providerCreateSpecial(cmd *cobra.Command, args []string, flags map[string]s
 // providerValidateSpecial issues a REAL POST /api/v1/providers/<id>/validate (no request body) and
 // renders the control-plane JSON response.
 func providerValidateSpecial(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(flags)
+	client, err := clientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}

@@ -16,7 +16,7 @@ import (
 // planHash (the value config apply consumes), while --json passes the full body
 // through verbatim.
 func planConfig(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(flags)
+	client, err := clientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}
@@ -50,7 +50,7 @@ func planConfig(cmd *cobra.Command, args []string, flags map[string]string) erro
 // behavior (SPEC.md §0.3). Destructive changes without matching --approvals
 // come back as 422 CONFIG_TRIPWIRE_HELD (also exit 5).
 func applyConfig(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(flags)
+	client, err := clientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}
@@ -77,7 +77,7 @@ func applyConfig(cmd *cobra.Command, args []string, flags map[string]string) err
 // activeConfig issues a REAL GET /api/v1/config/active?installationId=... (SPEC.md
 // §7.4 boot fallback) and renders the signed snapshot the control plane returns.
 func activeConfig(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(flags)
+	client, err := clientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}

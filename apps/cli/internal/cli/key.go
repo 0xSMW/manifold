@@ -13,7 +13,7 @@ import (
 // (control-plane §9.2) — we render it and keep the "--quiet prints the plaintext" contract from
 // SPEC.md §12.10. The plaintext is never persisted locally.
 func mintKey(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(flags)
+	client, err := clientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}
@@ -58,7 +58,7 @@ func mintKey(cmd *cobra.Command, args []string, flags map[string]string) error {
 // body; the id comes from the positional arg. On 2xx the JSON body (`{ id, revoked: true }`) is
 // rendered; a §0.3 error envelope maps to the right exit code via the shared client.
 func revokeKey(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(flags)
+	client, err := clientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}

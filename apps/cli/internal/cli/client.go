@@ -2,14 +2,18 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	keyring "github.com/zalando/go-keyring"
 )
 
 const apiTimeout = 15 * time.Second
@@ -63,9 +67,14 @@ type apiClient struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	ctx     context.Context
 }
 
 func newAPIClient(baseURL, token string) (*apiClient, error) {
+	return newAPIClientContext(context.Background(), baseURL, token)
+}
+
+func newAPIClientContext(ctx context.Context, baseURL, token string) (*apiClient, error) {
 	if baseURL == "" {
 		return nil, &CLIError{
 			Code:        ExitUsage,
@@ -78,6 +87,7 @@ func newAPIClient(baseURL, token string) (*apiClient, error) {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		token:   token,
 		http:    &http.Client{Timeout: apiTimeout},
+		ctx:     ctx,
 	}, nil
 }
 
@@ -94,7 +104,7 @@ func (c *apiClient) do(method, path string, body any) (json.RawMessage, error) {
 		}
 		rdr = bytes.NewReader(b)
 	}
-	req, err := http.NewRequest(method, url, rdr)
+	req, err := http.NewRequestWithContext(c.ctx, method, url, rdr)
 	if err != nil {
 		return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_REQUEST_BUILD_FAILED",
 			Message: fmt.Sprintf("could not build request to %s: %v", url, err)}
@@ -145,8 +155,22 @@ func (c *apiClient) del(path string) (json.RawMessage, error) {
 }
 
 // clientFromFlags builds an authed client from the per-command --base-url (else global) + --token.
-func clientFromFlags(flags map[string]string) (*apiClient, error) {
-	return newAPIClient(resolveBaseURL(flags), flagToken)
+func clientFromFlags(cmd *cobra.Command, flags map[string]string) (*apiClient, error) {
+	token := flagToken
+	if token == "" {
+		if stored, err := tokenForContext(flagContext); err == nil {
+			token = stored
+		} else if !os.IsNotExist(err) && !errors.Is(err, keyring.ErrNotFound) {
+			return nil, authError("could not access the stored credential", "unlock the OS keyring or pass --token / MANIFOLD_TOKEN for CI")
+		}
+	}
+	baseURL := resolveBaseURL(flags)
+	if baseURL == "" {
+		if s, err := loadSession(flagContext); err == nil {
+			baseURL = s.BaseURL
+		}
+	}
+	return newAPIClientContext(cmd.Context(), baseURL, token)
 }
 
 // renderAPIResult writes a JSON body: --json passes it through; human mode prints it.
@@ -174,7 +198,7 @@ func resolveBaseURL(flags map[string]string) string {
 // not a stub). --json passes the body through; human mode prints it.
 func apiListSpecial(apiPath, kind string) specialFunc {
 	return func(cmd *cobra.Command, args []string, flags map[string]string) error {
-		client, err := newAPIClient(resolveBaseURL(flags), flagToken)
+		client, err := clientFromFlags(cmd, flags)
 		if err != nil {
 			return err
 		}
