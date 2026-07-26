@@ -2595,6 +2595,9 @@ Gateway and control plane pin to the Neon primary region (§2.4). Public-app tra
 | `MANIFOLD_PROFILE_BINDINGS` | gateway | no | host→profile map (also in snapshot) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | both | no | telemetry sink |
 | `RESEND_API_KEY` | control plane | yes | transactional email (invites, alerts) |
+| `RESEND_FROM_EMAIL` | control plane | yes | Resend-verified sender for first-owner activation, invitations, and password reset |
+| `MANIFOLD_AUTH_ORIGIN` | control plane | yes | canonical origin for human-auth action links; HTTPS in production |
+| `MANIFOLD_AUTH_TOKEN_PEPPER` | control plane | yes | distinct HMAC pepper for opaque human action and session credentials |
 
 Isolation invariant (§2.5): production `MANIFOLD_DATA_KEK`, `MANIFOLD_KEY_PEPPER`, and signing key are absent from preview/staging (CI asserts, §21.9). The gateway holds decryption material; the control plane holds signing + write material; neither holds the other's. This split means a compromise of the control plane cannot decrypt provider secrets, and a compromise of the gateway cannot publish a snapshot.
 
@@ -2609,6 +2612,33 @@ Code promotes staging→prod by Vercel promotion; rollback is instant to a prior
 ### 19.6 Bootstrapping a new installation
 
 `manifold installation register` (or the Deployments wizard) creates the installation, generates its keypair, binds the first profile + hostname, and prints the deploy command. First config apply publishes the initial snapshot; readiness turns green when the gateway reports `applied_config_revision == active` (§11 Deployments).
+
+### 19.7 First-party human access rollout
+
+Human operators use first-party email/password access. On a newly seeded workspace, the sole
+enabled owner is the only person eligible for initial activation: they request an activation link,
+receive it by email, choose a password, and then receive a browser session. Activation, password
+reset, and invitation capabilities are opaque, HMAC-keyed, expiry-bound, and single-use; plaintext
+capabilities are never stored. The canonical link origin is `MANIFOLD_AUTH_ORIGIN`.
+
+Members are added through invitations, never direct member provisioning. An invited person accepts
+the invitation and chooses their password; accepting an invitation does not issue an API token.
+Personal API tokens are tied to a signed-in human user. Automation uses a named service account and
+a service token minted from that account, so it can be disabled and revoked independently of a
+person. Existing member/token/session rows remain preserved during the additive `0032_human_auth`
+rollout and must not be email-bound as a backfill shortcut.
+
+Members can revoke their sessions, including all other sessions. Password reset increments the
+human session version and revokes that user's sessions. Disabling a member revokes that member's
+sessions and associated API tokens; disabling a service account revokes its service tokens. The last
+active accepted owner cannot be disabled or demoted. Operators must establish another accepted
+owner before offboarding the current last owner.
+
+`manifold auth login` uses device authorization: it displays (and may open) the control-plane
+verification URL, an authorized human approves or denies the short-lived request in Settings, and
+the CLI stores the issued bearer token in the OS keyring. Non-secret context metadata may be stored
+locally; bearer tokens must not be written to plaintext files. `--token`/`MANIFOLD_TOKEN` remains
+the explicit CI override.
 
 ---
 

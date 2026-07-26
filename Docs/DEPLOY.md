@@ -137,6 +137,40 @@ Contracting migrations follow expand → backfill → switch → observe through
 contract. Retain the migration record, rehearsal result, and recovery decision with the release
 record.
 
+### Human-auth rollout (`0032_human_auth.sql`)
+
+`0032_human_auth.sql` is an additive rollout. Apply it in lexical order with the other migrations
+from the direct owner connection; do not attempt a down migration. It preserves legacy member,
+token, and browser-session rows while adding human identity, password, activation/reset,
+invitation, service-account, and subject metadata. A bad human-auth record is repaired by
+revoking it or issuing a successor credential, never by restoring plaintext material or weakening
+the hash/RLS boundary.
+
+Before applying it, record the one enabled owner and confirm that its existing email is deliverable.
+The first activation is intentionally constrained to exactly one enabled owner. After deployment,
+that owner requests activation, receives the activation email, chooses a password, and signs in.
+Do not create a second owner to work around this bootstrap gate. Existing members are retained as
+legacy accepted records by the migration; they are not silently bound to a human identity by email.
+
+Postflight:
+
+1. Confirm `0032_human_auth.sql` is recorded and the application role can use only the approved
+   security-definer auth operations; it must not receive direct access to global auth tables.
+2. Complete the initial owner activation and a normal email/password login from the production
+   origin. Confirm the activation link is one-time.
+3. Create, accept, resend, revoke, and expire a test invitation. Direct member provisioning is
+   retired; create people only through Invitations.
+4. Exercise password reset and confirm existing human sessions are invalidated. Exercise
+   single-session and “other sessions” revocation, then revoke a personal and a service token.
+5. Confirm a sole active owner cannot be disabled or demoted. Create a second accepted owner
+   before any planned owner offboarding.
+
+If the code deploy must be rolled back after `0032`, leave the additive schema in place and redeploy
+the previous compatible application. For an email-provider outage, do not bypass activation or
+invent credentials: preserve the committed owner/invitation state, restore a verified Resend
+configuration, then resend or request a fresh action link. Rotate/revoke affected tokens or
+sessions through the product controls if a credential is suspected exposed.
+
 ## Gateway environment
 
 Set the following separately for Preview and Production. Secret values must come from the
@@ -189,6 +223,37 @@ vercel env ls production
 
 Configure Preview and Production independently; never copy Production secret values into Preview
 or into release artifacts.
+
+## Control-plane human-auth environment
+
+Set these **control-plane** variables independently in Preview and Production:
+
+| Variable | Required | Purpose |
+|---|---:|---|
+| `RESEND_API_KEY` | yes | Resend API credential for activation, invitation, and password-reset email |
+| `RESEND_FROM_EMAIL` | yes | From address on a Resend-verified domain |
+| `MANIFOLD_AUTH_ORIGIN` | yes | Canonical absolute control-plane origin used in action links; HTTPS in production |
+| `MANIFOLD_AUTH_TOKEN_PEPPER` | yes in production | HMAC pepper for opaque human action/session credentials |
+| `MANIFOLD_CONSOLE_ORIGIN` | normally unset | Optional separate origin for CLI device approval; uses the same HTTPS/origin-only validation |
+
+There are no human-auth TTL environment flags in this release. Expiry is enforced by the stored
+credential records; CLI device authorization currently expires after 10 minutes and polls at a
+server-supplied interval. Do not add undocumented TTL or legacy compatibility variables to a
+deployment. `MANIFOLD_KEY_PEPPER` is for gateway/API-key hashing and is not a substitute for
+`MANIFOLD_AUTH_TOKEN_PEPPER`.
+
+CLI device authorization uses `MANIFOLD_AUTH_ORIGIN` for its verification URL by default, so a
+separate console-origin setting is normally unnecessary. Set `MANIFOLD_CONSOLE_ORIGIN` only when
+device approval is intentionally hosted at a different canonical control-plane origin. It must be
+an absolute HTTPS origin in production, with no credentials, path, query, or fragment; an invalid
+override fails closed rather than falling back to another origin.
+
+Before setting `RESEND_FROM_EMAIL`, verify its sending domain in Resend. A successful deployment
+does not prove delivery: send a non-sensitive activation test and inspect the resulting sender and
+link origin. Pulse's Vercel Resend variables are project-local Sensitive variables; they cannot be
+read or link-shared. Enter a securely supplied Manifold-specific key, or create a new key, directly
+in the Manifold project. Never paste a secret or private email into this repository, a ticket, or a
+release artifact.
 
 ## Snapshot publication and revocation SLA
 

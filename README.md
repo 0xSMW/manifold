@@ -62,7 +62,9 @@ The control plane includes working screens and APIs for:
 - gateway installations, ingress profiles, diagnostics, and readiness;
 - storage, retention, thresholds, and compaction;
 - workspace members, teams, cost centers, applications, actions, and CLI
-  authorization.
+  authorization;
+- first-party human access: owner activation, email/password sign-in, password
+  reset, invitations, session control, personal tokens, and service accounts.
 
 Enterprise governance areas appear when an `enterprise_egress` profile is
 configured.
@@ -174,6 +176,10 @@ pnpm run dev:control-plane
 
 Use [`Docs/DEPLOY.md`](./Docs/DEPLOY.md) for the migration procedure, environment
 contract, installation bootstrap, and production topology.
+
+Human-access rollout, recovery, and production acceptance are documented in
+[`Docs/HUMAN_AUTH.md`](./Docs/HUMAN_AUTH.md). It covers the first-owner activation
+email, invitations, sessions, API-token ownership, and CLI device authorization.
 
 ## Production deployment
 
