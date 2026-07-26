@@ -1,0 +1,2 @@
+import { StatusDot, type Status } from "./status";
+export function AlertBanner({ tone = "verifying", title, children }: { tone?: Status; title: string; children?: React.ReactNode }) { return <div className="cp-alert" data-tone={tone} role="status"><StatusDot status={tone} /><div><strong>{title}</strong>{children ? <div style={{ color: "var(--fg-muted)", fontSize: 13, marginTop: 2 }}>{children}</div> : null}</div></div>; }

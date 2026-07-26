@@ -1,0 +1,40 @@
+.root { display: grid; gap: 14px; }
+.controls { align-items: end; display: flex; flex-wrap: wrap; gap: 12px; padding: 16px; }
+.controls > :first-child { flex: 1 1 320px; }
+.planCard, .applyCard, .result { display: grid; gap: 16px; padding: 18px; }
+.cardHeading { align-items: flex-start; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; }
+.cardHeading h2, .applyCard h2 { font-size: 16px; margin: 0; }
+.cardHeading p, .applyCard p { color: var(--fg-muted); font-size: 13px; margin: 4px 0 0; }
+.summary { display: grid; gap: 10px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+.summary > div { background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-control); min-width: 0; padding: 10px; }
+.summary dt { color: var(--fg-faint); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.summary dd { margin: 5px 0 0; overflow-wrap: anywhere; }
+.diffGrid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.diffSection { border: 1px solid var(--border); border-radius: var(--radius-control); display: grid; gap: 10px; padding: 12px; }
+.diffSection h3 { font-size: 13px; margin: 0; }
+.diffOperation { display: grid; gap: 4px; }
+.diffOperation strong { color: var(--fg-muted); font-size: 11px; text-transform: capitalize; }
+.diffOperation ul { display: grid; gap: 3px; list-style: none; margin: 0; padding: 0; }
+.diffOperation li { font-size: 12px; overflow-wrap: anywhere; }
+.tripwireList { display: grid; gap: 10px; }
+.tripwire { align-items: end; border: 1px solid color-mix(in srgb, var(--down) 40%, var(--border)); border-radius: var(--radius-control); display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr) minmax(240px, .9fr); padding: 12px; }
+.tripwire > div { display: grid; gap: 5px; min-width: 0; }
+.tripwire code { overflow-wrap: anywhere; }
+.tripwire span { font-size: 12px; overflow-wrap: anywhere; }
+.approvalNote { color: var(--fg-muted); font-size: 12px; margin: 0; }
+.approvalStatus { color: var(--up); font-size: 12px; }
+.applyCard { align-items: center; grid-template-columns: 1fr auto; }
+.historyList, .revisionList { display: grid; gap: 10px; }
+.revisionList { border-top: 1px solid var(--border); padding-top: 16px; }
+.revisionList h3 { font-size: 13px; margin: 0; }
+.operation { border: 1px solid var(--border); border-radius: var(--radius-control); display: grid; gap: 10px; padding: 12px; }
+.operationHead { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; }
+.operationMeta { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); margin: 0; }
+.operationMeta dt { color: var(--fg-faint); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.operationMeta dd { font-size: 12px; margin: 3px 0 0; overflow-wrap: anywhere; }
+.modeNote { color: var(--fg-muted); font-size: 12px; margin: 0; }
+.alertAction { margin-top: 10px; }
+.revision { align-items: center; border: 1px solid var(--border); border-radius: var(--radius-control); display: flex; gap: 12px; justify-content: space-between; padding: 10px 12px; }
+.revision > div { display: grid; gap: 4px; min-width: 0; }
+.revision span { font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 680px) { .summary, .tripwire, .applyCard { grid-template-columns: 1fr; } .applyCard .cp-button { width: 100%; } .revision { align-items: stretch; flex-direction: column; } }
