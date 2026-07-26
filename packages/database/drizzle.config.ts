@@ -5,8 +5,10 @@ import { defineConfig } from "drizzle-kit";
 // in migrations/0001_partitions.sql, applied after the generated base migration.
 export default defineConfig({
   dialect: "postgresql",
-  schema: "./src/schema.ts",
-  out: "./migrations",
+  schema: process.env.DRIZZLE_SCHEMA ?? "./src/schema.ts",
+  // Freshness checks generate into an OS temporary directory; normal developer
+  // generation continues to use the committed migrations directory.
+  out: process.env.DRIZZLE_OUT ?? "./migrations",
   dbCredentials: {
     url: process.env.DATABASE_URL ?? "postgres://localhost:5432/manifold",
   },

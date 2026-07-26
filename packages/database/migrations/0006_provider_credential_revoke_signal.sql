@@ -1,6 +1,7 @@
 -- ===========================================================================
 -- 0006_provider_credential_revoke_signal.sql — one revoke signal + machine/CHECK
 --   alignment for provider_credential (F23-F3-credential-lifecycle).
+-- forward-fix: rotate affected credentials and amend lifecycle constraints through a successor migration.
 --
 -- Before: revoke was encoded TWICE (status='revoked' AND revoked_at IS NOT NULL),
 -- and the domain machine's `rotating` state had no matching status value in the

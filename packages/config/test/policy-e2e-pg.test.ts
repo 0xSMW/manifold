@@ -113,16 +113,22 @@ before(async () => {
       (id, workspace_id, installation_id, hostname, mode, auth_config, policy_revision_id) VALUES
       ('${PROFILE}','ws_e2e','${INSTALLATION}','${HOST}','public_app','{}','polrev_e2e');
 
-    -- A chat route (→ /v1/chat/completions) so an ALLOWED model actually dispatches.
+    -- Model-aware chat routes for both request model names. They intentionally share the same
+    -- offering: policy evaluation is against the public canonical model name carried by the
+    -- request, while routing must resolve that name before the enforcement step can run.
     INSERT INTO gateway_route (id, workspace_id, installation_id, public_name, endpoint_kind) VALUES
-      ('route_e2e','ws_e2e','${INSTALLATION}','chat-route','chat');
+      ('route_e2e_denied','ws_e2e','${INSTALLATION}','${DENIED_MODEL}','chat'),
+      ('route_e2e_allowed','ws_e2e','${INSTALLATION}','${ALLOWED_MODEL}','chat');
     INSERT INTO gateway_route_revision
       (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
-      ('rev_e2e','ws_e2e','route_e2e','ordered','{}','{"overall_ms":30000}','sha256:reve2e');
+      ('rev_e2e_denied','ws_e2e','route_e2e_denied','ordered','{}','{"overall_ms":30000}','sha256:reve2edenied'),
+      ('rev_e2e_allowed','ws_e2e','route_e2e_allowed','ordered','{}','{"overall_ms":30000}','sha256:reve2eallowed');
     INSERT INTO gateway_target
       (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url) VALUES
-      ('tg_e2e','ws_e2e','rev_e2e','cred_e2e','off_e2e','ar1',NULL);
-    UPDATE gateway_route SET active_revision_id = 'rev_e2e' WHERE id = 'route_e2e';
+      ('tg_e2e_denied','ws_e2e','rev_e2e_denied','cred_e2e','off_e2e','ar1',NULL),
+      ('tg_e2e_allowed','ws_e2e','rev_e2e_allowed','cred_e2e','off_e2e','ar1',NULL);
+    UPDATE gateway_route SET active_revision_id = 'rev_e2e_denied' WHERE id = 'route_e2e_denied';
+    UPDATE gateway_route SET active_revision_id = 'rev_e2e_allowed' WHERE id = 'route_e2e_allowed';
 
     -- The virtual key on this profile. keyed_hash = hex(HMAC(pepper, VALID_KEY)) computed by the
     -- SAME FakeCrypto the gateway authenticates with, so the built snapshot key authenticates.
@@ -158,14 +164,18 @@ before(async () => {
       ('prof_team','ws_e2e','${INST_TEAM}','${HOST_TEAM}','public_app','{}','polrev_team');
 
     INSERT INTO gateway_route (id, workspace_id, installation_id, public_name, endpoint_kind) VALUES
-      ('route_team','ws_e2e','${INST_TEAM}','team-chat','chat');
+      ('route_team_blocked','ws_e2e','${INST_TEAM}','${TEAM_BLOCKED}','chat'),
+      ('route_team_ok','ws_e2e','${INST_TEAM}','${TEAM_OK}','chat');
     INSERT INTO gateway_route_revision
       (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
-      ('rev_team','ws_e2e','route_team','ordered','{}','{"overall_ms":30000}','sha256:revteam');
+      ('rev_team_blocked','ws_e2e','route_team_blocked','ordered','{}','{"overall_ms":30000}','sha256:revteamblocked'),
+      ('rev_team_ok','ws_e2e','route_team_ok','ordered','{}','{"overall_ms":30000}','sha256:revteamok');
     INSERT INTO gateway_target
       (id, workspace_id, route_revision_id, provider_credential_id, offering_id, adapter_revision, base_url) VALUES
-      ('tg_team','ws_e2e','rev_team','cred_e2e','off_e2e','ar1',NULL);
-    UPDATE gateway_route SET active_revision_id = 'rev_team' WHERE id = 'route_team';
+      ('tg_team_blocked','ws_e2e','rev_team_blocked','cred_e2e','off_e2e','ar1',NULL),
+      ('tg_team_ok','ws_e2e','rev_team_ok','cred_e2e','off_e2e','ar1',NULL);
+    UPDATE gateway_route SET active_revision_id = 'rev_team_blocked' WHERE id = 'route_team_blocked';
+    UPDATE gateway_route SET active_revision_id = 'rev_team_ok' WHERE id = 'route_team_ok';
 
     -- The team key: keyed_hash from the SAME FakeCrypto; team_id = team_x (the fix emits this).
     INSERT INTO virtual_key
@@ -205,7 +215,11 @@ function makeCtx(snapshot: Snapshot, fetcher: Fetcher): GatewayContext {
 function req(body: unknown): Request {
   return new Request(`http://${HOST}/v1/chat/completions`, {
     method: "POST",
-    headers: { host: HOST, authorization: `Bearer ${VALID_KEY}` },
+    headers: {
+      host: HOST,
+      authorization: `Bearer ${VALID_KEY}`,
+      "content-type": "application/json",
+    },
     body: JSON.stringify(body),
   });
 }
@@ -219,7 +233,11 @@ function ctxFor(installationId: string, snapshot: Snapshot, fetcher: Fetcher): G
 function reqTo(host: string, key: string, body: unknown): Request {
   return new Request(`http://${host}/v1/chat/completions`, {
     method: "POST",
-    headers: { host, authorization: `Bearer ${key}` },
+    headers: {
+      host,
+      authorization: `Bearer ${key}`,
+      "content-type": "application/json",
+    },
     body: JSON.stringify(body),
   });
 }

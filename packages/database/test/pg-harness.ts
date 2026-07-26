@@ -135,7 +135,7 @@ export async function startPg(options: StartPgOptions = {}): Promise<PgHarness> 
     } catch (e) {
       startErr = e;
       // Clean up a half-created container before retrying another port.
-      try { docker(["rm", "-f", container]); } catch { /* ignore */ }
+      try { docker(["rm", "-f", "-v", container]); } catch { /* ignore */ }
     }
   }
   if (!started) throw new Error(`could not start postgres container: ${String(startErr)}`);
@@ -171,7 +171,9 @@ export async function startPg(options: StartPgOptions = {}): Promise<PgHarness> 
   async function stop(): Promise<void> {
     try { await sql.end({ timeout: 5 }); } catch { /* ignore */ }
     if (containerStarted) {
-      try { docker(["rm", "-f", container]); } catch { /* ignore */ }
+      // postgres:16 declares /var/lib/postgresql/data as an anonymous volume. Remove it with
+      // the throwaway container or repeated real-PG gates leak gigabytes into Docker.
+      try { docker(["rm", "-f", "-v", container]); } catch { /* ignore */ }
     }
   }
 

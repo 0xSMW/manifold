@@ -89,9 +89,10 @@ export interface SnapshotPublishStore {
     installationId: string,
     revision: string,
     snap: Snapshot,
+    options?: { signal?: AbortSignal },
   ): Promise<{ version: string }>;
   /** The currently-published pointer for an installation. */
-  pointer(installationId: string): Promise<{ revision: string; version: string } | null>;
+  pointer(installationId: string, options?: { signal?: AbortSignal }): Promise<{ revision: string; version: string } | null>;
   /** Load the active snapshot (the read half, mirrors ports.SnapshotStore). */
   loadActive(installationId: string): Promise<Snapshot>;
 }

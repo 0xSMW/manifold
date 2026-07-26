@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "tsc -b",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {

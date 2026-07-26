@@ -20,7 +20,7 @@
     "build": "tsc -b",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "db:generate": "drizzle-kit generate",
-    "test": "node --experimental-strip-types --test test/isolation.test.ts"
+    "test": "node --experimental-strip-types --test test/*.test.ts test/*.test.mjs"
   },
   "dependencies": {
     "@manifold/contracts": "*",

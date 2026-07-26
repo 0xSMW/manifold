@@ -48,6 +48,15 @@ before(async () => {
       ('prof_a','ws_a','inst_a','a.local','public_app','{}'),
       ('prof_b','ws_b','inst_b','b.local','public_app','{}');
 
+    INSERT INTO member (id, workspace_id, email, name, role) VALUES
+      ('mbr_a','ws_a','a@example.com','Member A','owner'),
+      ('mbr_b','ws_b','b@example.com','Member B','owner');
+
+    INSERT INTO console_session
+      (id, workspace_id, member_id, keyed_hash, scopes, expires_at) VALUES
+      ('ses_a','ws_a','mbr_a','\\xaa','["routes:read"]',now() + interval '1 hour'),
+      ('ses_b','ws_b','mbr_b','\\xbb','["routes:read"]',now() + interval '1 hour');
+
     INSERT INTO virtual_key
       (id, workspace_id, profile_id, display_prefix, keyed_hash, scopes) VALUES
       ('vk_a','ws_a','prof_a','mfa','\\x01','[]'),
@@ -194,6 +203,53 @@ test("RLS: querying a partition CHILD directly is workspace-scoped (finding 1, t
   assert.equal(scoped[0].workspace_id, "ws_a");
   assert.equal(scoped[0].id, "cl-1");
   for (const r of scoped) assert.equal(r.workspace_id, "ws_a", "no ws_b row may leak via the child");
+});
+
+test("console session RLS exposes only the current workspace", async () => {
+  const rows = await sql.begin(async (tx: Sql) => {
+    await tx.unsafe("SET LOCAL ROLE app_role");
+    await tx.unsafe("SELECT set_config('manifold.workspace_id','ws_a', true)");
+    return tx.unsafe("SELECT id, workspace_id FROM console_session");
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "ses_a");
+  assert.equal(rows[0].workspace_id, "ws_a");
+});
+
+test("console session auth lookup is exact-hash-only before tenant resolution", async () => {
+  const found = await sql.begin(async (tx: Sql) => {
+    await tx.unsafe("SET LOCAL ROLE manifold_app");
+    return tx.unsafe("SELECT id, workspace_id, member_id FROM auth_lookup_console_session('\\xaa')");
+  });
+  assert.equal(found.length, 1);
+  assert.equal(found[0].id, "ses_a");
+  assert.equal(found[0].workspace_id, "ws_a");
+  assert.equal(found[0].member_id, "mbr_a");
+
+  const missing = await sql.begin(async (tx: Sql) => {
+    await tx.unsafe("SET LOCAL ROLE manifold_app");
+    return tx.unsafe("SELECT id FROM auth_lookup_console_session('\\xcc')");
+  });
+  assert.equal(missing.length, 0);
+});
+
+test("CLI device lookup is exact-hash-only before tenant resolution", async () => {
+  await sql.unsafe(
+    "INSERT INTO cli_authorization (id, workspace_id, device_code_hash, user_code, status, scopes, client_id, client_name, verification_origin, interval_seconds, poll_not_before, expires_at) " +
+    "VALUES ('clia_a','ws_a','\\xcc','AAAAA-BBBBB','pending','[\"routes:read\"]','manifold-cli','Manifold CLI','https://console.example',5,now(),now() + interval '10 minutes')",
+  );
+  const rows = await sql.begin(async (tx: Sql) => {
+    await tx.unsafe("SET LOCAL ROLE manifold_app");
+    return tx.unsafe("SELECT id, workspace_id FROM auth_lookup_cli_authorization('\\xcc'::bytea)");
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].id, "clia_a");
+  assert.equal(rows[0].workspace_id, "ws_a");
+  const missing = await sql.begin(async (tx: Sql) => {
+    await tx.unsafe("SET LOCAL ROLE manifold_app");
+    return tx.unsafe("SELECT id FROM auth_lookup_cli_authorization('\\xcd'::bytea)");
+  });
+  assert.equal(missing.length, 0, "a non-matching device-code hash cannot enumerate grants");
 });
 
 // ---------------------------------------------------------------------------

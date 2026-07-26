@@ -244,12 +244,8 @@ function allTargets(snap: ConfigSnapshot) {
   return Object.values(snap.routes).flatMap((r) => r.targets);
 }
 
-// ── Bug 2: ROUTE-KEY CLOBBER — DEFERRED (review #222) ───────────────────────
-// Skipped: the §7.2 `${profile}:${kind}:${public_name}` key that would fix this requires a
-// coordinated gateway-core resolveRoute redesign (see build.ts note). We kept the path-based key
-// so config-built snapshots actually route in the gateway; the multi-same-kind clobber remains a
-// known open item. Un-skip when the gateway resolveRoute reconciliation lands.
-test.skip("build: two same-kind (chat) routes with different public_names both survive (no clobber)", async () => {
+// ── Bug 2: ROUTE-KEY CLOBBER ────────────────────────────────────────────────
+test("build: two same-kind (chat) routes with different public_names both survive (no clobber)", async () => {
   const snap = await buildSnapshot(sql, "inst_clobber");
   const keys = Object.keys(snap.routes);
 
@@ -261,8 +257,30 @@ test.skip("build: two same-kind (chat) routes with different public_names both s
 
   // Both distinct routes present → their credentials both survive (neither clobbered the other).
   assert.notEqual(snap.routes[gptKey].routeId, snap.routes[claudeKey].routeId);
+  assert.equal(snap.routes[gptKey].targets[0]?.targetId, "tg_gpt");
+  assert.equal(snap.routes[claudeKey].targets[0]?.targetId, "tg_claude");
   assert.equal(snap.routes[gptKey].targets[0]?.credentialId, "cred_openai");
+  assert.equal(snap.routes[gptKey].targets[0]?.kekId, "kek1", "new snapshots must project the DEK KEK identity");
   assert.equal(snap.routes[claudeKey].targets[0]?.credentialId, "cred_anthropic");
+});
+
+test("build: workspace operator price override wins and is carried into the snapshot", async () => {
+  await sql`
+    INSERT INTO provider_price_revision
+      (id, offering_id, workspace_id, input_per_mtok_microusd, output_per_mtok_microusd, fidelity, content_hash, catalog_revision)
+    VALUES ('prc_global_snapshot', 'off1', NULL, 100, 200, 'provider_verified', 'sha256:global-snapshot-price', 'cat1')`;
+  await sql`UPDATE provider_model_offering SET active_price_revision_id = 'prc_global_snapshot' WHERE id = 'off1'`;
+  await sql`
+    INSERT INTO provider_price_revision
+      (id, offering_id, workspace_id, input_per_mtok_microusd, output_per_mtok_microusd, fidelity, content_hash)
+    VALUES ('prc_override_snapshot', 'off1', 'ws1', 300, 400, 'operator_override', 'sha256:override-snapshot-price')`;
+  const snapshot = await buildSnapshot(sql, "inst_clobber");
+  const offering = snapshot.offerings.off1;
+  assert.ok(offering, "offering must be present in the signed snapshot");
+  assert.equal(offering.priceRevisionId, "prc_override_snapshot");
+  assert.equal(offering.priceFidelity, "operator_override");
+  assert.equal(offering.price?.inputPerMtokMicroUsd, "300");
+  assert.equal(offering.price?.outputPerMtokMicroUsd, "400");
 });
 
 // ── Bug 1: allowedHosts auto-expand → credential exfil ──────────────────────
@@ -279,7 +297,7 @@ test("build: a target baseUrl host absent from the credential allowlist is NOT a
 
   // Fail closed: the misconfigured target (host ∉ credential allow_hosts) is dropped, so the route
   // ships with no target for ssrfCheck to (fail to) guard.
-  const evil = snap.routes["prof_sec:/v1/chat/completions"];
+  const evil = snap.routes["prof_sec:chat:evil-route"];
   assert.ok(evil, "route_evil should still be present as a route");
   assert.equal(evil.targets.length, 0, "the target aimed at evil.example must be dropped");
 });
@@ -291,7 +309,7 @@ test("build: a revoked provider credential is not embedded; its target is droppe
   for (const t of allTargets(snap)) {
     assert.notEqual(t.credentialId, "cred_revoked", "a revoked credential must never ship in the snapshot");
   }
-  const rev = snap.routes["prof_rev:/v1/chat/completions"];
+  const rev = snap.routes["prof_rev:chat:revoked-route"];
   assert.ok(rev, "route_revoked should still be present as a route");
   assert.equal(rev.targets.length, 0, "the target referencing the revoked credential must be dropped");
 });
@@ -311,13 +329,12 @@ test("build: a revoked virtual key is not carried into snapshot.keys (⇒ AUTH_K
   );
 });
 
-// ── Bug 4: apply() must publish only AFTER the DB txn commits ────────────────
-test("apply: store.publish runs only after the DB txn commits (publish failure ⇒ DB revision stays committed)", async () => {
-  // A store whose publish always throws. Pre-fix, publish ran INSIDE the txn → a throw rolled the
-  // whole txn back → NO gateway_config_revision row. Post-fix, publish runs AFTER commit → the row
-  // is committed & active even though publish then fails (store simply lags — the safe direction).
+// ── Bug 4: apply() must durably queue publication inside the DB transaction ──
+test("apply: commits DB truth and a publication job without an inline store side effect", async () => {
+  let publishCalls = 0;
   const throwingStore: SnapshotPublishStore = {
     publish: async () => {
+      publishCalls += 1;
       throw new Error("publish boom");
     },
     pointer: async () => null,
@@ -329,17 +346,24 @@ test("apply: store.publish runs only after the DB txn commits (publish failure �
   const target = await buildSnapshot(sql, "inst_apply_fail");
   const p = await plan(sql, "inst_apply_fail", target);
 
-  await assert.rejects(apply(sql, p, throwingStore), /publish boom/);
+  const op = await apply(sql, p, throwingStore);
+  assert.equal(op.outcome, "accepted");
+  assert.equal(publishCalls, 0, "the request path must leave the external effect to the durable worker");
 
-  // The DB txn committed BEFORE publish was attempted: the new revision is present and active.
   const rows = await sql`
     SELECT id, status FROM gateway_config_revision
     WHERE installation_id = 'inst_apply_fail' AND status = 'active'`;
-  assert.equal(rows.length, 1, "the config revision must be committed & active despite publish failure");
+  assert.equal(rows.length, 1, "the config revision must be committed and active");
   assert.equal(rows[0].id, target.meta.revision);
+  const jobs = await sql`
+    SELECT status FROM job_ledger
+    WHERE kind = 'config_publish_reconcile'
+      AND payload->>'installationId' = 'inst_apply_fail'`;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.status, "pending");
 });
 
-test("apply: happy path publishes after commit and records exactly one active revision", async () => {
+test("apply: records exactly one active revision and one durable publication job", async () => {
   let publishedRevision: string | null = null;
   const store: SnapshotPublishStore = {
     publish: async (_inst, revision) => {
@@ -358,15 +382,21 @@ test("apply: happy path publishes after commit and records exactly one active re
   const op = await apply(sql, p, store);
 
   assert.equal(op.outcome, "accepted");
-  assert.equal(op.edgeConfigVersion, "v1", "the published version is reflected on the returned op");
+  assert.equal(op.edgeConfigVersion, null, "the worker records an accelerator version after publication");
   assert.equal(op.revisionId, target.meta.revision);
-  assert.equal(publishedRevision, target.meta.revision);
+  assert.equal(publishedRevision, null, "the request path must not publish inline");
 
   const rows = await sql`
     SELECT id FROM gateway_config_revision
     WHERE installation_id = 'inst_apply_ok' AND status = 'active'`;
   assert.equal(rows.length, 1, "exactly one active revision after apply");
   assert.equal(rows[0].id, target.meta.revision);
+  const jobs = await sql`
+    SELECT status FROM job_ledger
+    WHERE kind = 'config_publish_reconcile'
+      AND payload->>'installationId' = 'inst_apply_ok'`;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.status, "pending");
 });
 
 /** An in-memory publish store that always succeeds (for tests that need an active revision). */
@@ -451,8 +481,8 @@ test("apply: an unapproved route_delete is rejected; a matching {kind,ref,planHa
   assert.equal(accepted.revisionId, s2.meta.revision, "the approved change produces the new revision");
 });
 
-// ── Fix 5: rollback publishes only AFTER the DB txn commits ────────────────────────────────────
-test("rollback: republish runs only after commit (publish failure ⇒ the DB rollback still stands)", async () => {
+// ── Fix 5: rollback commits DB truth plus a durable publication job ────────────────────────────
+test("rollback: reactivates DB truth and queues byte-identical publication", async () => {
   // rev1 (active) then a content-different rev2 (active; rev1 → superseded).
   const op1 = await apply(sql, await plan(sql, "inst_rb", await buildSnapshot(sql, "inst_rb")), okStore());
   const rev1 = op1.revisionId as string;
@@ -463,9 +493,10 @@ test("rollback: republish runs only after commit (publish failure ⇒ the DB rol
   const rev2 = op2.revisionId as string;
   assert.notEqual(rev1, rev2, "the two applies must produce distinct revisions");
 
-  // Roll back to rev1 with a store whose publish always throws.
+  let publishCalls = 0;
   const throwingStore: SnapshotPublishStore = {
     publish: async () => {
+      publishCalls += 1;
       throw new Error("rollback publish boom");
     },
     pointer: async () => null,
@@ -473,14 +504,24 @@ test("rollback: republish runs only after commit (publish failure ⇒ the DB rol
       throw new Error("unused");
     },
   };
-  await assert.rejects(rollback(sql, rev1, throwingStore), /rollback publish boom/);
+  const rollbackOp = await rollback(sql, rev1, throwingStore, { workspaceId: "ws1" });
+  assert.equal(rollbackOp.outcome, "accepted");
+  assert.equal(publishCalls, 0, "the request path must leave publication to the durable worker");
 
-  // Pre-fix (publish INSIDE the txn) the throw rolls the DB back: rev2 stays active + the
-  // installation still points at rev2. Post-fix the DB commit stands despite the publish failure.
+  // The control plane commits active DB truth before publication. The gateway-reported
+  // applied_config_revision stays untouched until an authenticated gateway report arrives.
   const inst = await sql`SELECT applied_config_revision FROM gateway_installation WHERE id = 'inst_rb'`;
-  assert.equal(inst[0].applied_config_revision, rev1, "installation must point at the rolled-back-to revision");
+  assert.equal(inst[0].applied_config_revision, null, "rollback must not self-report gateway adoption");
+  const rev1row = await sql`SELECT status FROM gateway_config_revision WHERE id = ${rev1}`;
+  assert.equal(rev1row[0].status, "active", "the rolled-back-to revision must be active DB truth");
   const rev2row = await sql`SELECT status FROM gateway_config_revision WHERE id = ${rev2}`;
   assert.equal(rev2row[0].status, "rolled_back", "the prior active revision must be marked rolled_back");
+  const jobs = await sql`
+    SELECT status FROM job_ledger
+    WHERE kind = 'config_publish_reconcile'
+      AND payload->>'operationId' = ${rollbackOp.id}`;
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.status, "pending");
 });
 
 // ── Bug fix (db.ts readDek): a non-active (retiring/revoked) DEK must not ship its wrapped bytes ─

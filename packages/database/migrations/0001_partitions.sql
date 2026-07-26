@@ -1,5 +1,6 @@
 -- ===========================================================================
 -- 0001_partitions.sql — partitioning, RLS, and immutability (SPEC §6.13/§6.15/§6.16)
+-- forward-fix: preserve partition data and add corrective partition or policy changes in a later migration.
 --
 -- Drizzle does not emit `PARTITION BY`, so the generated 0000 migration creates the
 -- eight RANGE(created_at) tables and the one LIST(grain) table as PLAIN tables. This

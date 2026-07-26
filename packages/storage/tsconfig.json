@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": ".", "outDir": "dist", "tsBuildInfoFile": "tsconfig.tsbuildinfo" },
+  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "exclude": ["test/**/*-pg.test.ts"],
+  "references": [{ "path": "../database" }]
+}

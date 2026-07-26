@@ -1,4 +1,5 @@
 -- citext extension is required by member.email (SPEC §6.2); enable before any table uses it.
+-- forward-fix: preserve deployed baseline data and correct schema drift with successor migrations.
 CREATE EXTENSION IF NOT EXISTS "citext";--> statement-breakpoint
 CREATE TABLE IF NOT EXISTS "action" (
 	"id" text PRIMARY KEY NOT NULL,

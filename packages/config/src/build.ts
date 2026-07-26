@@ -1,11 +1,12 @@
 // buildSnapshot(sql, installationId) — SPEC §7.5. Reads the active route revisions, keys,
 // offerings, profiles, policies and credentials for an installation and emits the compact §7
 // snapshot: profiles (host→profile), keys (hex(keyed_hash)→key), routes
-// (`${profileId}:${path}`→targets with ciphertext + wrappedDek + authInject), offerings,
+// (`${profileId}:${endpointKind}:${publicName}`→targets with ciphertext + wrappedDek + authInject), offerings,
 // policies. Canonicalizes and stamps `contentHash`. The result is a `ports.Snapshot` superset
 // (§7.1 offerings/policies added), so gateway-core loads and routes it unchanged.
 import type {
   AuthInject,
+  EndpointKind,
   PolicyOnViolation,
   PolicySubjectKind,
   Snapshot,
@@ -13,14 +14,19 @@ import type {
   SnapshotKey,
   SnapshotMeta,
   SnapshotPrice,
+  SnapshotRateLimit,
+  SnapshotRetryPolicy,
   SnapshotRoute,
   SnapshotTarget,
 } from "@manifold/ports";
+import { pathForEndpointKind } from "@manifold/ports";
 import { prefixedUlid } from "@manifold/ids";
 import { computeContentHash } from "./canonical.js";
 import * as q from "./db.js";
 import type { PgSql, PriceRow } from "./db.js";
 import type { ConfigOffering, ConfigPolicy, ConfigSnapshot } from "./types.js";
+
+type SnapshotCapturePolicy = { mode: "none" | "metadata" | "redacted" | "full"; maxBytes: number };
 
 /**
  * Map a `provider_price_revision` row's per-mtok µ$ columns (decimal strings over the driver) into
@@ -73,26 +79,9 @@ export function stampMeta(
   };
 }
 
-/**
- * The OpenAI endpoint kinds config path-maps by name (SPEC §7.2/§7.4); any other `endpoint_kind`
- * string falls through to `/v1/<kind>`. Typed so a caller passing a known kind gets autocomplete
- * while the DB's free-text `endpoint_kind` column still assigns (the `string & {}` member).
- */
-export type EndpointKind = "chat" | "responses" | "embeddings" | (string & {});
-
-/** endpoint_kind → request pathname gateway-core resolves against (resolveRoute: `${profile}:${path}`). */
-export function pathForKind(kind: EndpointKind): string {
-  switch (kind) {
-    case "chat":
-      return "/v1/chat/completions";
-    case "responses":
-      return "/v1/responses";
-    case "embeddings":
-      return "/v1/embeddings";
-    default:
-      return `/v1/${kind}`;
-  }
-}
+/** @deprecated Import `pathForEndpointKind` from @manifold/ports for new code. */
+export const pathForKind = pathForEndpointKind;
+export type { EndpointKind };
 
 const PROVIDER_BASE_URLS: Record<string, string> = {
   openai: "https://api.openai.com",
@@ -124,6 +113,94 @@ function scopesToArray(scopes: unknown): string[] {
   return [];
 }
 
+// Keep control-plane JSON from turning the signed hot snapshot into an
+// unbounded transport. These caps are deliberately generous for route policy,
+// while still putting a hard ceiling on what a Fluid isolate parses per reload.
+const MAX_RATE_LIMIT = 1_000_000_000;
+const MAX_RETRY_POLICY_KEYS = 32;
+const MAX_RETRY_POLICY_ARRAY = 32;
+const MAX_RETRY_POLICY_DEPTH = 4;
+const MAX_RETRY_POLICY_STRING = 1_024;
+
+function positiveRateLimit(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= MAX_RATE_LIMIT
+    ? value
+    : undefined;
+}
+
+/**
+ * Validate the compact virtual-key rate-limit shape at the snapshot boundary.
+ * An invalid or empty JSON value is omitted instead of making a key unusable;
+ * validation at the control-plane write edge remains the authoritative reject.
+ */
+export function snapshotRateLimit(value: unknown): SnapshotRateLimit | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  const rateLimit: SnapshotRateLimit = {};
+  const rpm = positiveRateLimit(input.rpm);
+  const tpm = positiveRateLimit(input.tpm);
+  const burst = positiveRateLimit(input.burst);
+  if (rpm !== undefined) rateLimit.rpm = rpm;
+  if (tpm !== undefined) rateLimit.tpm = tpm;
+  if (burst !== undefined) rateLimit.burst = burst;
+  return Object.keys(rateLimit).length === 0 ? undefined : rateLimit;
+}
+
+function boundedRetryValue(value: unknown, depth: number): unknown | undefined {
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string") return value.length <= MAX_RETRY_POLICY_STRING ? value : undefined;
+  if (depth >= MAX_RETRY_POLICY_DEPTH || !value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    if (value.length > MAX_RETRY_POLICY_ARRAY) return undefined;
+    const out: unknown[] = [];
+    for (const item of value) {
+      const bounded = boundedRetryValue(item, depth + 1);
+      if (bounded === undefined) return undefined;
+      out.push(bounded);
+    }
+    return out;
+  }
+  const input = value as Record<string, unknown>;
+  const keys = Object.keys(input);
+  if (keys.length > MAX_RETRY_POLICY_KEYS || keys.some((key) => key.length > MAX_RETRY_POLICY_STRING)) {
+    return undefined;
+  }
+  const out: Record<string, unknown> = {};
+  for (const key of keys) {
+    const bounded = boundedRetryValue(input[key], depth + 1);
+    if (bounded === undefined) return undefined;
+    out[key] = bounded;
+  }
+  return out;
+}
+
+/** Preserve valid revision JSON verbatim while bounding the signed transport. */
+export function snapshotRetryPolicy(value: unknown): SnapshotRetryPolicy | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const bounded = boundedRetryValue(value, 0);
+  return bounded && !Array.isArray(bounded) ? (bounded as SnapshotRetryPolicy) : undefined;
+}
+
+/** Fail closed for capture: absent/malformed revision policy means no payload tee. */
+export function snapshotCapturePolicy(value: unknown): SnapshotCapturePolicy {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { mode: "none", maxBytes: 0 };
+  const input = value as Record<string, unknown>;
+  const mode = input.mode ?? input.captureMode ?? input.capture_mode;
+  const rawBytes = input.maxBytes ?? input.max_bytes ?? input.byteCap ?? input.byte_cap;
+  const maxBytes = typeof rawBytes === "number" && Number.isSafeInteger(rawBytes) && rawBytes > 0
+    ? Math.min(rawBytes, 4_096)
+    : 0;
+  if ((mode !== "redacted" && mode !== "full") || maxBytes === 0) return { mode: "none", maxBytes: 0 };
+  return { mode, maxBytes };
+}
+
+function snapshotHealthState(value: string): SnapshotTarget["healthState"] {
+  return value === "healthy" || value === "degraded" || value === "unhealthy" || value === "unknown"
+    ? value
+    : "unknown";
+}
+
 export function hostFromUrl(url: string): string | null {
   try {
     // hostname (NOT host): ssrfCheck allowlist-matches URL.hostname, which never includes the
@@ -144,6 +221,7 @@ export async function buildKeysSection(
   const keys: Record<string, SnapshotKey> = {};
   for (const k of keyRows) {
     const hex = Buffer.from(k.keyed_hash).toString("hex");
+    const rateLimit = snapshotRateLimit(k.rate_limit);
     keys[hex] = {
       id: k.id,
       profileId: k.profile_id,
@@ -151,6 +229,7 @@ export async function buildKeysSection(
       allowedAppIds: Array.isArray(k.allowed_app_ids) ? (k.allowed_app_ids as string[]) : [],
       budgetAccountId: k.budget_account_id,
       expiresAt: toIso(k.expires_at),
+      ...(rateLimit ? { rateLimit } : {}),
       // Revoked keys are filtered OUT at read time (readVirtualKeys: `revoked_at IS NULL`, F10), so
       // every key that reaches here is live — there is no `revoked` flag to carry. A revoked key is
       // simply absent from this map and authenticates as AUTH_KEY_UNKNOWN.
@@ -237,13 +316,16 @@ export async function assembleSnapshot(
       const host = hostFromUrl(baseUrl);
       if (!host || !allowedHosts.includes(host)) continue;
       targets.push({
+        targetId: t.id,
         offeringId: t.offering_id,
         credentialId: cred.id,
         dekId: cred.dek_id,
+        kekId: dek?.kek_id,
         credentialCiphertext: Buffer.from(cred.encrypted_secret).toString("base64"),
         wrappedDek: dek ? Buffer.from(dek.wrapped_dek).toString("base64") : "",
         weight: t.weight,
         priority: t.priority,
+        healthState: snapshotHealthState(t.health_state),
         baseUrl,
         region: t.region ?? offering?.region ?? null,
         allowedHosts,
@@ -251,15 +333,18 @@ export async function assembleSnapshot(
       });
       // offerings section (budget eligibility + dispatch-time price, §7.1/§6.10)
       if (offering && !offerings[offering.id]) {
-        const price = offering.active_price_revision_id
-          ? await q.readPrice(sql, offering.active_price_revision_id)
-          : null;
+        const price = await q.readEffectivePrice(
+          sql,
+          offering.id,
+          workspaceId,
+          offering.active_price_revision_id,
+        );
         offerings[offering.id] = {
           provider: offering.provider,
           providerModelId: offering.provider_model_id,
           adapterRevision: offering.adapter_revision,
           region: offering.region,
-          priceRevisionId: offering.active_price_revision_id,
+          priceRevisionId: price?.id ?? null,
           priceFidelity: price?.fidelity ?? null,
           // The per-mtok µ$ prices the gateway stamps onto the terminal observation for cost.
           ...(price ? { price: priceFromRow(price) } : {}),
@@ -277,13 +362,16 @@ export async function assembleSnapshot(
           ? (timeout["overallMs"] as number)
           : 60_000;
 
-    const snapRoute: SnapshotRoute = {
+    const retryPolicy = snapshotRetryPolicy(rev.retry_policy);
+    const snapRoute: SnapshotRoute & { capturePolicy: SnapshotCapturePolicy } = {
       routeId: route.id,
       revision: rev.id,
       mode: rev.mode,
       targets,
+      ...(retryPolicy ? { retryPolicy } : {}),
       timeoutMs,
       capturePolicyId: `cap:${route.id}`,
+      capturePolicy: snapshotCapturePolicy(rev.capture_policy),
     };
     // Snapshot route-map key (SPEC §7.2 / §7.4 line "`${profile}:${kind}:${name}`"): the
     // client-facing public_name (the `model` string) MUST be part of the key. Keying by only
@@ -293,16 +381,8 @@ export async function assembleSnapshot(
     // silently goes dead (review ROUTE-KEY CLOBBER bug). Including public_name keeps distinct
     // routes distinct. One entry per profile on this installation.
     //
-    // KNOWN OPEN ITEM (review #222, route-key clobber): the SPEC §7.2 key shape is
-    // `${profile}:${kind}:${public_name}`, which would let two same-kind routes coexist. We keep the
-    // PATH-based key here so it matches gateway-core.resolveRoute (`${profileId}:${path}`) and
-    // config-built snapshots actually route. Switching to the §7.2 key requires a coordinated
-    // gateway-core resolveRoute redesign (map path→kind + read the request `model`), entangled with
-    // the passthrough `/v1/messages` path that is not an OpenAI endpoint-kind. Deferred, not shipped
-    // half-done: shipping the §7.2 key without the gateway side would break ALL config→gateway
-    // routing (worse than the narrow multi-same-kind clobber). Tracked for a dedicated coordinated pass.
     for (const profileId of profileIds) {
-      routes[`${profileId}:${pathForKind(route.endpoint_kind)}`] = snapRoute;
+      routes[`${profileId}:${route.endpoint_kind}:${route.public_name}`] = snapRoute;
     }
   }
 

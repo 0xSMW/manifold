@@ -7,6 +7,7 @@ import * as schema from "./schema.js";
 
 export * from "./schema.js";
 export * from "./columns.js";
+export * from "./targetHealth.js";
 export { schema };
 
 export type Database = ReturnType<typeof getDb>;

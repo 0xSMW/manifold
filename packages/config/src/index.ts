@@ -7,6 +7,7 @@
 //   apply(sql, plan, store, approvals?)       → §8.2 apply (one txn; records config_operation)
 //   rollback(sql, revisionId, store)          → §8.2 rollback (republish prior bytes)
 //   keyOnlyPublish(sql, workspaceId, installationId, store, opts?) → §8.2 H7 scoped key publish (→ null on no-op)
+//   healthOnlyPublish(sql, workspaceId, installationId, store, opts) → durable health overlay publish
 export {
   buildSnapshot,
   assembleSnapshot,
@@ -18,7 +19,14 @@ export {
   type EndpointKind,
 } from "./build.js";
 export { plan } from "./plan.js";
-export { apply, rollback, keyOnlyPublish, type KeyOnlyPublishOptions } from "./apply.js";
+export {
+  apply,
+  rollback,
+  keyOnlyPublish,
+  healthOnlyPublish,
+  type KeyOnlyPublishOptions,
+  type HealthOnlyPublishOptions,
+} from "./apply.js";
 export {
   signSnapshot,
   snapshotSigningMessage,

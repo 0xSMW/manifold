@@ -1,6 +1,7 @@
 -- ===========================================================================
 -- 0003_reservation_counter_coords.sql — persist the EXACT counter-row coordinates
 --   that reserve() bumped onto each budget_reservation (SPEC §16.3). MONEY-CORRECTNESS FIX.
+-- forward-fix: reconcile affected reservation counters with an audited successor migration.
 --
 -- reserve() bumps ONE budget_window_state row identified by (budget_account_id,
 -- window_start, shard), where `shard = hash(request_id) % N` and `window_start` is the

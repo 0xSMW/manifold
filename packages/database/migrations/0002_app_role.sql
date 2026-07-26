@@ -1,6 +1,7 @@
 -- ===========================================================================
 -- 0002_app_role.sql — run the control plane as a NON-superuser so RLS is load-bearing
 --   (SPEC §6.16 / §15.2). SECURITY FIX.
+-- forward-fix: amend least-privilege grants or role settings through a later migration; do not restore superuser access.
 --
 -- The control plane previously connected as `postgres` (SUPERUSER). A superuser (and any
 -- role with BYPASSRLS) is EXEMPT from row-level security, so every per-workspace policy

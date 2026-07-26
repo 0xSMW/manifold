@@ -12,6 +12,8 @@ import {
   boolean,
   check,
   date,
+  doublePrecision,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -154,6 +156,28 @@ export const apiToken = pgTable(
   ],
 );
 
+/** Browser-console sessions. Only the HMAC of the HttpOnly cookie value is persisted. */
+export const consoleSession = pgTable(
+  "console_session",
+  {
+    id: id(),
+    workspaceId: wsId(),
+    memberId: text("member_id")
+      .notNull()
+      .references(() => member.id),
+    keyedHash: bytea("keyed_hash").notNull(),
+    scopes: jsonb("scopes").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    revokedAt: ts("revoked_at"),
+    lastUsedAt: ts("last_used_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("console_session_hash_uq").on(t.keyedHash),
+    index("console_session_member_idx").on(t.workspaceId, t.memberId),
+  ],
+);
+
 export const cliAuthorization = pgTable(
   "cli_authorization",
   {
@@ -163,14 +187,28 @@ export const cliAuthorization = pgTable(
     userCode: text("user_code").notNull(),
     status: text("status").notNull(),
     scopes: jsonb("scopes").notNull(),
+    clientId: text("client_id").notNull(),
+    clientName: text("client_name").notNull(),
+    verificationOrigin: text("verification_origin").notNull(),
     approvedBy: text("approved_by").references(() => member.id),
+    approvedAt: ts("approved_at"),
+    deniedBy: text("denied_by").references(() => member.id),
+    deniedAt: ts("denied_at"),
     issuedTokenId: text("issued_token_id").references(() => apiToken.id),
     intervalSeconds: integer("interval_seconds").notNull().default(5),
+    lastPolledAt: ts("last_polled_at"),
+    pollNotBefore: ts("poll_not_before").notNull(),
     expiresAt: ts("expires_at").notNull(),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex("cli_user_code_uq").on(t.userCode),
+    index("cli_authorization_pending_review_idx").on(
+      t.workspaceId,
+      t.status,
+      t.expiresAt,
+      t.createdAt.desc(),
+    ),
     check(
       "cli_status_chk",
       sql`${t.status} IN ('pending','approved','issued','denied','expired')`,
@@ -205,6 +243,24 @@ export const gatewayInstallation = pgTable(
       "installation_identity_present",
       sql`${t.publicKey} IS NOT NULL OR ${t.workloadIdentity} IS NOT NULL`,
     ),
+  ],
+);
+
+/** One-time signed-request nonces; claimed through the narrow installation auth definer seam. */
+export const installationAuthNonce = pgTable(
+  "installation_auth_nonce",
+  {
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => gatewayInstallation.id, { onDelete: "cascade" }),
+    nonceHash: bytea("nonce_hash").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.installationId, t.nonceHash] }),
+    index("installation_auth_nonce_expiry_idx").on(t.expiresAt),
+    check("installation_auth_nonce_expiry_chk", sql`${t.expiresAt} > ${t.createdAt}`),
   ],
 );
 
@@ -327,6 +383,79 @@ export const virtualKey = pgTable(
     index("virtual_key_profile_idx")
       .on(t.profileId)
       .where(sql`revoked_at IS NULL`),
+  ],
+);
+
+// ===========================================================================
+// Gateway distributed admission state
+// ===========================================================================
+// These rows are the fleet-wide source of truth for gateway admission.  The
+// gateway mutates them atomically through the narrow SQL adapter; they are not
+// request telemetry and must remain workspace-isolated under RLS.
+export const gatewayRateLimitState = pgTable(
+  "gateway_rate_limit_state",
+  {
+    workspaceId: wsId(),
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => gatewayInstallation.id),
+    virtualKeyId: text("virtual_key_id")
+      .notNull()
+      .references(() => virtualKey.id),
+    configFingerprint: text("config_fingerprint").notNull(),
+    requestTokens: doublePrecision("request_tokens").notNull(),
+    tokenTokens: doublePrecision("token_tokens").notNull(),
+    refilledAt: ts("refilled_at").notNull(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.installationId, t.virtualKeyId] }),
+    check(
+      "gateway_rate_limit_state_tokens_finite_nonneg_chk",
+      sql`${t.requestTokens} >= 0
+        AND ${t.requestTokens} <> 'NaN'::double precision
+        AND ${t.requestTokens} <> 'Infinity'::double precision
+        AND ${t.requestTokens} <> '-Infinity'::double precision
+        AND ${t.tokenTokens} >= 0
+        AND ${t.tokenTokens} <> 'NaN'::double precision
+        AND ${t.tokenTokens} <> 'Infinity'::double precision
+        AND ${t.tokenTokens} <> '-Infinity'::double precision`,
+    ),
+  ],
+);
+
+export const gatewayConcurrencyLease = pgTable(
+  "gateway_concurrency_lease",
+  {
+    id: id(),
+    workspaceId: wsId(),
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => gatewayInstallation.id),
+    virtualKeyId: text("virtual_key_id")
+      .notNull()
+      .references(() => virtualKey.id),
+    state: text("state").notNull().default("active"),
+    expiresAt: ts("expires_at").notNull(),
+    releasedAt: ts("released_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("gateway_concurrency_lease_active_installation_expiry_idx")
+      .on(t.installationId, t.expiresAt)
+      .where(sql`${t.state} = 'active'`),
+    index("gateway_concurrency_lease_active_key_expiry_idx")
+      .on(t.installationId, t.virtualKeyId, t.expiresAt)
+      .where(sql`${t.state} = 'active'`),
+    check(
+      "gateway_concurrency_lease_state_chk",
+      sql`${t.state} IN ('active','released','expired')`,
+    ),
+    check(
+      "gateway_concurrency_lease_release_state_chk",
+      sql`(${t.state} = 'released') = (${t.releasedAt} IS NOT NULL)`,
+    ),
   ],
 );
 
@@ -584,6 +713,138 @@ export const gatewayTarget = pgTable(
     check(
       "target_weight_priority",
       sql`${t.weight} >= 0 AND ${t.priority} >= 0`,
+    ),
+  ],
+);
+
+// ===========================================================================
+// Durable gateway target health
+// ===========================================================================
+// Provider-attempt health facts are append-only; the current state is reduced
+// independently so publishing can create a new config revision without
+// mutating gateway_target.
+export const gatewayTargetHealthObservation = pgTable(
+  "gateway_target_health_observation",
+  {
+    id: id(),
+    workspaceId: wsId(),
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => gatewayInstallation.id),
+    targetId: text("target_id")
+      .notNull()
+      .references(() => gatewayTarget.id),
+    routeRevisionId: text("route_revision_id")
+      .notNull()
+      .references(() => gatewayRouteRevision.id),
+    snapshotRevisionId: text("snapshot_revision_id")
+      .notNull()
+      .references((): AnyPgColumn => gatewayConfigRevision.id),
+    sourceEventId: text("source_event_id").notNull(),
+    outcome: text("outcome").notNull(),
+    httpStatus: integer("http_status"),
+    reasonCodes: jsonb("reason_codes").notNull().default([]),
+    occurredAt: ts("occurred_at").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("gateway_target_health_observation_source_event_uq").on(
+      t.workspaceId,
+      t.sourceEventId,
+    ),
+    index("gateway_target_health_observation_target_window_idx").on(
+      t.workspaceId,
+      t.targetId,
+      t.occurredAt.desc(),
+    ),
+    index("gateway_target_health_observation_installation_snapshot_idx").on(
+      t.workspaceId,
+      t.installationId,
+      t.snapshotRevisionId,
+      t.occurredAt.desc(),
+    ),
+    check(
+      "gateway_target_health_observation_outcome_chk",
+      sql`${t.outcome} IN ('success','transient_failure','permanent_failure')`,
+    ),
+    check(
+      "gateway_target_health_observation_http_status_chk",
+      sql`${t.httpStatus} IS NULL OR ${t.httpStatus} BETWEEN 100 AND 599`,
+    ),
+  ],
+);
+
+export const gatewayTargetHealth = pgTable(
+  "gateway_target_health",
+  {
+    targetId: text("target_id")
+      .primaryKey()
+      .references(() => gatewayTarget.id),
+    workspaceId: wsId(),
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => gatewayInstallation.id),
+    routeRevisionId: text("route_revision_id")
+      .notNull()
+      .references(() => gatewayRouteRevision.id),
+    snapshotRevisionId: text("snapshot_revision_id")
+      .notNull()
+      .references((): AnyPgColumn => gatewayConfigRevision.id),
+    state: text("state").notNull().default("unknown"),
+    publishedState: text("published_state").notNull().default("unknown"),
+    windowStartedAt: ts("window_started_at"),
+    windowEndedAt: ts("window_ended_at"),
+    sampleCount: integer("sample_count").notNull().default(0),
+    successCount: integer("success_count").notNull().default(0),
+    transientFailureCount: integer("transient_failure_count").notNull().default(0),
+    permanentFailureCount: integer("permanent_failure_count").notNull().default(0),
+    consecutiveSuccesses: integer("consecutive_successes").notNull().default(0),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    lastOutcome: text("last_outcome"),
+    lastObservedAt: ts("last_observed_at"),
+    stateChangedAt: ts("state_changed_at"),
+    lastRolledUpAt: ts("last_rolled_up_at"),
+    nextExpiryAt: ts("next_expiry_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("gateway_target_health_expiry_idx")
+      .on(t.nextExpiryAt)
+      .where(sql`${t.nextExpiryAt} IS NOT NULL`),
+    index("gateway_target_health_installation_state_idx").on(
+      t.workspaceId,
+      t.installationId,
+      t.state,
+    ),
+    check(
+      "gateway_target_health_state_chk",
+      sql`${t.state} IN ('unknown','healthy','degraded','unhealthy')`,
+    ),
+    check(
+      "gateway_target_health_published_state_chk",
+      sql`${t.publishedState} IN ('unknown','healthy','degraded','unhealthy')`,
+    ),
+    check(
+      "gateway_target_health_last_outcome_chk",
+      sql`${t.lastOutcome} IS NULL OR ${t.lastOutcome} IN ('success','transient_failure','permanent_failure')`,
+    ),
+    check(
+      "gateway_target_health_counts_nonneg_chk",
+      sql`${t.sampleCount} >= 0
+        AND ${t.successCount} >= 0
+        AND ${t.transientFailureCount} >= 0
+        AND ${t.permanentFailureCount} >= 0
+        AND ${t.consecutiveSuccesses} >= 0
+        AND ${t.consecutiveFailures} >= 0`,
+    ),
+    check(
+      "gateway_target_health_counts_sum_chk",
+      sql`${t.sampleCount} = ${t.successCount} + ${t.transientFailureCount} + ${t.permanentFailureCount}`,
+    ),
+    check(
+      "gateway_target_health_window_order_chk",
+      sql`${t.windowStartedAt} IS NULL OR ${t.windowEndedAt} IS NULL OR ${t.windowStartedAt} <= ${t.windowEndedAt}`,
     ),
   ],
 );
@@ -1022,6 +1283,48 @@ export const policyDecision = pgTable(
   ],
 );
 
+export const auditDestination = pgTable(
+  "audit_destination",
+  {
+    id: id(),
+    workspaceId: wsId(),
+    kind: text("kind").notNull(),
+    label: text("label").notNull(),
+    encryptedEndpoint: bytea("encrypted_endpoint").notNull(),
+    encryptedSecret: bytea("encrypted_secret"),
+    dekId: text("dek_id").notNull(),
+    status: text("status").notNull().default("configured"),
+    disabledAt: ts("disabled_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("audit_destination_workspace_idx").on(t.workspaceId, t.createdAt.desc()),
+    check("audit_destination_kind_chk", sql`${t.kind} IN ('webhook','siem')`),
+    check("audit_destination_status_chk", sql`${t.status} IN ('configured','disabled')`),
+  ],
+);
+
+export const auditDeliveryJob = pgTable(
+  "audit_delivery_job",
+  {
+    id: id(), workspaceId: wsId(), destinationId: text("destination_id").notNull(), auditEventId: text("audit_event_id").notNull(),
+    status: text("status").notNull().default("pending"), attemptCount: integer("attempt_count").notNull().default(0),
+    runAfter: ts("run_after").notNull().defaultNow(), leaseUntil: ts("lease_until"), lastErrorCode: text("last_error_code"),
+    lastAttemptAt: ts("last_attempt_at"), deliveredAt: ts("delivered_at"), createdAt: ts("created_at").notNull().defaultNow(), updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("audit_delivery_job_claim_idx")
+      .on(t.workspaceId, t.runAfter)
+      .where(sql`${t.status} = 'pending'`),
+  ],
+);
+
+export const auditDeliveryAttempt = pgTable("audit_delivery_attempt", {
+  id: id(), workspaceId: wsId(), jobId: text("job_id").notNull(), attemptNumber: integer("attempt_number").notNull(),
+  outcome: text("outcome").notNull(), statusCode: integer("status_code"), errorCode: text("error_code"), createdAt: ts("created_at").notNull().defaultNow(),
+});
+
 export const annotation = pgTable("annotation", {
   id: id(),
   workspaceId: wsId(),
@@ -1141,6 +1444,9 @@ export const usageAggregate = pgTable(
     outputTokens: tokens("output_tokens").notNull().default(sql`0`),
     cacheReadTokens: tokens("cache_read_tokens").notNull().default(sql`0`),
     reasoningTokens: tokens("reasoning_tokens").notNull().default(sql`0`),
+    cacheWriteTokens: tokens("cache_write_tokens").notNull().default(sql`0`),
+    audioInputTokens: tokens("audio_input_tokens").notNull().default(sql`0`),
+    audioOutputTokens: tokens("audio_output_tokens").notNull().default(sql`0`),
     costMicrousd: money("cost_microusd").notNull().default(sql`0`),
     errors: money("errors").notNull().default(sql`0`),
     failovers: money("failovers").notNull().default(sql`0`),
@@ -1157,6 +1463,110 @@ export const usageAggregate = pgTable(
       "usage_aggregate_grain_chk",
       sql`${t.grain} IN ('hourly','daily','monthly')`,
     ),
+  ],
+);
+
+/** Exact-sum authorization for one completed grain transition and its later source pruning. */
+export const storageRollupCheckpoint = pgTable(
+  "storage_rollup_checkpoint",
+  {
+    workspaceId: wsId(),
+    sourceGrain: text("source_grain").notNull(),
+    targetGrain: text("target_grain").notNull(),
+    bucketStart: ts("bucket_start").notNull(),
+    bucketEnd: ts("bucket_end").notNull(),
+    exactTotals: jsonb("exact_totals").notNull(),
+    completedAt: ts("completed_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.targetGrain, t.bucketStart] }),
+    check("storage_rollup_checkpoint_grain_chk", sql`
+      (${t.sourceGrain}='observation' AND ${t.targetGrain}='hourly')
+      OR (${t.sourceGrain}='hourly' AND ${t.targetGrain}='daily')
+      OR (${t.sourceGrain}='daily' AND ${t.targetGrain}='monthly')`),
+    check("storage_rollup_checkpoint_range_chk", sql`${t.bucketEnd} > ${t.bucketStart}`),
+  ],
+);
+
+/**
+ * Per-dimension source contribution retained after a daily/monthly rollup.
+ * It permits an exact replacement when late source data arrives after sibling
+ * source buckets have already been pruned.
+ */
+export const storageRollupSourceCheckpoint = pgTable(
+  "storage_rollup_source_checkpoint",
+  {
+    workspaceId: wsId(),
+    sourceGrain: text("source_grain").notNull(),
+    targetGrain: text("target_grain").notNull(),
+    bucketStart: ts("bucket_start").notNull(),
+    sourceBucketStart: ts("source_bucket_start").notNull(),
+    dims: jsonb("dims").notNull(),
+    dimsHash: text("dims_hash").notNull(),
+    requests: money("requests").notNull(),
+    inputTokens: tokens("input_tokens").notNull(),
+    outputTokens: tokens("output_tokens").notNull(),
+    cacheReadTokens: tokens("cache_read_tokens").notNull(),
+    reasoningTokens: tokens("reasoning_tokens").notNull(),
+    cacheWriteTokens: tokens("cache_write_tokens").notNull(),
+    audioInputTokens: tokens("audio_input_tokens").notNull(),
+    audioOutputTokens: tokens("audio_output_tokens").notNull(),
+    costMicrousd: money("cost_microusd").notNull(),
+    errors: money("errors").notNull(),
+    failovers: money("failovers").notNull(),
+    latencyMsSum: money("latency_ms_sum").notNull(),
+    completedAt: ts("completed_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      columns: [
+        t.workspaceId,
+        t.sourceGrain,
+        t.targetGrain,
+        t.bucketStart,
+        t.sourceBucketStart,
+        t.dimsHash,
+      ],
+    }),
+    check(
+      "storage_rollup_source_checkpoint_grain_chk",
+      sql`(${t.sourceGrain} = 'hourly' AND ${t.targetGrain} = 'daily') OR (${t.sourceGrain} = 'daily' AND ${t.targetGrain} = 'monthly')`,
+    ),
+    check(
+      "storage_rollup_source_checkpoint_window_chk",
+      sql`${t.sourceBucketStart} >= ${t.bucketStart} AND ((${t.targetGrain} = 'daily' AND ${t.sourceBucketStart} < ${t.bucketStart} + interval '1 day') OR (${t.targetGrain} = 'monthly' AND ${t.sourceBucketStart} < ${t.bucketStart} + interval '1 month'))`,
+    ),
+    check(
+      "storage_rollup_source_checkpoint_nonnegative_chk",
+      sql`${t.requests} >= 0 AND ${t.inputTokens} >= 0 AND ${t.outputTokens} >= 0 AND ${t.cacheReadTokens} >= 0 AND ${t.reasoningTokens} >= 0 AND ${t.cacheWriteTokens} >= 0 AND ${t.audioInputTokens} >= 0 AND ${t.audioOutputTokens} >= 0 AND ${t.costMicrousd} >= 0 AND ${t.errors} >= 0 AND ${t.failovers} >= 0 AND ${t.latencyMsSum} >= 0`,
+    ),
+  ],
+);
+
+/** Fixed-width per-trace truth retained after partition compaction; never reconstructed from aggregates. */
+export const compactedTraceProjection = pgTable(
+  "compacted_trace_projection",
+  {
+    workspaceId: wsId(),
+    traceId: text("trace_id").notNull(),
+    compactedAt: ts("compacted_at").notNull(),
+    inputTokens: tokens("input_tokens").notNull(),
+    outputTokens: tokens("output_tokens").notNull(),
+    cacheReadTokens: tokens("cache_read_tokens").notNull(),
+    reasoningTokens: tokens("reasoning_tokens").notNull(),
+    cacheWriteTokens: tokens("cache_write_tokens").notNull(),
+    audioInputTokens: tokens("audio_input_tokens").notNull(),
+    audioOutputTokens: tokens("audio_output_tokens").notNull(),
+    usageFidelity: text("usage_fidelity").notNull(),
+    costMicrousd: money("cost_microusd").notNull(),
+    costFidelity: text("cost_fidelity").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.traceId] }),
+    index("compacted_trace_projection_compacted_idx").on(t.workspaceId, t.compactedAt.desc()),
+    check("compacted_trace_projection_usage_fidelity_chk", sql`${t.usageFidelity} IN ('exact','estimated','unknown')`),
+    check("compacted_trace_projection_cost_fidelity_chk", sql`${t.costFidelity} IN ('exact','estimated','unknown')`),
   ],
 );
 
@@ -1215,21 +1625,195 @@ export const configOperation = pgTable(
     baseConfigHash: text("base_config_hash"),
     targetConfigHash: text("target_config_hash"),
     planHash: text("plan_hash"),
+    mutationKey: text("mutation_key"),
     diffJson: jsonb("diff_json").notNull(),
     outcome: text("outcome").notNull(),
+    operationKind: text("operation_kind").notNull().default("apply"),
+    revisionId: text("revision_id").references(() => gatewayConfigRevision.id),
+    servingMode: text("serving_mode").notNull().default("boot_fallback"),
+    acceleratorStatus: text("accelerator_status").notNull().default("not_configured"),
     edgeConfigVersion: text("edge_config_version"),
     tripwireItems: jsonb("tripwire_items"),
     approvedBy: text("approved_by").references(() => member.id),
     error: jsonb("error"),
+    reconciliationAttempts: integer("reconciliation_attempts").notNull().default(0),
+    lastReconcileAt: ts("last_reconcile_at"),
+    completedAt: ts("completed_at"),
     createdBy: text("created_by").references(() => member.id),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (t) => [
     index("config_op_install_idx").on(t.installationId, t.createdAt.desc()),
+    index("config_operation_reconcile_idx")
+      .on(t.workspaceId, t.acceleratorStatus, t.createdAt)
+      .where(sql`${t.acceleratorStatus} IN ('pending','reconciliation_required')`),
+    uniqueIndex("config_operation_mutation_key_uq")
+      .on(t.workspaceId, t.mutationKey)
+      .where(sql`${t.mutationKey} IS NOT NULL`),
     check(
       "config_operation_outcome_chk",
       sql`${t.outcome} IN ('written','accepted','rejected','failed')`,
     ),
+    check(
+      "config_operation_kind_chk",
+      sql`${t.operationKind} IN ('apply','rollback','key_publish','health_publish')`,
+    ),
+    check(
+      "config_operation_serving_mode_chk",
+      sql`${t.servingMode} IN ('boot_fallback','edge_config')`,
+    ),
+    check(
+      "config_operation_accelerator_status_chk",
+      sql`${t.acceleratorStatus} IN ('not_configured','pending','published','reconciliation_required','superseded')`,
+    ),
+  ],
+);
+
+export const configTripwireApproval = pgTable(
+  "config_tripwire_approval",
+  {
+    id: id(),
+    workspaceId: wsId(),
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => gatewayInstallation.id),
+    planHash: text("plan_hash").notNull(),
+    kind: text("kind").notNull(),
+    ref: text("ref").notNull(),
+    approvedBy: text("approved_by")
+      .notNull()
+      .references(() => member.id),
+    expiresAt: ts("expires_at").notNull(),
+    usedAt: ts("used_at"),
+    usedByOperationId: text("used_by_operation_id").references(
+      () => configOperation.id,
+    ),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("config_tripwire_approval_identity_idx").on(
+      t.workspaceId,
+      t.installationId,
+      t.planHash,
+      t.kind,
+      t.ref,
+    ),
+    index("config_tripwire_approval_lookup_idx").on(
+      t.workspaceId,
+      t.installationId,
+      t.planHash,
+    ),
+    check(
+      "config_tripwire_approval_kind_chk",
+      sql`${t.kind} IN ('route_delete','entitlement_removal','budget_enforcement_relaxed')`,
+    ),
+    check(
+      "config_tripwire_approval_expiry_chk",
+      sql`${t.expiresAt} > ${t.createdAt}`,
+    ),
+    check(
+      "config_tripwire_approval_usage_chk",
+      sql`(${t.usedAt} IS NULL) = (${t.usedByOperationId} IS NULL)`,
+    ),
+  ],
+);
+
+/** Durable coalescing queue for post-rotation keys-only publications. */
+export const keyRotationExpiryPublish = pgTable(
+  "key_rotation_expiry_publish",
+  {
+    workspaceId: wsId(),
+    installationId: text("installation_id")
+      .notNull()
+      .references(() => gatewayInstallation.id),
+    operationId: text("operation_id").references(() => configOperation.id),
+    status: text("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    leaseUntil: ts("lease_until"),
+    lastError: jsonb("last_error"),
+    completedAt: ts("completed_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.installationId] }),
+    index("key_rotation_expiry_publish_claim_idx")
+      .on(t.workspaceId, t.createdAt)
+      .where(sql`${t.status} = 'pending'`),
+    check(
+      "key_rotation_expiry_publish_status_chk",
+      sql`${t.status} IN ('pending','processing','done')`,
+    ),
+  ],
+);
+
+// ===========================================================================
+// §10.1 Control-plane mutation guards
+// ===========================================================================
+
+/** Durable response journal for Idempotency-Key protected control-plane mutations. */
+export const mutationIdempotency = pgTable(
+  "mutation_idempotency",
+  {
+    id: id(),
+    workspaceId: wsId(),
+    actorKind: text("actor_kind").notNull(),
+    actorId: text("actor_id").notNull(),
+    method: text("method").notNull(),
+    canonicalPath: text("canonical_path").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    requestHash: text("request_hash").notNull(),
+    state: text("state").notNull().default("in_progress"),
+    leaseExpiresAt: ts("lease_expires_at").notNull(),
+    responseStatus: integer("response_status"),
+    responseHeaders: jsonb("response_headers"),
+    responseBody: bytea("response_body"),
+    responseBodyEncrypted: bytea("response_body_encrypted"),
+    responseBodyIv: bytea("response_body_iv"),
+    responseBodyTag: bytea("response_body_tag"),
+    completedAt: ts("completed_at"),
+    expiresAt: ts("expires_at").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("mutation_idempotency_identity_uq").on(
+      t.workspaceId,
+      t.actorKind,
+      t.actorId,
+      t.method,
+      t.canonicalPath,
+      t.idempotencyKey,
+    ),
+    index("mutation_idempotency_expiry_idx").on(t.workspaceId, t.expiresAt),
+    index("mutation_idempotency_cleanup_expiry_idx").on(t.expiresAt),
+    check("mutation_idempotency_state_chk", sql`${t.state} IN ('in_progress','completed')`),
+    check(
+      "mutation_idempotency_completed_response_chk",
+      sql`(${t.state} = 'in_progress' AND ${t.responseStatus} IS NULL AND ${t.responseHeaders} IS NULL AND ${t.responseBody} IS NULL AND ${t.responseBodyEncrypted} IS NULL AND ${t.responseBodyIv} IS NULL AND ${t.responseBodyTag} IS NULL AND ${t.completedAt} IS NULL) OR (${t.state} = 'completed' AND ${t.responseStatus} IS NOT NULL AND ${t.responseHeaders} IS NOT NULL AND ((${t.responseBody} IS NOT NULL AND ${t.responseBodyEncrypted} IS NULL AND ${t.responseBodyIv} IS NULL AND ${t.responseBodyTag} IS NULL) OR (${t.responseBody} IS NULL AND ${t.responseBodyEncrypted} IS NOT NULL AND octet_length(${t.responseBodyIv}) = 12 AND octet_length(${t.responseBodyTag}) = 16)) AND ${t.completedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+/** Fixed-window, per-principal mutation limiter. Expired buckets are removed on use. */
+export const mutationRateLimitBucket = pgTable(
+  "mutation_rate_limit_bucket",
+  {
+    workspaceId: wsId(),
+    actorKind: text("actor_kind").notNull(),
+    actorId: text("actor_id").notNull(),
+    routeIdentity: text("route_identity").notNull(),
+    bucketStart: ts("bucket_start").notNull(),
+    requestCount: integer("request_count").notNull().default(0),
+    expiresAt: ts("expires_at").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.actorKind, t.actorId, t.routeIdentity, t.bucketStart] }),
+    index("mutation_rate_limit_expiry_idx").on(t.workspaceId, t.expiresAt),
+    index("mutation_rate_limit_bucket_cleanup_expiry_idx").on(t.expiresAt),
+    check("mutation_rate_limit_count_chk", sql`${t.requestCount} >= 0`),
+    check("mutation_rate_limit_expiry_chk", sql`${t.expiresAt} > ${t.bucketStart}`),
   ],
 );
 
@@ -1259,9 +1843,12 @@ export const jobLedger = pgTable(
     index("job_claimable_idx")
       .on(t.kind, t.runAfter)
       .where(sql`status = 'pending'`),
+    index("job_storage_compact_due_idx")
+      .on(t.runAfter, t.workspaceId, t.id)
+      .where(sql`${t.kind} = 'storage.compact' AND ${t.status} IN ('pending', 'claimed')`),
     check(
       "job_ledger_status_chk",
-      sql`${t.status} IN ('pending','claimed','done','failed','dead')`,
+      sql`${t.status} IN ('pending','claimed','done','failed','dead','superseded')`,
     ),
   ],
 );
@@ -1281,12 +1868,21 @@ export const auditEvent = pgTable(
     afterHash: text("after_hash"),
     requestRef: text("request_ref"),
     detail: jsonb("detail"),
+    // Null denotes a truthful pre-0011 legacy record. New rows are sealed as v1 by lib/audit.
+    chainVersion: integer("chain_version"),
+    chainSequence: money("chain_sequence"),
+    prevChainHash: bytea("prev_chain_hash"),
+    chainHash: bytea("chain_hash"),
+    chainSealedAt: ts("chain_sealed_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
   (t) => [
     primaryKey({ columns: [t.id, t.createdAt] }),
     index("audit_ws_time_idx").on(t.workspaceId, t.createdAt.desc()),
     index("audit_target_idx").on(t.workspaceId, t.targetKind, t.targetId),
+    index("audit_chain_workspace_order_idx")
+      .on(t.workspaceId, t.chainSequence)
+      .where(sql`${t.chainVersion} = 1`),
     check(
       "audit_actor_kind_chk",
       sql`${t.actorKind} IN ('member','api_token','cli','system')`,
@@ -1318,6 +1914,8 @@ export const storageStat = pgTable(
     indexBytes: money("index_bytes").notNull(),
     toastBytes: money("toast_bytes").notNull(),
     ceilingBytes: money("ceiling_bytes").notNull(),
+    /** Configured ceiling less the reserved migration/index headroom (§13.2). */
+    effectiveCeilingBytes: money("effective_ceiling_bytes"),
     usedPct: numeric("used_pct").notNull(),
     growthBytesPerDay: money("growth_bytes_per_day"),
     forecastExhaustionAt: ts("forecast_exhaustion_at"),
@@ -1333,5 +1931,211 @@ export const storageStat = pgTable(
       "storage_stat_tier_chk",
       sql`${t.tier} IN ('normal','warning','high','critical','emergency')`,
     ),
+  ],
+);
+
+/** Current ingestion/compaction posture derived solely from the latest storage measurement. */
+export const storagePressureState = pgTable(
+  "storage_pressure_state",
+  {
+    workspaceId: wsId().primaryKey(),
+    tier: text("tier").notNull(),
+    captureMode: text("capture_mode").notNull(),
+    payloadSampleRate: numeric("payload_sample_rate").notNull(),
+    journalMode: text("journal_mode").notNull(),
+    triggerCompaction: boolean("trigger_compaction").notNull(),
+    compactEveryMeasure: boolean("compact_every_measure").notNull(),
+    blockNonEssentialGrowth: boolean("block_non_essential_growth").notNull(),
+    measuredAt: ts("measured_at").notNull(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    check("storage_pressure_state_tier_chk", sql`${t.tier} IN ('normal','warning','high','critical','emergency')`),
+    check("storage_pressure_capture_mode_chk", sql`${t.captureMode} IN ('none','metadata','redacted','full')`),
+    check("storage_pressure_sample_rate_chk", sql`${t.payloadSampleRate} >= 0 AND ${t.payloadSampleRate} <= 1`),
+    check("storage_pressure_journal_mode_chk", sql`${t.journalMode} IN ('full','aggregate_only')`),
+  ],
+);
+
+/** Bounded one-row-per-pressure-tier or forecast alert history. Repeated measurements never append rows. */
+export const storagePressureAlert = pgTable(
+  "storage_pressure_alert",
+  {
+    workspaceId: wsId(),
+    tier: text("tier").notNull(),
+    openedAt: ts("opened_at").notNull(),
+    lastTransitionAt: ts("last_transition_at").notNull(),
+    resolvedAt: ts("resolved_at"),
+    transitionCount: integer("transition_count").notNull().default(1),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.tier] }),
+    check("storage_pressure_alert_tier_chk", sql`${t.tier} IN ('warning','high','critical','emergency','forecast_exhaustion_14d')`),
+    check("storage_pressure_alert_count_chk", sql`${t.transitionCount} > 0`),
+  ],
+);
+
+/** Retention is opt-in and requires an explicit, durable export destination. */
+export const storageRetentionSetting = pgTable(
+  "storage_retention_setting",
+  {
+    workspaceId: wsId().primaryKey(),
+    minDetailHours: integer("min_detail_hours").notNull().default(24),
+    journalRetentionHours: integer("journal_retention_hours").notNull().default(72),
+    captureRetentionHours: integer("capture_retention_hours").notNull().default(24),
+    minTraceDays: integer("min_trace_days").notNull().default(7),
+    observationRetentionDays: integer("observation_retention_days").notNull().default(30),
+    costLedgerRetentionDays: integer("cost_ledger_retention_days").notNull().default(30),
+    policyDecisionRetentionDays: integer("policy_decision_retention_days").notNull().default(90),
+    hourlyAggregateRetentionDays: integer("hourly_aggregate_retention_days").notNull().default(14),
+    dailyAggregateRetentionDays: integer("daily_aggregate_retention_days").notNull().default(400),
+    exportTarget: text("export_target").notNull().default("disabled"),
+    exportLocation: text("export_location"),
+    enabledAt: ts("enabled_at"),
+    updatedByKind: text("updated_by_kind"),
+    updatedById: text("updated_by_id"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    check("storage_retention_detail_floor_chk", sql`${t.minDetailHours} >= 1 AND ${t.journalRetentionHours} >= ${t.minDetailHours}`),
+    check("storage_retention_capture_chk", sql`${t.captureRetentionHours} BETWEEN 1 AND 8760`),
+    check("storage_retention_trace_floor_chk", sql`${t.minTraceDays} >= 1 AND ${t.observationRetentionDays} >= ${t.minTraceDays}`),
+    check("storage_retention_cost_floor_chk", sql`${t.costLedgerRetentionDays} >= ${t.minTraceDays}`),
+    check("storage_retention_policy_floor_chk", sql`${t.policyDecisionRetentionDays} >= 90`),
+    check("storage_retention_aggregate_chk", sql`${t.hourlyAggregateRetentionDays} >= 1 AND ${t.dailyAggregateRetentionDays} >= ${t.hourlyAggregateRetentionDays}`),
+  ],
+);
+
+export const storageExportManifest = pgTable(
+  "storage_export_manifest",
+  {
+    id: id(),
+    workspaceId: wsId(),
+    sourceRelation: text("source_relation").notNull(),
+    partitionName: text("partition_name").notNull(),
+    rangeStart: ts("range_start").notNull(),
+    rangeEnd: ts("range_end").notNull(),
+    targetKind: text("target_kind").notNull(),
+    targetUri: text("target_uri").notNull(),
+    sha256: text("sha256").notNull(),
+    rowCount: tokens("row_count").notNull(),
+    byteCount: money("byte_count").notNull(),
+    verifiedAt: ts("verified_at").notNull(),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("storage_export_manifest_workspace_id_id_uq").on(t.workspaceId, t.id),
+    uniqueIndex("storage_export_manifest_partition_uq").on(t.workspaceId, t.partitionName, t.sha256),
+    index("storage_export_manifest_lookup_idx").on(t.workspaceId, t.sourceRelation, t.rangeEnd.desc()),
+  ],
+);
+
+export const storageCompactionCheckpoint = pgTable(
+  "storage_compaction_checkpoint",
+  {
+    workspaceId: wsId(),
+    partitionName: text("partition_name").notNull(),
+    exportManifestId: text("export_manifest_id").notNull(),
+    state: text("state").notNull().default("export_verified"),
+    dropAuthorizedAt: ts("drop_authorized_at"),
+    droppedAt: ts("dropped_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.partitionName] }),
+    foreignKey({
+      columns: [t.workspaceId, t.exportManifestId],
+      foreignColumns: [storageExportManifest.workspaceId, storageExportManifest.id],
+      name: "storage_checkpoint_workspace_manifest_fk",
+    }),
+  ],
+);
+
+/** Retry-stable export epoch: failed work is durable, but never authorizes a drop. */
+export const storageExportAttempt = pgTable(
+  "storage_export_attempt",
+  {
+    workspaceId: wsId(),
+    partitionName: text("partition_name").notNull(),
+    sourceRelation: text("source_relation").notNull(),
+    exportedAt: ts("exported_at").notNull(),
+    state: text("state").notNull().default("exporting"),
+    exportManifestId: text("export_manifest_id"),
+    lastError: text("last_error"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.partitionName] }),
+    foreignKey({
+      columns: [t.workspaceId, t.exportManifestId],
+      foreignColumns: [storageExportManifest.workspaceId, storageExportManifest.id],
+      name: "storage_export_attempt_workspace_manifest_fk",
+    }),
+    check("storage_export_attempt_state_chk", sql`${t.state} IN ('exporting','finalizing','verified','failed')`),
+    check("storage_export_attempt_shape_chk", sql`(${t.state} IN ('exporting','finalizing') AND ${t.exportManifestId} IS NULL AND ${t.lastError} IS NULL)
+      OR (${t.state} = 'verified' AND ${t.exportManifestId} IS NOT NULL AND ${t.lastError} IS NULL)
+      OR (${t.state} = 'failed' AND ${t.exportManifestId} IS NULL AND ${t.lastError} IS NOT NULL)`),
+  ],
+);
+
+/** Immutable, independently gzip-compressed export chunk and keyset resume proof. */
+export const storageExportChunk = pgTable(
+  "storage_export_chunk",
+  {
+    workspaceId: wsId(),
+    partitionName: text("partition_name").notNull(),
+    chunkNumber: integer("chunk_number").notNull(),
+    cursorCreatedAt: ts("cursor_created_at").notNull(),
+    cursorRowId: text("cursor_row_id").notNull(),
+    rowCount: tokens("row_count").notNull(),
+    targetUri: text("target_uri").notNull(),
+    byteCount: money("byte_count").notNull(),
+    sha256: text("sha256").notNull(),
+    uncompressedSha256: text("uncompressed_sha256").notNull(),
+    verifiedAt: ts("verified_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.partitionName, t.chunkNumber] }),
+    foreignKey({
+      columns: [t.workspaceId, t.partitionName],
+      foreignColumns: [storageExportAttempt.workspaceId, storageExportAttempt.partitionName],
+      name: "storage_export_chunk_attempt_fk",
+    }).onDelete("cascade"),
+    check("storage_export_chunk_number_chk", sql`${t.chunkNumber} >= 1`),
+    check("storage_export_chunk_row_count_chk", sql`${t.rowCount} > 0`),
+    check("storage_export_chunk_byte_count_chk", sql`${t.byteCount} > 0`),
+    check("storage_export_chunk_sha256_chk", sql`${t.sha256} ~ '^[0-9a-f]{64}$'`),
+    check("storage_export_chunk_uncompressed_sha256_chk", sql`${t.uncompressedSha256} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
+/** Durable hand-off between the short seal/detach and revalidate/drop transactions. */
+export const storagePartitionSeal = pgTable(
+  "storage_partition_seal",
+  {
+    workspaceId: wsId(),
+    partitionName: text("partition_name").notNull(),
+    sourceRelation: text("source_relation").notNull(),
+    sealedRelation: text("sealed_relation").notNull(),
+    relationOid: text("relation_oid").notNull(),
+    partitionBound: text("partition_bound").notNull(),
+    rangeStart: ts("range_start").notNull(),
+    rangeEnd: ts("range_end").notNull(),
+    sealToken: text("seal_token").notNull(),
+    attemptToken: text("attempt_token").notNull(),
+    objectKey: text("object_key").notNull(),
+    state: text("state").notNull().default("sealed"),
+    exportManifestId: text("export_manifest_id"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.workspaceId, t.partitionName] }),
+    foreignKey({ columns: [t.workspaceId, t.exportManifestId], foreignColumns: [storageExportManifest.workspaceId, storageExportManifest.id], name: "storage_partition_seal_workspace_manifest_fk" }),
   ],
 );

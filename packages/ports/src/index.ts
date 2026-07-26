@@ -49,6 +49,12 @@ export interface SnapshotKey {
   budgetAccountId: string | null;
   /** ISO timestamp; null = never expires. */
   expiresAt: string | null;
+  /**
+   * Optional per-key admission limits. Every present value is a positive
+   * integer; omitted limits retain the platform default. This remains optional
+   * so signed snapshots published before rate limiting stay readable.
+   */
+  rateLimit?: SnapshotRateLimit;
   // NOTE: there is no `revoked` flag. Revoked keys are filtered out at build (config/db.ts
   // `readVirtualKeys` selects only `revoked_at IS NULL`, F10), so a revoked key never ships in the
   // signed snapshot — it is absent from `snapshot.keys` and authenticates as AUTH_KEY_UNKNOWN.
@@ -56,6 +62,13 @@ export interface SnapshotKey {
    *  scoped entitlement (deny-first). `keyScope`/`app` are derived from scopes/allowedAppIds. */
   team?: string | null;
   costCenter?: string | null;
+}
+
+/** Bounded key-level rate-limit configuration carried by the signed snapshot. */
+export interface SnapshotRateLimit {
+  rpm?: number;
+  tpm?: number;
+  burst?: number;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -126,15 +139,27 @@ export interface AuthInject {
 }
 
 export interface SnapshotTarget {
+  /**
+   * Stable identity of the persisted gateway_target row. Optional so signed
+   * snapshots created before target identities were introduced remain valid.
+   */
+  targetId?: string;
   offeringId: string;
   credentialId: string;
   dekId: string;
+  /** KEK identity used to wrap this DEK. Omitted by snapshots created before KEK versioning. */
+  kekId?: string;
   /** base64 AES-256-GCM {iv|ct|tag} of the provider secret (ADR-0022). Never plaintext. */
   credentialCiphertext: string;
   /** base64 KEK-wrapped DEK; unwrapped once per isolate, KEK never in snapshot (A2). */
   wrappedDek: string;
   weight: number;
   priority: number;
+  /**
+   * Last control-plane health assessment. Older snapshots omit this field and
+   * are treated by consumers as `unknown`.
+   */
+  healthState?: "healthy" | "degraded" | "unhealthy" | "unknown";
   /** Provider base URL, e.g. https://api.anthropic.com. */
   baseUrl: string;
   region: string | null;
@@ -149,9 +174,46 @@ export interface SnapshotRoute {
   revision: string;
   mode: "ordered" | "weighted";
   targets: SnapshotTarget[];
+  /**
+   * The route revision's policy JSON, carried without key translation. The
+   * builder bounds its JSON shape before signing so a configuration row cannot
+   * inflate a Fluid isolate's hot snapshot.
+   */
+  retryPolicy?: SnapshotRetryPolicy;
   /** Milliseconds; overall upstream timeout (§14.4). */
   timeoutMs: number;
   capturePolicyId: string;
+  /** Explicit, signed capture bound. Omitted by legacy snapshots and therefore fail-closed. */
+  capturePolicy?: SnapshotCapturePolicy;
+}
+
+export interface SnapshotCapturePolicy {
+  mode: "none" | "metadata" | "redacted" | "full";
+  /** Absolute cap for the combined request/response capture envelope. */
+  maxBytes: number;
+}
+
+/** JSON-compatible, bounded route retry-policy payload. */
+export type SnapshotRetryPolicy = Record<string, unknown>;
+
+/**
+ * Client endpoint vocabulary shared by snapshot construction and lookup. The
+ * open string member preserves support for configured provider-specific kinds.
+ */
+export type EndpointKind = "chat" | "responses" | "embeddings" | (string & {});
+
+/** The public request pathname associated with an endpoint kind. */
+export function pathForEndpointKind(kind: EndpointKind): string {
+  switch (kind) {
+    case "chat":
+      return "/v1/chat/completions";
+    case "responses":
+      return "/v1/responses";
+    case "embeddings":
+      return "/v1/embeddings";
+    default:
+      return `/v1/${kind}`;
+  }
 }
 
 /**
@@ -179,6 +241,8 @@ export interface SnapshotPrice {
  * these two fields.
  */
 export interface SnapshotOffering {
+  /** Provider-native model identifier substituted into the outbound OpenAI-compatible body. */
+  providerModelId?: string;
   priceRevisionId?: string | null;
   price?: SnapshotPrice;
 }
@@ -189,7 +253,10 @@ export interface Snapshot {
   profiles: Record<string, SnapshotProfile>;
   /** hex(HMAC(pepper, presentedKey)) → key (§7.2). O(1) lookup, no scan. */
   keys: Record<string, SnapshotKey>;
-  /** `${profileId}:${path}` → route (§7.2, composite string key). O(1) lookup. */
+  /**
+   * `${profileId}:${endpointKind}:${publicName}` → route (§7.2). During the
+   * snapshot migration, readers also accept legacy `${profileId}:${path}` keys.
+   */
   routes: Record<string, SnapshotRoute>;
   /**
    * Bound policy revisions by id (§7.2). `SnapshotProfile.policyRevision` indexes this.
@@ -232,6 +299,20 @@ export interface ObservationUsage {
 }
 
 /**
+ * A gateway-produced, byte-bounded request/response envelope. It deliberately
+ * excludes headers and credentials; it is only emitted when the signed route
+ * capture policy permits it.
+ */
+export interface ObservationCapture {
+  /** Effective signed gateway policy mode at capture time. */
+  mode: "redacted" | "full";
+  request?: Record<string, unknown>;
+  response?: Record<string, unknown>;
+  truncated?: boolean;
+  bytes: number;
+}
+
+/**
  * The FLAT hot-path observation event the gateway emits (SPEC §8.3 / ADR-0011). One row per emit,
  * no tenancy / dedup anchor, token counts as plain numbers, prices as decimal strings — everything
  * the passthrough core produces without importing @manifold/domain. `@manifold/observability`'s
@@ -252,6 +333,19 @@ export interface HotPathObservationEvent {
   status: number | null;
   /** Reason codes attached to this event (§0.2). */
   reasonCodes: ReasonCode[];
+  /**
+   * Immutable target identity for a provider attempt. These stay optional on
+   * the flat union so pre-existing accepted/terminal producers remain
+   * compatible; the observation ingest boundary requires all four attribution
+   * fields when `kind === "provider_attempt"`.
+   */
+  targetId?: string;
+  /** Immutable route revision selected for a provider attempt. */
+  routeRevisionId?: string;
+  /** Signed snapshot revision that authorized a provider attempt. */
+  snapshotRevision?: string;
+  /** Normalized provider-attempt result for target-health aggregation. */
+  attemptOutcome?: "success" | "transient_failure" | "permanent_failure";
   // ── Terminal-only billing fields (SPEC §8.3, §6.9/§6.10). All optional so non-terminal events
   //    and the pre-usage-capture path (streamed responses) omit them and reduce to µ$0. ──────────
   /** Provider-reported token counts, parsed from the response `usage` block. */
@@ -264,6 +358,13 @@ export interface HotPathObservationEvent {
   budgetAccountId?: string | null;
   /** The hard-budget reservation to reconcile reserved→committed with the actual cost (§8.4). */
   reservationId?: string | null;
+  /**
+   * Explicitly marks a conservative gateway-side fallback estimate. Provider-reported usage omits
+   * this field and the ingest mapper derives its normal exact/unknown fidelity from usage + price.
+   */
+  costFidelity?: "estimated";
+  /** Terminal-only bounded capture from the gateway tee. */
+  capture?: ObservationCapture;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

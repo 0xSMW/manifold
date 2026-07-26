@@ -1,6 +1,7 @@
 -- ===========================================================================
 -- 0005_partition_rls_and_integrity.sql — close the partition-RLS leak and add
 --   money-truth integrity constraints (SPEC §6.13/§6.15/§6.16, §16.3).
+-- forward-fix: repair policies or constraints in a later migration while retaining tenant data.
 --
 -- Postgres does NOT inherit ENABLE/FORCE ROW LEVEL SECURITY or CREATE POLICY from a
 -- partitioned PARENT to its partition CHILDREN. RLS is applied by the relation NAMED in

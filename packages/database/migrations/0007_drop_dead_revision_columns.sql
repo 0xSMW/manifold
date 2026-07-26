@@ -2,6 +2,7 @@
 -- 0007_drop_dead_revision_columns.sql — drop the denormalized route_ids /
 --   policy_ids / price_ids columns on gateway_config_revision
 --   (F11-dead-revision-columns).
+-- forward-fix: derive any newly needed revision metadata from snapshot in a successor migration.
 --
 -- These three jsonb columns were derived from the revision `snapshot` at apply
 -- time and written on every publish, but NOTHING ever SELECTed them back: plan()

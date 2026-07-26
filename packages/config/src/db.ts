@@ -38,6 +38,7 @@ export interface VirtualKeyRow {
   allowed_app_ids: unknown;
   budget_account_id: string | null;
   expires_at: Date | null;
+  rate_limit: unknown;
   /** §6.6 policy-subject facets. Match `model_entitlement.subject_ref` for subject_kind team/cost_center. */
   team_id: string | null;
   cost_center_id: string | null;
@@ -52,6 +53,7 @@ export interface RouteRevisionRow {
   id: string;
   route_id: string;
   mode: "ordered" | "weighted";
+  retry_policy: unknown;
   timeout_policy: Record<string, unknown>;
   capture_policy: Record<string, unknown> | null;
   content_hash: string;
@@ -66,6 +68,7 @@ export interface TargetRow {
   region: string | null;
   weight: number;
   priority: number;
+  health_state: string;
 }
 export interface CredentialRow {
   id: string;
@@ -78,6 +81,7 @@ export interface CredentialRow {
 export interface DekRow {
   id: string;
   wrapped_dek: Uint8Array;
+  kek_id: string;
 }
 export interface OfferingRow {
   id: string;
@@ -179,7 +183,7 @@ export async function readVirtualKeys(
   // no longer selected or carried on the row.
   return sql<VirtualKeyRow[]>`
     SELECT id, profile_id, keyed_hash, scopes, allowed_app_ids,
-           budget_account_id, expires_at, team_id, cost_center_id
+           budget_account_id, expires_at, rate_limit, team_id, cost_center_id
     FROM virtual_key WHERE profile_id IN ${sql(profileIds)} AND revoked_at IS NULL`;
 }
 
@@ -196,7 +200,7 @@ export async function readRouteRevision(
   revisionId: string,
 ): Promise<RouteRevisionRow | null> {
   const rows = await sql<RouteRevisionRow[]>`
-    SELECT id, route_id, mode, timeout_policy, capture_policy, content_hash
+    SELECT id, route_id, mode, retry_policy, timeout_policy, capture_policy, content_hash
     FROM gateway_route_revision WHERE id = ${revisionId} LIMIT 1`;
   return rows[0] ?? null;
 }
@@ -204,7 +208,7 @@ export async function readRouteRevision(
 export async function readTargets(sql: PgSql, routeRevisionId: string): Promise<TargetRow[]> {
   return sql<TargetRow[]>`
     SELECT id, route_revision_id, provider_credential_id, offering_id, adapter_revision,
-           base_url, region, weight, priority
+           base_url, region, weight, priority, health_state
     FROM gateway_target WHERE route_revision_id = ${routeRevisionId}`;
 }
 
@@ -238,7 +242,7 @@ export async function readDek(sql: PgSql, id: string): Promise<DekRow | null> {
   // leave the DB at all. A non-active DEK returns null here, so assembleSnapshot must drop the
   // referencing credential/target rather than ship stale/forbidden key material.
   const rows = await sql<DekRow[]>`
-    SELECT id, wrapped_dek FROM data_encryption_key
+    SELECT id, wrapped_dek, kek_id FROM data_encryption_key
     WHERE id = ${id} AND status = 'active' LIMIT 1`;
   return rows[0] ?? null;
 }
@@ -258,6 +262,31 @@ export async function readPrice(sql: PgSql, id: string): Promise<PriceRow | null
            cache_read_per_mtok_microusd, cache_write_per_mtok_microusd,
            reasoning_per_mtok_microusd, audio_in_per_mtok_microusd, audio_out_per_mtok_microusd
     FROM provider_price_revision WHERE id = ${id} LIMIT 1`;
+  return rows[0] ?? null;
+}
+
+/**
+ * Resolve the price that belongs in one workspace's signed snapshot. A workspace-scoped
+ * operator override wins; otherwise retain the catalog's explicitly active global revision.
+ * This intentionally does not select an arbitrary historical global price row.
+ */
+export async function readEffectivePrice(
+  sql: PgSql,
+  offeringId: string,
+  workspaceId: string,
+  activePriceRevisionId: string | null,
+): Promise<PriceRow | null> {
+  const rows = await sql<PriceRow[]>`
+    SELECT id, fidelity,
+           input_per_mtok_microusd, output_per_mtok_microusd,
+           cache_read_per_mtok_microusd, cache_write_per_mtok_microusd,
+           reasoning_per_mtok_microusd, audio_in_per_mtok_microusd, audio_out_per_mtok_microusd
+    FROM provider_price_revision
+    WHERE offering_id = ${offeringId}
+      AND (workspace_id = ${workspaceId} OR (workspace_id IS NULL AND id = ${activePriceRevisionId}))
+    ORDER BY CASE WHEN workspace_id = ${workspaceId} THEN 0 ELSE 1 END,
+             effective_from DESC, id DESC
+    LIMIT 1`;
   return rows[0] ?? null;
 }
 

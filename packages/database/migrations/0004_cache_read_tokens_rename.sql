@@ -1,6 +1,7 @@
 -- ===========================================================================
 -- 0004_cache_read_tokens_rename.sql — rename the cache-READ token column so it is
 --   unambiguous alongside cache_write_tokens (§6.10 cost formula). PURE RENAME.
+-- forward-fix: use a successor migration for any compatibility column or view; do not silently rewrite usage data.
 --
 -- `cached_tokens` counted cache-READ tokens (billed at cacheReadPerMtokMicroUsd),
 -- but the bare name did not distinguish read from write. Renaming to
