@@ -63,7 +63,7 @@ export async function withWorkspace<T>(
   const sql = db().$client;
   return sql.begin(async (tx) => {
     await setWorkspaceGuc(tx, workspaceId);
-    return fn(tx as unknown as Sql);
+    return await fn(tx as unknown as Sql);
   }) as Promise<T>;
 }
 
@@ -75,12 +75,13 @@ export async function withWorkspace<T>(
 export async function requireInstallation(
   workspaceId: string,
   installationId: string,
+  scopedSql?: Sql,
 ): Promise<void> {
-  const rows = await withWorkspace(workspaceId, (sql) =>
+  const read = (sql: Sql) =>
     sql<{ id: string }[]>`
       SELECT id FROM gateway_installation
-      WHERE id = ${installationId} AND workspace_id = ${workspaceId} LIMIT 1`,
-  );
+      WHERE id = ${installationId} AND workspace_id = ${workspaceId} LIMIT 1`;
+  const rows = scopedSql ? await read(scopedSql) : await withWorkspace(workspaceId, read);
   if (!rows[0]) {
     throw new ManifoldError({
       status: 404,

@@ -1,0 +1,10 @@
+import { authorize } from "@/lib/auth";
+import { withWorkspace } from "@/lib/db";
+import { runMutationGuard } from "@/lib/mutation-guard";
+import { audit } from "@/lib/audit";
+import { wrapInEnvelope, jsonBody, ok, ManifoldError } from "@/lib/http";
+import { insertRevision, parseRevision } from "../route-utils";
+import { contractBody, contractOk } from "@/lib/contracts";
+import { RoutesApi } from "@manifold/contracts";
+export const runtime = "nodejs"; export const dynamic = "force-dynamic";
+export async function POST(req: Request, context: { params: Promise<{ id: string }> }): Promise<Response> { return wrapInEnvelope(async (requestId) => { const principal = await authorize(req, "routes:write"); const { id } = await context.params; return runMutationGuard({ request: req, principal, requestId, rateLimit: { limit: 30, windowMs: 60_000 }, handler: async (sql) => { const input = parseRevision(await contractBody(req, RoutesApi.revisionRequest)); const result = await (async () => { const route = await sql<{ id: string; disabled_at: string | null }[]>`SELECT id, disabled_at FROM gateway_route WHERE id = ${id} AND workspace_id = ${principal.workspaceId} LIMIT 1`; if (!route[0]) return null; if (route[0].disabled_at) throw new ManifoldError({ status: 409, code: "VALIDATION", message: "disabled routes cannot receive revisions", reasonCodes: [] }); const revision = await insertRevision(sql, principal.workspaceId, id, principal.member?.id ?? null, input); await sql`UPDATE gateway_route SET active_revision_id = ${revision.revisionId}, updated_at = now() WHERE id = ${id} AND workspace_id = ${principal.workspaceId}`; await audit(sql, principal, { action: "route.revision.add", targetKind: "gateway_route", targetId: id, requestId, detail: { revisionId: revision.revisionId, contentHash: revision.contentHash } }); return revision; })(); if (!result) throw new ManifoldError({ status: 404, code: "NOT_FOUND", message: "route not found", reasonCodes: [] }); return contractOk(RoutesApi.revisionResponse, { routeId: id, revisionId: result.revisionId, contentHash: result.contentHash, status: "staged", publishRequired: true }, requestId, 201); }}); }); }

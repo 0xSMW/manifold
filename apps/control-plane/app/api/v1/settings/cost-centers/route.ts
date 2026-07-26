@@ -1,0 +1,13 @@
+import { withWorkspace } from "@/lib/db";
+import { wrapInEnvelope } from "@/lib/http";
+import { contractBody, contractOk, contractQuery } from "@/lib/contracts";
+import { SettingsEndpointContracts } from "@manifold/contracts";
+import { authorizeSettings } from "@/lib/settings/access";
+import { audit } from "@/lib/audit";
+import { genId } from "@/lib/ids";
+import { runMutationGuard } from "@/lib/mutation-guard";
+import { notFound } from "@/lib/settings/crud";
+export const runtime = "nodejs"; export const dynamic = "force-dynamic";
+type Row = { id: string; slug: string; name: string; parent_id: string | null; created_at: string };
+export async function GET(req: Request) { return wrapInEnvelope(async (requestId) => { const { cursor, limit } = contractQuery(new URL(req.url).searchParams, SettingsEndpointContracts.pageQuery); const principal = await authorizeSettings(req, "config:read"); const rows = await withWorkspace(principal.workspaceId, (sql) => sql<Row[]>`SELECT id, slug, name, parent_id, created_at FROM cost_center WHERE workspace_id = ${principal.workspaceId} AND archived_at IS NULL AND (${cursor}::text IS NULL OR id < ${cursor}) ORDER BY id DESC LIMIT ${limit + 1}`); const data = rows.slice(0, limit).map((row) => ({ id: row.id, slug: row.slug, name: row.name, parentId: row.parent_id, createdAt: row.created_at })); return contractOk(SettingsEndpointContracts.lists.costCenter, { data, nextCursor: rows.length > limit ? data.at(-1)?.id ?? null : null }, requestId); }); }
+export async function POST(req: Request) { return wrapInEnvelope(async (requestId) => { contractQuery(new URL(req.url).searchParams, SettingsEndpointContracts.emptyQuery); const principal = await authorizeSettings(req, "config:write"); return runMutationGuard({ request: req, principal, requestId, handler: async (sql) => { const value = await contractBody(req, SettingsEndpointContracts.costCenter); if (value.parentId && !(await sql<{ id: string }[]>`SELECT id FROM cost_center WHERE id = ${value.parentId} AND workspace_id = ${principal.workspaceId} AND archived_at IS NULL`)[0]) throw notFound("parent cost center"); const id = genId("cc"); const row = (await sql<Row[]>`INSERT INTO cost_center (id, workspace_id, slug, name, parent_id) VALUES (${id}, ${principal.workspaceId}, ${value.slug}, ${value.name}, ${value.parentId ?? null}) RETURNING id, slug, name, parent_id, created_at`)[0]!; await audit(sql, principal, { action: "cost_center.create", targetKind: "cost_center", targetId: id, requestId, detail: value }); return contractOk(SettingsEndpointContracts.costCenterResponse, { data: { id: row.id, slug: row.slug, name: row.name, parentId: row.parent_id, createdAt: row.created_at } }, requestId, 201); } }); }); }

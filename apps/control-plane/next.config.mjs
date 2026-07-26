@@ -1,6 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  allowedDevOrigins: ["127.0.0.1"],
+  devIndicators: false,
   // Workspace packages ship pre-built ESM under dist/. @manifold/database uses
   // extension-less relative imports ("./schema") which strict Node ESM / webpack
   // (type:module) reject; letting Next transpile them resolves those imports the

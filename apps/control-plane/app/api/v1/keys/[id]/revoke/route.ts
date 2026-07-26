@@ -1,9 +1,12 @@
 // POST /api/v1/keys/{id}/revoke (SPEC §10.3, keys:write, KeyService.revoke).
 import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
-import { publishKeysOnly } from "@/lib/snapshot";
+import { runMutationGuard } from "@/lib/mutation-guard";
+import { drainKeyPublication, enqueueKeyPublication } from "@/lib/snapshot";
 import { audit } from "@/lib/audit";
 import { wrapInEnvelope, ok, ManifoldError } from "@/lib/http";
+import { contractOk, contractOptionalEmptyBody } from "@/lib/contracts";
+import { KeysApi } from "@manifold/contracts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,8 +18,10 @@ export async function POST(
   return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "keys:write");
     const { id } = await ctx.params;
-
-    const row = await withWorkspace(principal.workspaceId, async (sql) => {
+    await contractOptionalEmptyBody(req.clone(), KeysApi.emptyRequest);
+    let queuedInstallationId: string | null = null;
+    return runMutationGuard({ request: req, principal, requestId, rateLimit: { limit: 10, windowMs: 60_000 }, afterCommit: async () => { if (queuedInstallationId) await drainKeyPublication(principal.workspaceId, queuedInstallationId); }, handler: async (sql) => {
+    const row = await (async () => {
       const rows = await sql<{ id: string; profile_id: string }[]>`
         UPDATE virtual_key SET revoked_at = now()
         WHERE id = ${id} AND workspace_id = ${principal.workspaceId}
@@ -57,7 +62,7 @@ export async function POST(
         SELECT installation_id FROM gateway_ingress_profile
         WHERE id = ${found.profile_id} AND workspace_id = ${principal.workspaceId} LIMIT 1`;
       return { id: found.id, installationId: prof[0]?.installation_id ?? null };
-    });
+    })();
 
     if (!row) {
       throw new ManifoldError({
@@ -87,23 +92,12 @@ export async function POST(
     // still excludes it — the retry is genuinely idempotent and can keep re-driving the publish
     // through this same endpoint until it lands, closing the recovery gap where a 409 here used to
     // leave the key stranded in the active snapshot with no way back through this route.
-    let published = true;
+    let published = false;
     if (row.installationId) {
-      const publishResult = await publishKeysOnly(principal.workspaceId, row.installationId);
-      if (publishResult && publishResult.outcome !== "accepted") {
-        throw new ManifoldError({
-          status: 409,
-          code: "CONFIG_PRECONDITION_FAILED",
-          message:
-            "key revoked in the database, but the gateway snapshot publish did not land; retry the revoke",
-          reasonCodes: publishResult.reasonCode ? [publishResult.reasonCode] : [],
-          retryable: true,
-        });
-      }
-      // null (no active revision / idempotent rebuild) or an accepted outcome both mean the key is
-      // provably absent from whatever snapshot IS active — revoked:true is accurate here.
-      published = publishResult !== null && publishResult.outcome === "accepted";
+      await enqueueKeyPublication(sql, principal.workspaceId, row.installationId);
+      queuedInstallationId = row.installationId;
     }
-    return ok({ id: row.id, revoked: true, published }, requestId);
+    return contractOk(KeysApi.revokeResponse, { id: row.id, revoked: true, published }, requestId);
+    }});
   });
 }

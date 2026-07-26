@@ -5,8 +5,26 @@
   "outputDirectory": ".next",
   "regions": ["iad1"],
   "functions": {
+    "app/api/v1/internal/storage/drain/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/v1/internal/storage-compact/route.ts": {
+      "maxDuration": 30
+    },
     "app/api/v1/**/route.ts": {
       "maxDuration": 30
     }
-  }
+  },
+  "crons": [
+    { "path": "/api/v1/internal/audit-delivery/cron", "schedule": "*/1 * * * *" },
+    { "path": "/api/v1/internal/keys/grace-expiry", "schedule": "*/1 * * * *" },
+    { "path": "/api/v1/internal/target-health/cron", "schedule": "*/1 * * * *" },
+    { "path": "/api/v1/internal/config-publication-recovery", "schedule": "*/1 * * * *" },
+    { "path": "/api/v1/internal/mutation-cleanup", "schedule": "*/5 * * * *" },
+    { "path": "/api/v1/internal/storage/drain", "schedule": "*/1 * * * *" },
+    { "path": "/api/v1/internal/storage/measure", "schedule": "*/15 * * * *" },
+    { "path": "/api/v1/internal/storage/compact/hourly", "schedule": "0 * * * *" },
+    { "path": "/api/v1/internal/storage/compact/daily", "schedule": "10 0 * * *" },
+    { "path": "/api/v1/internal/storage/compact/monthly", "schedule": "30 0 1 * *" }
+  ]
 }

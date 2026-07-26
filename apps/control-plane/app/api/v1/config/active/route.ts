@@ -5,36 +5,44 @@
 // truth (§8.2); we return `snapshot` verbatim so the signature (meta.signature over the content
 // hash, §7.3) verifies against the pinned public key.
 //
-// Auth: §10.3 specifies installation auth; for control-plane usability we accept a bearer
-// api_token with config:read and derive the workspace from it (the installation must belong to
-// that workspace).
-import { authorize } from "@/lib/auth";
+// Auth is the registered installation identity; operator config inspection remains on the
+// separate plan/history endpoints. A bearer token cannot load a serving snapshot.
+import { authenticateInstallation } from "@/lib/installation-auth";
 import { withWorkspace } from "@/lib/db";
 import { baseHeaders, wrapInEnvelope, ManifoldError } from "@/lib/http";
+import { contractQuery } from "@/lib/contracts";
+import { ActiveSnapshotWireBytes, ConfigContracts } from "@manifold/contracts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(req: Request): Promise<Response> {
   return wrapInEnvelope(async (requestId) => {
-    const principal = await authorize(req, "config:read");
     const url = new URL(req.url);
-    const installationId = url.searchParams.get("installationId");
-    if (!installationId) {
-      throw new ManifoldError({
-        status: 422,
-        code: "VALIDATION",
-        message: "installationId query parameter is required",
-        reasonCodes: [],
-      });
-    }
+    const { installationId } = contractQuery(url.searchParams, ConfigContracts.activeQuery);
+    const principal = await authenticateInstallation(req, {
+      path: "/api/v1/config/active",
+      installationId,
+    });
 
     const rows = await withWorkspace(principal.workspaceId, (sql) =>
-      sql<{ snapshot: unknown }[]>`
-        SELECT snapshot FROM gateway_config_revision
-        WHERE installation_id = ${installationId}
-          AND workspace_id = ${principal.workspaceId}
-          AND status = 'active'
+      sql<{
+        id: string;
+        snapshot: unknown;
+        accelerator_status: string | null;
+        edge_config_version: string | null;
+      }[]>`
+        SELECT r.id, r.snapshot, o.accelerator_status, o.edge_config_version
+        FROM gateway_config_revision r
+        LEFT JOIN LATERAL (
+          SELECT accelerator_status, edge_config_version
+          FROM config_operation
+          WHERE revision_id = r.id AND workspace_id = ${principal.workspaceId}
+          ORDER BY created_at DESC LIMIT 1
+        ) o ON true
+        WHERE r.installation_id = ${installationId}
+          AND r.workspace_id = ${principal.workspaceId}
+          AND r.status = 'active'
         LIMIT 1`,
     );
 
@@ -49,9 +57,22 @@ export async function GET(req: Request): Promise<Response> {
     }
 
     // Return the signed snapshot verbatim (the exact bytes a loader verifies, §7.4).
-    return new Response(JSON.stringify(active.snapshot), {
+    const wire = JSON.stringify(active.snapshot);
+    const parsedWire = ActiveSnapshotWireBytes.safeParse(wire);
+    if (!parsedWire.success) throw new ManifoldError({ status: 500, code: "INTERNAL", message: "active snapshot violates its signed byte contract", reasonCodes: [] });
+    return new Response(parsedWire.data, {
       status: 200,
-      headers: { ...baseHeaders(requestId), "content-type": "application/json" },
+      headers: {
+        ...baseHeaders(requestId),
+        "content-type": "application/json",
+        "content-length": String(Buffer.byteLength(parsedWire.data)),
+        "x-manifold-serving-mode": "boot_fallback",
+        "x-manifold-active-revision": active.id,
+        "x-manifold-accelerator-status": active.accelerator_status ?? "not_configured",
+        ...(active.edge_config_version
+          ? { "x-manifold-edge-config-version": active.edge_config_version }
+          : {}),
+      },
     });
   });
 }

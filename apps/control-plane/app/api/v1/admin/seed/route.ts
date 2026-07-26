@@ -12,6 +12,8 @@ import { generateSecret } from "@/lib/crypto";
 import { genId } from "@/lib/ids";
 import { sha256Canonical } from "@manifold/config";
 import { wrapInEnvelope, jsonBody, ok, optionalString, ManifoldError } from "@/lib/http";
+import { contractBody, contractOk } from "@/lib/contracts";
+import { AdminContracts } from "@manifold/contracts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -44,11 +46,11 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    const body = await jsonBody(req).catch(() => ({}) as Record<string, unknown>);
-    const slug = optionalString(body, "slug") ?? `ws-${Date.now().toString(36)}`;
-    const name = optionalString(body, "name") ?? "Seed Workspace";
-    const email = optionalString(body, "email") ?? "owner@example.com";
-    const region = optionalString(body, "region") ?? "us-east-1";
+    const body = await contractBody(req, AdminContracts.seed);
+    const slug = body.slug ?? `ws-${Date.now().toString(36)}`;
+    const name = body.name ?? "Seed Workspace";
+    const email = body.email ?? "owner@example.com";
+    const region = body.region ?? "us-east-1";
     const short = Math.random().toString(36).slice(2, 8);
     const hostname = `${slug}-${short}.gateway.local`;
 
@@ -139,7 +141,7 @@ export async function POST(req: Request): Promise<Response> {
       return { memberId, tokenId, installationId, profileId, appId };
     });
 
-    return ok(
+    return contractOk(AdminContracts.seedResponse,
       {
         workspaceId: wsId,
         slug,

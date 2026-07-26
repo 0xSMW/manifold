@@ -2,9 +2,9 @@
 //   GET  routes:read  — list this workspace's routes.
 //   POST routes:write — create a route + its immutable first revision + a target, and set the
 //     route's active_revision_id to that revision (one transaction).
-import { sha256Canonical } from "@manifold/config";
 import { authorize } from "@/lib/auth";
 import { withWorkspace } from "@/lib/db";
+import { runMutationGuard } from "@/lib/mutation-guard";
 import { audit } from "@/lib/audit";
 import { genId } from "@/lib/ids";
 import {
@@ -13,20 +13,24 @@ import {
   ok,
   requireString,
   optionalString,
-  optionalNumber,
   ManifoldError,
 } from "@/lib/http";
+import { ENDPOINT_KINDS, insertRevision, parseRevision } from "./[id]/route-utils";
+import { contractBody, contractOk } from "@/lib/contracts";
+import { RoutesApi } from "@manifold/contracts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const ENDPOINT_KINDS = new Set(["chat", "responses", "embeddings"]);
 
 interface RouteListRow {
   id: string;
   public_name: string;
   endpoint_kind: string;
   active_revision_id: string | null;
+  installation_id: string;
+  disabled_at: string | null;
+  target_count: number;
+  healthy_target_count: number;
   created_at: string;
 }
 
@@ -35,19 +39,27 @@ export async function GET(req: Request): Promise<Response> {
     const principal = await authorize(req, "routes:read");
     const rows = await withWorkspace(principal.workspaceId, (sql) =>
       sql<RouteListRow[]>`
-        SELECT id, public_name, endpoint_kind, active_revision_id, created_at
-        FROM gateway_route
-        WHERE workspace_id = ${principal.workspaceId} AND disabled_at IS NULL
-        ORDER BY created_at DESC`,
+        SELECT r.id, r.public_name, r.endpoint_kind, r.active_revision_id, r.installation_id,
+               r.disabled_at, r.created_at,
+               COUNT(t.id)::int AS target_count,
+               COUNT(t.id) FILTER (WHERE t.health_state = 'healthy')::int AS healthy_target_count
+        FROM gateway_route r
+        LEFT JOIN gateway_target t ON t.route_revision_id = r.active_revision_id
+        WHERE r.workspace_id = ${principal.workspaceId} AND r.disabled_at IS NULL
+        GROUP BY r.id
+        ORDER BY r.created_at DESC`,
     );
-    return ok(
+    return contractOk(RoutesApi.listResponse,
       {
         data: rows.map((r) => ({
           id: r.id,
           publicName: r.public_name,
           endpointKind: r.endpoint_kind,
+          installationId: r.installation_id,
           activeRevisionId: r.active_revision_id,
-          status: r.active_revision_id ? "active" : "draft",
+          status: r.active_revision_id ? "staged" : "draft",
+          targetCount: r.target_count,
+          healthyTargetCount: r.healthy_target_count,
           createdAt: r.created_at,
         })),
         nextCursor: null,
@@ -60,7 +72,14 @@ export async function GET(req: Request): Promise<Response> {
 export async function POST(req: Request): Promise<Response> {
   return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "routes:write");
-    const body = await jsonBody(req);
+    return runMutationGuard({ request: req, principal, requestId, rateLimit: { limit: 20, windowMs: 60_000 }, handler: async (sql) => {
+    const body = await contractBody(req, RoutesApi.createRequest);
+    const allowedFields = new Set(["installationId", "publicName", "endpointKind", "target", "targets", "mode", "retryPolicy", "timeoutPolicy", "capturePolicy"]);
+    for (const key of Object.keys(body)) {
+      if (!allowedFields.has(key)) {
+        throw new ManifoldError({ status: 422, code: "VALIDATION", message: `unknown field '${key}'`, reasonCodes: [], details: { issues: [{ path: key, message: "unknown field" }] } });
+      }
+    }
     const installationId = requireString(body, "installationId");
     const publicName = requireString(body, "publicName");
     const endpointKind = optionalString(body, "endpointKind") ?? "chat";
@@ -72,38 +91,23 @@ export async function POST(req: Request): Promise<Response> {
         reasonCodes: [],
       });
     }
-    const target = (body.target ?? {}) as Record<string, unknown>;
-    const providerCredentialId = requireString(target, "providerCredentialId");
-    const offeringId = requireString(target, "offeringId");
-    const mode = body.mode === "weighted" ? "weighted" : "ordered";
-    const weight = optionalNumber(target, "weight", 1);
-    const priority = optionalNumber(target, "priority", 0);
-    const targetBaseUrl = optionalString(target, "baseUrl");
-    const region = optionalString(target, "region");
+    // Creation accepts the original single `target` form, but normalizes through the exact
+    // revision contract so first and successor revisions cannot drift.
+    const target = body.target;
+    const revisionInput = parseRevision({
+      mode: body.mode,
+      targets: body.targets ?? (target === undefined ? undefined : [target]),
+      retryPolicy: body.retryPolicy,
+      timeoutPolicy: body.timeoutPolicy,
+      capturePolicy: body.capturePolicy,
+    });
 
-    const retryPolicy = { attempts: 1, backoffMs: 0 };
-    const timeoutPolicy = { overall_ms: 60000 };
-
-    const result = await withWorkspace(principal.workspaceId, async (sql) => {
+    const result = await (async () => {
       // Validate installation is this workspace's.
       const inst = await sql<{ id: string }[]>`
         SELECT id FROM gateway_installation
         WHERE id = ${installationId} AND workspace_id = ${principal.workspaceId} LIMIT 1`;
       if (!inst[0]) return { error: "installation" as const };
-
-      // Validate credential is this workspace's.
-      const cred = await sql<{ id: string }[]>`
-        SELECT id FROM provider_credential
-        WHERE id = ${providerCredentialId} AND workspace_id = ${principal.workspaceId}
-        LIMIT 1`;
-      if (!cred[0]) return { error: "credential" as const };
-
-      // Offering is global reference data (§6.4). Fetch adapter_revision for the target.
-      const off = await sql<{ id: string; adapter_revision: string }[]>`
-        SELECT id, adapter_revision FROM provider_model_offering
-        WHERE id = ${offeringId} LIMIT 1`;
-      if (!off[0]) return { error: "offering" as const };
-      const adapterRevision = off[0].adapter_revision;
 
       // Duplicate route guard (route_name_uq: installation_id, endpoint_kind, public_name).
       const dup = await sql<{ id: string }[]>`
@@ -120,34 +124,10 @@ export async function POST(req: Request): Promise<Response> {
           (${routeId}, ${principal.workspaceId}, ${installationId}, ${publicName},
            ${endpointKind})`;
 
-      const revisionId = genId("rev");
-      const contentHash = sha256Canonical({
-        routeId,
-        mode,
-        retryPolicy,
-        timeoutPolicy,
-        targets: [{ providerCredentialId, offeringId, adapterRevision, weight, priority }],
-      });
-      await sql`
-        INSERT INTO gateway_route_revision
-          (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash)
-        VALUES
-          (${revisionId}, ${principal.workspaceId}, ${routeId}, ${mode},
-           ${sql.json(retryPolicy as never)}, ${sql.json(timeoutPolicy as never)},
-           ${contentHash})`;
-
-      const targetId = genId("tgt");
-      await sql`
-        INSERT INTO gateway_target
-          (id, workspace_id, route_revision_id, provider_credential_id, offering_id,
-           adapter_revision, base_url, region, weight, priority)
-        VALUES
-          (${targetId}, ${principal.workspaceId}, ${revisionId}, ${providerCredentialId},
-           ${offeringId}, ${adapterRevision}, ${targetBaseUrl}, ${region}, ${weight},
-           ${priority})`;
+      const revision = await insertRevision(sql, principal.workspaceId, routeId, principal.member?.id ?? null, revisionInput);
 
       await sql`
-        UPDATE gateway_route SET active_revision_id = ${revisionId}, updated_at = now()
+        UPDATE gateway_route SET active_revision_id = ${revision.revisionId}, updated_at = now()
         WHERE id = ${routeId}`;
 
       await audit(sql, principal, {
@@ -155,10 +135,10 @@ export async function POST(req: Request): Promise<Response> {
         targetKind: "gateway_route",
         targetId: routeId,
         requestId,
-        detail: { publicName, endpointKind, revisionId },
+        detail: { publicName, endpointKind, revisionId: revision.revisionId },
       });
-      return { routeId, revisionId };
-    });
+      return { routeId, revisionId: revision.revisionId };
+    })();
 
     if ("error" in result) {
       if (result.error === "duplicate") {
@@ -166,14 +146,6 @@ export async function POST(req: Request): Promise<Response> {
           status: 409,
           code: "DUPLICATE_ROUTE",
           message: `a ${endpointKind} route named '${publicName}' already exists on this installation`,
-          reasonCodes: [],
-        });
-      }
-      if (result.error === "offering") {
-        throw new ManifoldError({
-          status: 404,
-          code: "OFFERING_NOT_FOUND",
-          message: "offering not found",
           reasonCodes: [],
         });
       }
@@ -185,15 +157,16 @@ export async function POST(req: Request): Promise<Response> {
       });
     }
 
-    return ok(
+    return contractOk(RoutesApi.createResponse,
       {
         id: result.routeId,
-        status: "active",
+        status: "staged",
         revisionId: result.revisionId,
         unpublishedChanges: 1,
       },
       requestId,
       201,
     );
+    }});
   });
 }

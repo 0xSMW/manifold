@@ -2,7 +2,7 @@
 // `wrapInEnvelope` wrapper that turns thrown ManifoldErrors into that envelope. Every response
 // carries X-Request-Id and X-Manifold-Schema (§10.1).
 import { NextResponse } from "next/server";
-import { SCHEMA_VERSION } from "@manifold/contracts";
+import { SCHEMA_VERSION, type ErrorCode } from "@manifold/contracts";
 import { prefixedUlid } from "@manifold/ids";
 
 /**
@@ -13,15 +13,10 @@ import { prefixedUlid } from "@manifold/ids";
  * via ManifoldError across the control-plane — keep it in sync when a route adds a new one.
  */
 export type EnvelopeCode =
+  | ErrorCode
   | "UNAUTHENTICATED"
   | "FORBIDDEN"
-  | "INTERNAL"
-  | "VALIDATION"
-  | "NOT_FOUND"
-  | "CONFIG_PRECONDITION_FAILED"
-  | "CONFIG_TRIPWIRE_HELD"
-  | "DUPLICATE_ROUTE"
-  | "OFFERING_NOT_FOUND";
+  | "INTERNAL";
 
 export interface ManifoldErrorInit {
   status: number;

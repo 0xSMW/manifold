@@ -3,7 +3,7 @@
 // monitors and the Deployments panel can probe it.
 import { rawSql } from "@/lib/db";
 import { baseHeaders, newRequestId } from "@/lib/http";
-import { SCHEMA_VERSION } from "@manifold/contracts";
+import { HealthResponse, SCHEMA_VERSION } from "@manifold/contracts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -36,7 +36,8 @@ export async function GET(): Promise<Response> {
     storage_tier: null,
   };
 
-  return new Response(JSON.stringify(body), {
+  const checked = HealthResponse.parse(body);
+  return new Response(JSON.stringify(checked), {
     status: db === "ok" ? 200 : 503,
     headers: { ...baseHeaders(requestId), "content-type": "application/json" },
   });

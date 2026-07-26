@@ -6,7 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint:copy": "node scripts/lint-ui-copy.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:update": "playwright test --update-snapshots"
   },
   "dependencies": {
     "@manifold/config": "*",
@@ -14,7 +18,10 @@
     "@manifold/crypto": "*",
     "@manifold/database": "*",
     "@manifold/domain": "*",
+    "@manifold/gateway-core": "*",
     "@manifold/ids": "*",
+    "@manifold/observability": "*",
+    "@manifold/storage": "*",
     "@vercel/analytics": "^1",
     "next": "latest",
     "react": "^19",
@@ -25,6 +32,8 @@
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "typescript": "^5.6"
+    "typescript": "^5.6",
+    "@axe-core/playwright": "^4.11.0",
+    "@playwright/test": "^1.55.0"
   }
 }

@@ -1,0 +1,9 @@
+import { authorize } from "@/lib/auth";
+import { withWorkspace } from "@/lib/db";
+import { wrapInEnvelope } from "@/lib/http";
+import { contractOk } from "@/lib/contracts";
+import { AppsResponse } from "@manifold/contracts";
+export const runtime = "nodejs"; export const dynamic = "force-dynamic";
+type Row = { id: string; slug: string; name: string; status: string; default_capture_policy: unknown; created_at: string };
+type ActionRow = { id: string; app_id: string; slug: string; name: string | null; source: string; created_at: string };
+export async function GET(req: Request): Promise<Response> { return wrapInEnvelope(async (requestId) => { const principal = await authorize(req, "keys:read"); const u = new URL(req.url); const cursor = u.searchParams.get("cursor"); const raw = Number(u.searchParams.get("limit") ?? "50"); const limit = Number.isFinite(raw) ? Math.min(Math.max(Math.floor(raw), 1), 100) : 50; const result = await withWorkspace(principal.workspaceId, async (sql) => ({ apps: await sql<Row[]>`SELECT id, slug, name, status, default_capture_policy, created_at FROM app WHERE workspace_id = ${principal.workspaceId} AND archived_at IS NULL AND (${cursor}::text IS NULL OR id < ${cursor}) ORDER BY id DESC LIMIT ${limit + 1}`, actions: await sql<ActionRow[]>`SELECT id, app_id, slug, name, source, created_at FROM action WHERE workspace_id = ${principal.workspaceId} AND archived_at IS NULL ORDER BY app_id, slug` })); const data = result.apps.slice(0, limit).map((a) => ({ id: a.id, slug: a.slug, name: a.name, status: a.status, defaultCapturePolicy: a.default_capture_policy, createdAt: a.created_at, actions: result.actions.filter((action) => action.app_id === a.id).map((action) => ({ id: action.id, slug: action.slug, name: action.name, source: action.source, createdAt: action.created_at })) })); return contractOk(AppsResponse, { data, nextCursor: result.apps.length > limit ? data.at(-1)?.id ?? null : null }, requestId); }); }
