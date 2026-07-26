@@ -17,6 +17,16 @@ export const REASON_CODES = [
   "AUTH_PROFILE_MISMATCH",
   "AUTH_TOKEN_AUDIENCE",
   "AUTH_WORKLOAD_IDENTITY",
+  // human auth — public responses deliberately collapse account-specific failures
+  // into generic codes so an email address cannot be enumerated.
+  "AUTH_INVALID_CREDENTIALS",
+  "AUTH_ACTIVATION_INVALID",
+  "AUTH_INVITATION_INVALID",
+  "AUTH_PASSWORD_RESET_INVALID",
+  "AUTH_SESSION_REVOKED",
+  "AUTH_LAST_OWNER_PROTECTED",
+  "AUTH_OWNER_REQUIRED",
+  "AUTH_SERVICE_ACCOUNT_DISABLED",
   // policy
   "POLICY_MODEL_DENIED",
   "POLICY_PROFILE_ESCALATION",
@@ -85,6 +95,20 @@ export const ERROR_CODES = [
   "RATE_LIMITED",
   "VALIDATION",
   "NOT_FOUND",
+  "UNAUTHENTICATED",
+  "FORBIDDEN",
+  // Human-auth mutations use generic failures at public seams.  The more
+  // specific reason code is retained only where an authenticated operator can
+  // act on it (for example, the final-owner protection).
+  "AUTH_INVALID",
+  "AUTH_INVALID_CREDENTIALS",
+  "AUTH_ACTIVATION_INVALID",
+  "AUTH_INVITATION_INVALID",
+  "AUTH_PASSWORD_RESET_INVALID",
+  "AUTH_SESSION_REVOKED",
+  "LAST_OWNER_PROTECTED",
+  "OWNER_REQUIRED",
+  "SERVICE_ACCOUNT_DISABLED",
 ] as const;
 
 export const ErrorCode = z.enum(ERROR_CODES);
@@ -179,6 +203,47 @@ export const SessionLoginResponse = z.object({
 }).strict();
 export const SessionLogoutResponse = z.object({ loggedOut: z.literal(true) }).strict();
 
+// ────────────────────────────────────────────────────────────────────────────
+// First-party human authentication. These are intentionally separate from the
+// legacy bearer-token-to-browser-session login above: existing clients retain
+// SessionLoginResponse while the console adopts password-based authentication.
+// Public request endpoints always return a generic acknowledgement and must
+// never expose whether an account, invitation, or reset token exists.
+// ────────────────────────────────────────────────────────────────────────────
+const AuthEmail = z.string().email().max(320);
+const AuthPassword = z.string().min(12).max(128);
+const AuthName = z.string().trim().min(1).max(200);
+const AuthMemberRole = z.enum(["owner", "admin", "editor", "viewer", "billing"]);
+
+/** Public GET activation state. It contains no workspace or member identity. */
+export const PublicActivationStatusResponse = z.object({ required: z.boolean(), configured: z.boolean() }).strict();
+/** Public POST activation request. The generic response prevents email enumeration. */
+export const PublicActivationRequest = z.object({ email: AuthEmail }).strict();
+export const PublicActivationRequestResponse = z.object({ accepted: z.literal(true) }).strict();
+/** Public POST activation completion after an out-of-band activation link. */
+export const PublicActivationCompleteRequest = z.object({ token: z.string().min(1).max(4096), password: AuthPassword, name: AuthName }).strict();
+export const PublicActivationCompleteResponse = SessionLoginResponse;
+
+export const EmailPasswordLoginRequest = z.object({ email: AuthEmail, password: AuthPassword }).strict();
+export const EmailPasswordLoginResponse = SessionLoginResponse;
+export const ForgotPasswordRequest = z.object({ email: AuthEmail }).strict();
+export const ForgotPasswordResponse = z.object({ accepted: z.literal(true) }).strict();
+export const ResetPasswordRequest = z.object({ token: z.string().min(1).max(4096), password: AuthPassword }).strict();
+export const ResetPasswordResponse = z.object({ reset: z.literal(true) }).strict();
+
+/** Public invitation inspection discloses only the invitation's intended workspace and role. */
+export const InvitationInspectRequest = z.object({ token: z.string().min(1).max(4096) }).strict();
+export const InvitationInspectResponse = z.object({ workspace: z.object({ name: z.string() }).strict(), email: AuthEmail, role: AuthMemberRole, expiresAt: z.string() }).strict();
+export const InvitationAcceptRequest = z.object({ token: z.string().min(1).max(4096), password: AuthPassword, name: AuthName }).strict();
+export const InvitationAcceptResponse = SessionLoginResponse;
+
+/** Alias names make the public route family discoverable without changing the concise exports above. */
+export const ActivationStatusResponse = PublicActivationStatusResponse;
+export const ActivationRequest = PublicActivationRequest;
+export const ActivationRequestResponse = PublicActivationRequestResponse;
+export const ActivationCompleteRequest = PublicActivationCompleteRequest;
+export const ActivationCompleteResponse = PublicActivationCompleteResponse;
+
 export const CliAuthorizationStartRequest = z.object({
   workspaceSlug: z.string().regex(/^[a-z0-9][a-z0-9-]{1,62}$/i),
   clientId: z.string(),
@@ -209,7 +274,7 @@ export const AppsResponse = Page(z.object({
   createdAt: z.string(), actions: z.array(z.object({ id: z.string(), slug: z.string(), name: NullableString, source: z.string(), createdAt: z.string() }).strict()),
 }).strict());
 export const MeResponse = z.object({
-  member: z.object({ id: z.string(), email: z.string(), role: z.string() }).strict().nullable(),
+  member: z.object({ id: z.string(), email: z.string(), name: z.string().nullable(), role: z.string() }).strict().nullable(),
   role: z.string().nullable(), workspace: Workspace.nullable(), scopes: z.array(z.string()),
   availableIngressProfiles: z.array(z.object({ id: z.string(), installationId: z.string(), installationName: z.string(), hostname: z.string(), mode: z.string(), networkExposure: z.string() }).strict()),
   sessionExpiresAt: z.string().nullable(),
@@ -570,18 +635,41 @@ const SettingCostCenter = z.object({ id: Id, slug: z.string(), name: z.string(),
 const SettingApp = z.object({ id: Id, slug: z.string(), name: z.string(), status: z.string(), defaultCapturePolicy: JsonValue, createdAt: z.string() }).strict();
 const SettingAction = z.object({ id: Id, slug: z.string(), name: z.string().nullable(), source: z.string() }).strict();
 const SettingMemberRole = z.enum(["owner", "admin", "editor", "viewer", "billing"]);
-const SettingMember = z.object({ id: Id, email: z.string(), name: z.string().nullable(), role: SettingMemberRole, status: z.enum(["active", "disabled"]), createdAt: z.string() }).strict();
-const TokenPublic = z.object({ id: Id, displayPrefix: z.string(), scopes: z.array(z.string()), expiresAt: z.string().nullable() }).strict();
+const SettingMember = z.object({ id: Id, email: z.string(), name: z.string().nullable(), role: SettingMemberRole, status: z.enum(["pending", "active", "disabled"]), createdAt: z.string() }).strict();
+const TokenKind = z.enum(["legacy", "personal", "serviceAccount"]);
+// Legacy tokens predate labels, so only their public name is nullable. Newly
+// minted personal and service-account tokens always carry a non-secret name.
+const TokenPublic = z.object({ id: Id, displayPrefix: z.string(), kind: TokenKind, name: z.string().nullable(), scopes: z.array(z.string()), expiresAt: z.string().nullable() }).strict();
+const InvitationStatus = z.enum(["pending", "accepted", "revoked", "expired"]);
+const SettingInvitation = z.object({ id: Id, email: AuthEmail, role: SettingMemberRole, status: InvitationStatus, expiresAt: z.string(), acceptedAt: z.string().nullable(), revokedAt: z.string().nullable(), createdAt: z.string() }).strict();
+const SettingSession = z.object({ id: Id, status: z.enum(["active", "revoked"]), current: z.boolean(), createdAt: z.string(), lastSeenAt: z.string().nullable(), expiresAt: z.string(), revokedAt: z.string().nullable() }).strict();
+const ServiceAccountStatus = z.enum(["active", "disabled"]);
+const SettingServiceAccount = z.object({ id: Id, name: z.string(), status: ServiceAccountStatus, createdAt: z.string(), disabledAt: z.string().nullable(), lastUsedAt: z.string().nullable() }).strict();
 const ArchivedSetting = z.object({ data: z.object({ id: Id, archived: z.literal(true) }).strict() }).strict();
 const OptionalFields = <T extends z.ZodRawShape>(shape: T) => z.object(shape).partial().strict().refine((value) => Object.keys(value).length > 0, "at least one field is required");
 export const SettingsEndpointContracts = {
   emptyQuery: SettingsEmptyQuery,
   pageQuery: SettingsPageQuery,
-  tokenMint: z.object({ scopes: z.array(z.string().min(1)).min(1), expiresAt: z.string().nullable().optional() }).strict(),
+  tokenMint: z.object({ kind: z.literal("personal"), name: z.string().trim().min(1).max(200), scopes: z.array(z.string().min(1)).min(1), expiresAt: z.string().nullable().optional() }).strict(),
   // `plaintext` is present only in the creation response; no list/read schema includes it.
-  tokenMintResponse: z.object({ data: TokenPublic.extend({ plaintext: z.string().min(1) }).strict() }).strict(),
+  tokenMintResponse: z.object({ data: TokenPublic.extend({ kind: z.literal("personal"), name: z.string(), plaintext: z.string().min(1) }).strict() }).strict(),
   tokenList: z.object({ data: z.array(TokenPublic.extend({ createdByMemberId: z.string().nullable(), revokedAt: z.string().nullable(), lastUsedAt: z.string().nullable(), createdAt: z.string() }).strict()), nextCursor: Cursor }).strict(),
   tokenRevoke: z.object({ data: z.object({ id: Id, revoked: z.literal(true) }).strict() }).strict(),
+  invitationCreate: z.object({ email: AuthEmail, role: SettingMemberRole }).strict(),
+  invitationResponse: z.object({ data: SettingInvitation }).strict(),
+  invitationList: Page(SettingInvitation),
+  invitationResend: EmptyRequest,
+  invitationResendResponse: z.object({ data: z.object({ id: Id, status: z.literal("pending"), resent: z.literal(true), expiresAt: z.string() }).strict() }).strict(),
+  invitationRevoke: z.object({ data: z.object({ id: Id, status: z.literal("revoked"), revoked: z.literal(true), revokedAt: z.string() }).strict() }).strict(),
+  sessionList: z.object({ data: z.array(SettingSession), nextCursor: Cursor }).strict(),
+  sessionRevoke: z.object({ data: z.object({ id: Id, status: z.literal("revoked"), revoked: z.literal(true), revokedAt: z.string() }).strict() }).strict(),
+  sessionRevokeOthers: z.object({ data: z.object({ revokedCount: z.number().int().nonnegative() }).strict() }).strict(),
+  serviceAccountCreate: z.object({ name: z.string().trim().min(1).max(200) }).strict(),
+  serviceAccountResponse: z.object({ data: SettingServiceAccount }).strict(),
+  serviceAccountList: Page(SettingServiceAccount),
+  serviceAccountDisable: z.object({ data: z.object({ id: Id, status: z.literal("disabled"), disabledAt: z.string() }).strict() }).strict(),
+  serviceAccountTokenMint: z.object({ kind: z.literal("serviceAccount"), name: z.string().trim().min(1).max(200), scopes: z.array(z.string().min(1)).min(1), expiresAt: z.string().nullable().optional() }).strict(),
+  serviceAccountTokenMintResponse: z.object({ data: TokenPublic.extend({ kind: z.literal("serviceAccount"), name: z.string(), plaintext: z.string().min(1) }).strict() }).strict(),
   team: z.object({ slug: z.string().min(1), name: z.string().min(1), costCenterId: z.string().nullable().optional() }).strict(),
   teamUpdate: OptionalFields({ slug: z.string().min(1), name: z.string().min(1), costCenterId: z.string().nullable() }),
   teamResponse: z.object({ data: SettingTeam }).strict(),
@@ -612,6 +700,30 @@ export const SettingsEndpointContracts = {
   settingsIndex: z.object({ data: z.object({ workspace: z.string(), members: z.string(), teams: z.string(), costCenters: z.string(), tokens: z.string(), apps: z.string(), alerts: z.string(), cliAuthorization: z.string(), dangerZone: z.string() }).strict() }).strict(),
   dangerZone: z.object({ data: z.object({ workspaceDeletion: z.object({ available: z.literal(false), reasonCode: z.literal("WORKSPACE_DELETION_UNSUPPORTED"), message: z.string() }).strict(), dependencies: z.object({ members: z.number().int(), teams: z.number().int(), costCenters: z.number().int(), apps: z.number().int(), activeTokens: z.number().int(), observations: z.number().int() }).strict() }).strict() }).strict(),
   lists: { team: Page(SettingTeam), costCenter: Page(SettingCostCenter), app: Page(SettingApp.extend({ actions: z.array(SettingAction.extend({ createdAt: z.string() }).strict()) }).strict()), member: Page(SettingMember) },
+} as const;
+
+/** A CLI can revoke only its own device credential; no session/token metadata leaks back. */
+export const CliSelfRevokeResponse = z.object({ revoked: z.literal(true) }).strict();
+
+/** Route-aligned registry for the first-party human-auth surface. */
+export const HumanAuthContracts = {
+  activationStatus: PublicActivationStatusResponse,
+  activationRequest: PublicActivationRequest,
+  activationRequestResponse: PublicActivationRequestResponse,
+  activationComplete: PublicActivationCompleteRequest,
+  activationCompleteResponse: PublicActivationCompleteResponse,
+  login: EmailPasswordLoginRequest,
+  loginResponse: EmailPasswordLoginResponse,
+  forgotPassword: ForgotPasswordRequest,
+  forgotPasswordResponse: ForgotPasswordResponse,
+  resetPassword: ResetPasswordRequest,
+  resetPasswordResponse: ResetPasswordResponse,
+  invitationInspect: InvitationInspectRequest,
+  invitationInspectResponse: InvitationInspectResponse,
+  invitationAccept: InvitationAcceptRequest,
+  invitationAcceptResponse: InvitationAcceptResponse,
+  logoutResponse: SessionLogoutResponse,
+  cliSelfRevokeResponse: CliSelfRevokeResponse,
 } as const;
 export const InternalContracts = {
   emptyQuery: EmptyRequest,

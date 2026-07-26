@@ -70,6 +70,77 @@ export const wsId = () =>
     .notNull()
     .references(() => workspace.id);
 
+/** Global human identity.  Workspace authorization remains on `member`. */
+export const authUser = pgTable(
+  "auth_user",
+  {
+    id: id("id"),
+    email: citext("email").notNull(),
+    name: text("name"),
+    emailVerifiedAt: ts("email_verified_at"),
+    disabledAt: ts("disabled_at"),
+    sessionVersion: integer("session_version").notNull().default(1),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("auth_user_email_uq").on(t.email),
+    check("auth_user_session_version_chk", sql`${t.sessionVersion} >= 1`),
+  ],
+);
+
+/** One Argon2id PHC credential per human identity; no plaintext is persisted. */
+export const passwordCredential = pgTable(
+  "password_credential",
+  {
+    userId: text("user_id").primaryKey().references(() => authUser.id, { onDelete: "cascade" }),
+    passwordHash: text("password_hash").notNull(),
+    changedAt: ts("changed_at").notNull().defaultNow(),
+    failedAttempts: integer("failed_attempts").notNull().default(0),
+    lockedUntil: ts("locked_until"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [check("password_credential_failed_attempts_chk", sql`${t.failedAttempts} >= 0`)],
+);
+
+/** Opaque, HMAC-hashed activation and password-reset credentials. */
+export const authEmailToken = pgTable(
+  "auth_email_token",
+  {
+    id: id("id"),
+    userId: text("user_id").notNull().references(() => authUser.id, { onDelete: "cascade" }),
+    purpose: text("purpose").notNull(),
+    email: citext("email").notNull(),
+    keyedHash: bytea("keyed_hash").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    consumedAt: ts("consumed_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("auth_email_token_hash_uq").on(t.keyedHash),
+    index("auth_email_token_user_purpose_idx").on(t.userId, t.purpose, t.expiresAt),
+    check("auth_email_token_purpose_chk", sql`${t.purpose} IN ('activation','password_reset')`),
+  ],
+);
+
+/** Global HMAC-keyed, fixed-window limiter for unauthenticated auth endpoints. */
+export const authRateLimitBucket = pgTable(
+  "auth_rate_limit_bucket",
+  {
+    kind: text("kind").notNull(),
+    subjectHash: bytea("subject_hash").notNull(),
+    bucketStart: ts("bucket_start").notNull(),
+    requestCount: integer("request_count").notNull().default(1),
+    expiresAt: ts("expires_at").notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.kind, t.subjectHash, t.bucketStart] }),
+    index("auth_rate_limit_bucket_expiry_idx").on(t.expiresAt),
+    check("auth_rate_limit_bucket_count_chk", sql`${t.requestCount} >= 1`),
+  ],
+);
+
 export const costCenter = pgTable(
   "cost_center",
   {
@@ -109,17 +180,61 @@ export const member = pgTable(
     name: text("name"),
     role: text("role").notNull(),
     authSubject: text("auth_subject"),
+    userId: text("user_id").references(() => authUser.id),
+    invitedAt: ts("invited_at"),
+    acceptedAt: ts("accepted_at"),
     disabledAt: ts("disabled_at"),
     createdAt: ts("created_at").notNull().defaultNow(),
     updatedAt: ts("updated_at").notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex("member_email_uq").on(t.workspaceId, t.email),
+    index("member_user_workspace_idx").on(t.userId, t.workspaceId),
+    uniqueIndex("member_user_uq").on(t.userId).where(sql`${t.userId} IS NOT NULL`),
     check(
       "member_role_chk",
       sql`${t.role} IN ('owner','admin','editor','viewer','billing')`,
     ),
   ],
+);
+
+/** Workspace-scoped pending invitation; its plaintext capability is never stored. */
+export const workspaceInvitation = pgTable(
+  "workspace_invitation",
+  {
+    id: id("id"),
+    workspaceId: wsId(),
+    memberId: text("member_id").notNull().references(() => member.id, { onDelete: "cascade" }),
+    email: citext("email").notNull(),
+    role: text("role").notNull(),
+    invitedBy: text("invited_by").references(() => member.id),
+    keyedHash: bytea("keyed_hash").notNull(),
+    expiresAt: ts("expires_at").notNull(),
+    acceptedAt: ts("accepted_at"),
+    revokedAt: ts("revoked_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("workspace_invitation_hash_uq").on(t.keyedHash),
+    index("workspace_invitation_workspace_email_idx").on(t.workspaceId, t.email, t.expiresAt),
+    check("workspace_invitation_role_chk", sql`${t.role} IN ('owner','admin','editor','viewer','billing')`),
+  ],
+);
+
+/** Non-human workspace principal for service API tokens. */
+export const serviceAccount = pgTable(
+  "service_account",
+  {
+    id: id("id"),
+    workspaceId: wsId(),
+    name: text("name").notNull(),
+    description: text("description"),
+    createdBy: text("created_by").references(() => member.id),
+    disabledAt: ts("disabled_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("service_account_name_uq").on(t.workspaceId, t.name)],
 );
 
 export const teamMember = pgTable(
@@ -144,7 +259,11 @@ export const apiToken = pgTable(
     displayPrefix: text("display_prefix").notNull(),
     keyedHash: bytea("keyed_hash").notNull(),
     scopes: jsonb("scopes").notNull(),
+    kind: text("kind").notNull().default("legacy"),
+    label: text("label"),
     createdBy: text("created_by").references(() => member.id),
+    userId: text("user_id").references(() => authUser.id),
+    serviceAccountId: text("service_account_id").references(() => serviceAccount.id),
     expiresAt: ts("expires_at"),
     revokedAt: ts("revoked_at"),
     lastUsedAt: ts("last_used_at"),
@@ -153,6 +272,10 @@ export const apiToken = pgTable(
   (t) => [
     uniqueIndex("api_token_hash_uq").on(t.keyedHash),
     uniqueIndex("api_token_prefix_uq").on(t.workspaceId, t.displayPrefix),
+    index("api_token_user_workspace_idx").on(t.userId, t.workspaceId),
+    index("api_token_service_account_idx").on(t.serviceAccountId),
+    check("api_token_kind_chk", sql`${t.kind} IN ('legacy','personal','service')`),
+    check("api_token_subject_chk", sql`(${t.kind} = 'legacy' AND ${t.userId} IS NULL AND ${t.serviceAccountId} IS NULL) OR (${t.kind} = 'personal' AND ${t.userId} IS NOT NULL AND ${t.serviceAccountId} IS NULL) OR (${t.kind} = 'service' AND ${t.userId} IS NULL AND ${t.serviceAccountId} IS NOT NULL)`),
   ],
 );
 
@@ -165,8 +288,13 @@ export const consoleSession = pgTable(
     memberId: text("member_id")
       .notNull()
       .references(() => member.id),
+    userId: text("user_id").references(() => authUser.id),
     keyedHash: bytea("keyed_hash").notNull(),
+    csrfHash: bytea("csrf_hash"),
     scopes: jsonb("scopes").notNull(),
+    sessionVersion: integer("session_version"),
+    userAgent: text("user_agent"),
+    ipHash: bytea("ip_hash"),
     expiresAt: ts("expires_at").notNull(),
     revokedAt: ts("revoked_at"),
     lastUsedAt: ts("last_used_at"),
@@ -175,6 +303,8 @@ export const consoleSession = pgTable(
   (t) => [
     uniqueIndex("console_session_hash_uq").on(t.keyedHash),
     index("console_session_member_idx").on(t.workspaceId, t.memberId),
+    index("console_session_user_idx").on(t.userId, t.workspaceId),
+    check("console_session_version_chk", sql`${t.sessionVersion} IS NULL OR ${t.sessionVersion} >= 1`),
   ],
 );
 

@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "schemaSha256": "7e131a506f1963257ea4cc2eb2bc929407628dbc25f97c43871a0df560a16cb8",
-  "drizzleGeneratedSha256": "e3676a67d82e12bde3b55f6213c3e70bc545a5fc54bc859d52531c87139c4569",
+  "schemaSha256": "6e6380833632cf16a75836275cbdda339bac84eabc61569bf4e7a8a0d7fd6f83",
+  "drizzleGeneratedSha256": "00a5e4efebe131d9f4d8d3437e8f3ccee9403d549def403d90941871350c808f",
   "migrations": {
     "0000_tiresome_piledriver.sql": "eef3c3b57704d4c4fc5b4add86b532211d768dce6887fc4f1961a6d3857d9cf1",
     "0001_partitions.sql": "6b86961c0898ad78f54cbf128a28df4b3355425bb95181a8801bb88c50d29898",
@@ -34,6 +34,7 @@
     "0028_mutation_replay_cleanup.sql": "b0d8b2d31e23c88df31d939213e41df971bda39cc8e32e623d97d3ea4a1267b3",
     "0029_storage_scheduler.sql": "6ed2c2b40759ebe5b60992017b101c5104b450a1e2094f11ef3b6c1a2fd145af",
     "0030_storage_rollup_source_checkpoints.sql": "01b2d86d97fb4a052fbbdedaa3a2868555af58f3b6be83139e46afbff02122f4",
-    "0031_storage_resumable_multipart.sql": "e5c1af6e62b2958a0e9450945641639e33f4069059138d1f4bc2fefa88d5cad6"
+    "0031_storage_resumable_multipart.sql": "e5c1af6e62b2958a0e9450945641639e33f4069059138d1f4bc2fefa88d5cad6",
+    "0032_human_auth.sql": "fbdf1ea0a8481145aa4a76640fab6627944755bba190e66bd83f3193fa8b94ce"
   }
 }

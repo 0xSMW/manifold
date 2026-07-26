@@ -7,6 +7,7 @@ import {
   CliAuthorizationStartRequest,
   ContextResponse,
   HealthResponse,
+  MeResponse,
   SessionLoginResponse,
   TeamsResponse,
   ControlPlaneEndpointContracts,
@@ -27,6 +28,19 @@ import {
   BudgetEndpointContracts,
   AuditEndpointContracts,
   SettingsEndpointContracts,
+  PublicActivationStatusResponse,
+  PublicActivationRequest,
+  PublicActivationRequestResponse,
+  PublicActivationCompleteRequest,
+  EmailPasswordLoginRequest,
+  ForgotPasswordRequest,
+  ForgotPasswordResponse,
+  ResetPasswordRequest,
+  InvitationInspectResponse,
+  InvitationAcceptRequest,
+  CliSelfRevokeResponse,
+  ErrorCode,
+  ReasonCode,
 } from "../src/index.ts";
 
 test("health golden contract is exact", () => {
@@ -39,6 +53,41 @@ test("session family response rejects accidental fields", () => {
   const golden = { member: { id: "mem_1", email: "operator@example.test", name: null, role: "owner" }, role: "owner", expiresAt: "2026-07-25T08:00:00.000Z" };
   assert.deepEqual(SessionLoginResponse.parse(golden), golden);
   assert.equal(SessionLoginResponse.safeParse({ ...golden, sourceToken: "never" }).success, false);
+});
+
+test("current identity response includes the nullable human display name", () => {
+  const golden = {
+    member: { id: "mem_1", email: "operator@example.test", name: "Operator", role: "owner" },
+    role: "owner",
+    workspace: { id: "ws_1", slug: "acme", name: "Acme", region: "us-east-1" },
+    scopes: ["config:read"],
+    availableIngressProfiles: [],
+    sessionExpiresAt: "2026-07-25T08:00:00.000Z",
+  };
+  assert.deepEqual(MeResponse.parse(golden), golden);
+  assert.equal(MeResponse.safeParse({ ...golden, member: { ...golden.member, passwordHash: "never" } }).success, false);
+});
+
+test("first-party human-auth contracts are strict, generic, and do not leak credentials", () => {
+  assert.deepEqual(PublicActivationStatusResponse.parse({ required: true, configured: false }), { required: true, configured: false });
+  assert.deepEqual(PublicActivationRequest.parse({ email: "operator@example.test" }), { email: "operator@example.test" });
+  assert.deepEqual(PublicActivationRequestResponse.parse({ accepted: true }), { accepted: true });
+  assert.deepEqual(PublicActivationCompleteRequest.parse({ token: "activate_token", name: "Operator", password: "correct-horse-battery" }), { token: "activate_token", name: "Operator", password: "correct-horse-battery" });
+  assert.deepEqual(EmailPasswordLoginRequest.parse({ email: "operator@example.test", password: "correct-horse-battery" }), { email: "operator@example.test", password: "correct-horse-battery" });
+  assert.deepEqual(ForgotPasswordRequest.parse({ email: "operator@example.test" }), { email: "operator@example.test" });
+  assert.deepEqual(ForgotPasswordResponse.parse({ accepted: true }), { accepted: true });
+  assert.deepEqual(ResetPasswordRequest.parse({ token: "reset_token", password: "correct-horse-battery" }), { token: "reset_token", password: "correct-horse-battery" });
+  const invitation = { workspace: { name: "Acme" }, email: "operator@example.test", role: "editor", expiresAt: "2026-07-25T08:00:00.000Z" };
+  assert.deepEqual(InvitationInspectResponse.parse(invitation), invitation);
+  assert.deepEqual(InvitationAcceptRequest.parse({ token: "invite_token", name: "Operator", password: "correct-horse-battery" }), { token: "invite_token", name: "Operator", password: "correct-horse-battery" });
+  assert.equal(PublicActivationRequest.safeParse({ email: "operator@example.test", accountExists: true }).success, false);
+  assert.equal(EmailPasswordLoginRequest.safeParse({ email: "operator@example.test", password: "short" }).success, false);
+  assert.equal(ResetPasswordRequest.safeParse({ token: "reset_token", password: "x".repeat(129) }).success, false);
+  assert.equal(InvitationInspectResponse.safeParse({ ...invitation, passwordHash: "never" }).success, false);
+  assert.equal(CliSelfRevokeResponse.safeParse({ revoked: true, accessToken: "never" }).success, false);
+  assert.equal(ErrorCode.parse("AUTH_INVALID_CREDENTIALS"), "AUTH_INVALID_CREDENTIALS");
+  assert.equal(ErrorCode.parse("LAST_OWNER_PROTECTED"), "LAST_OWNER_PROTECTED");
+  assert.equal(ReasonCode.parse("AUTH_LAST_OWNER_PROTECTED"), "AUTH_LAST_OWNER_PROTECTED");
 });
 
 test("cli authorization request and response contracts reject unknown fields", () => {
@@ -123,6 +172,7 @@ test("governance request contracts reject mutation fields outside their route sc
   assert.equal(BudgetEndpointContracts.allocate.safeParse({ childId: "bud_child", reservedAllowance: "10", limitAmount: "100" }).success, false);
   assert.equal(AuditEndpointContracts.destinationCreate.safeParse({ kind: "webhook", label: "SIEM", endpoint: "https://audit.example.test", secret: null, enabled: true }).success, false);
   assert.equal(SettingsEndpointContracts.tokenMint.safeParse({ scopes: ["config:read"], plaintext: "injected" }).success, false);
+  assert.equal(SettingsEndpointContracts.tokenMint.safeParse({ kind: "personal", scopes: ["config:read"] }).success, false);
 });
 
 test("audit timeline remains a discriminated strict union and token plaintext is copy-once", () => {
@@ -130,7 +180,7 @@ test("audit timeline remains a discriminated strict union and token plaintext is
   const list = { data: [policyDecision], nextCursor: null, capabilities: { chainVerification: "available", destinations: "available", compaction: "not_applicable" } };
   assert.deepEqual(AuditEndpointContracts.list.parse(list), list);
   assert.equal(AuditEndpointContracts.list.safeParse({ ...list, data: [{ ...policyDecision, actor: "invented" }] }).success, false);
-  const token = { data: { id: "tok_1", displayPrefix: "mf_tok_abc", scopes: ["config:read"], expiresAt: null, plaintext: "mf_tok_secret" } };
+  const token = { data: { id: "tok_1", displayPrefix: "mf_tok_abc", kind: "personal", name: "Local development", scopes: ["config:read"], expiresAt: null, plaintext: "mf_tok_secret" } };
   assert.deepEqual(SettingsEndpointContracts.tokenMintResponse.parse(token), token);
   assert.equal(SettingsEndpointContracts.tokenList.safeParse({ data: [{ ...token.data, createdByMemberId: null, revokedAt: null, lastUsedAt: null, createdAt: "2026-07-25T00:00:00.000Z" }], nextCursor: null }).success, false);
 });
@@ -146,6 +196,25 @@ test("settings contracts reject unknown, duplicate-shaped, and bodyless mutation
   assert.equal(SettingsEndpointContracts.actionUpdate.safeParse({}).success, false);
   assert.deepEqual(SettingsEndpointContracts.teamArchived.parse({ data: { id: "team_1", archived: true } }), { data: { id: "team_1", archived: true } });
   assert.equal(SettingsEndpointContracts.teamArchived.safeParse({ data: { id: "team_1", archived: true, plaintext: "secret" } }).success, false);
+});
+
+test("settings human-auth management schemas expose statuses without hashes or plaintext", () => {
+  const invitation = { id: "inv_1", email: "operator@example.test", role: "editor", status: "pending", expiresAt: "2026-07-25T08:00:00.000Z", acceptedAt: null, revokedAt: null, createdAt: "2026-07-25T00:00:00.000Z" };
+  assert.deepEqual(SettingsEndpointContracts.invitationList.parse({ data: [invitation], nextCursor: null }), { data: [invitation], nextCursor: null });
+  assert.equal(SettingsEndpointContracts.invitationList.safeParse({ data: [{ ...invitation, tokenHash: "never" }], nextCursor: null }).success, false);
+  const session = { id: "ses_1", status: "active", current: true, createdAt: "2026-07-25T00:00:00.000Z", lastSeenAt: null, expiresAt: "2026-07-25T08:00:00.000Z", revokedAt: null };
+  assert.deepEqual(SettingsEndpointContracts.sessionList.parse({ data: [session], nextCursor: null }), { data: [session], nextCursor: null });
+  assert.equal(SettingsEndpointContracts.sessionRevokeOthers.safeParse({ data: { revokedCount: -1 } }).success, false);
+  const account = { id: "svc_1", name: "deploy", status: "active", createdAt: "2026-07-25T00:00:00.000Z", disabledAt: null, lastUsedAt: null };
+  assert.deepEqual(SettingsEndpointContracts.serviceAccountResponse.parse({ data: account }), { data: account });
+  const minted = { data: { id: "tok_1", displayPrefix: "mf_tok_abc", scopes: ["config:read"], expiresAt: null, kind: "serviceAccount", name: "deploy", plaintext: "mf_tok_copy_once" } };
+  assert.deepEqual(SettingsEndpointContracts.serviceAccountTokenMintResponse.parse(minted), minted);
+  assert.equal(SettingsEndpointContracts.serviceAccountList.safeParse({ data: [{ ...account, tokenHash: "never" }], nextCursor: null }).success, false);
+  assert.equal(SettingsEndpointContracts.serviceAccountTokenMint.safeParse({ kind: "serviceAccount", name: "deploy", scopes: ["config:read"], plaintext: "injected" }).success, false);
+  const pendingMember = { data: [{ id: "mem_1", email: "operator@example.test", name: null, role: "viewer", status: "pending", createdAt: "2026-07-25T00:00:00.000Z" }], nextCursor: null };
+  assert.deepEqual(SettingsEndpointContracts.lists.member.parse(pendingMember), pendingMember);
+  const legacyToken = { id: "tok_legacy", displayPrefix: "mf_tok_old", kind: "legacy", name: null, scopes: ["config:read"], createdByMemberId: null, expiresAt: null, revokedAt: null, lastUsedAt: null, createdAt: "2026-07-25T00:00:00.000Z" };
+  assert.deepEqual(SettingsEndpointContracts.tokenList.parse({ data: [legacyToken], nextCursor: null }), { data: [legacyToken], nextCursor: null });
 });
 
 test("settings CLI review list schema matches its human-review projection", () => {

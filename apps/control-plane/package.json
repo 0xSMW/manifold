@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "lint:copy": "node scripts/lint-ui-copy.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:human-auth:real-pg": "tsx e2e-real/run-human-auth-real-pg.ts",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:update": "playwright test --update-snapshots"
   },
@@ -22,6 +23,7 @@
     "@manifold/ids": "*",
     "@manifold/observability": "*",
     "@manifold/storage": "*",
+    "@node-rs/argon2": "2.0.2",
     "@vercel/analytics": "^1",
     "next": "latest",
     "react": "^19",
@@ -29,11 +31,11 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.11.0",
+    "@playwright/test": "^1.55.0",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "typescript": "^5.6",
-    "@axe-core/playwright": "^4.11.0",
-    "@playwright/test": "^1.55.0"
+    "typescript": "^5.6"
   }
 }
