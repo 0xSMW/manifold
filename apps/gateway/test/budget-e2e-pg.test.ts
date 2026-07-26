@@ -133,7 +133,7 @@ function makeCtx(snapshot: Snapshot, fetcher: Fetcher): GatewayContext {
 function req(body: unknown, key: string = VALID_KEY): Request {
   return new Request(`http://${HOST}/v1/chat/completions`, {
     method: "POST",
-    headers: { host: HOST, authorization: `Bearer ${key}` },
+    headers: { host: HOST, authorization: `Bearer ${key}`, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }
@@ -170,7 +170,7 @@ test("under-cap request ⇒ dispatched (upstream call 1) and a REAL budget_reser
   const ctx = makeCtx(snap, fetcher);
 
   const before = await reservationCount();
-  const res = await handleRequest(ctx, req({ model: "be2e-model", max_tokens: 50 }));
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 50 }));
 
   assert.equal(res.status, 200, "an under-cap request proceeds to dispatch");
   assert.equal(fetcher.count, 1, "the under-cap request WAS dispatched to the provider exactly once");
@@ -189,7 +189,7 @@ test("over-cap request ⇒ 402 BUDGET_RESERVE_DENIED and upstream call count 0 (
 
   const before = await reservationCount();
   // est ≈ max_tokens = 1000 ≫ cap 100 ⇒ the DB reserve denies (committed+reserved+est > limit).
-  const res = await handleRequest(ctx, req({ model: "be2e-model", max_tokens: 1000 }));
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 1000 }));
 
   assert.equal(res.status, 402, "an over-cap hard budget returns 402");
   const body = (await res.json()) as { error: { code: string } };
@@ -207,7 +207,7 @@ test("(#3) TOKEN-unit hard budget: over-token-cap request ⇒ 402, upstream coun
   const ctx = makeCtx(snap, fetcher);
 
   // estTokens = input_est(~10) + max_tokens(1000) = ~1010 ≫ 100-token cap ⇒ the DB reserve denies.
-  const res = await handleRequest(ctx, req({ model: "be2e-model", max_tokens: 1000 }, TOKEN_KEY));
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 1000 }, TOKEN_KEY));
   assert.equal(res.status, 402, "an over-token-cap hard budget returns 402");
   const body = (await res.json()) as { error: { code: string } };
   assert.equal(body.error.code, "BUDGET_RESERVE_DENIED", "reserve-denied reason reaches the client");
@@ -220,7 +220,7 @@ test("(#3) TOKEN-unit hard budget: under-token-cap request ⇒ dispatched (upstr
   const ctx = makeCtx(snap, fetcher);
 
   // estTokens = input_est(~10) + max_tokens(10) = ~20 ≤ 100-token cap ⇒ reserve admits, dispatches.
-  const res = await handleRequest(ctx, req({ model: "be2e-model", max_tokens: 10 }, TOKEN_KEY));
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 10 }, TOKEN_KEY));
   assert.equal(res.status, 200, "an under-token-cap request dispatches");
   assert.equal(fetcher.count, 1, "the under-token-cap request WAS dispatched exactly once");
 });

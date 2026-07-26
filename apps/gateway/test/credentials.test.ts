@@ -9,7 +9,7 @@ import { credentialAad, packBase64, sealAesGcm, unpackBase64, utf8, wrapDek } fr
 import { handleRequest, type GatewayContext } from "@manifold/gateway-core";
 import type { Snapshot, SnapshotTarget } from "@manifold/ports";
 import { FakeCrypto, FakeFetcher, FakeIngestSink, FixedClock, keyedHashHex } from "@manifold/ports/testing";
-import { decryptTargetSecret, makeSecretResolver } from "../src/server.ts";
+import { decryptTargetSecret, makeSecretResolver, parseDataKeks, parseKeyPeppers } from "../src/server.ts";
 
 const SECRET = "sk-ant-REAL-PROVIDER-SECRET-should-never-be-plaintext";
 const KEK = new Uint8Array(randomBytes(32));
@@ -45,6 +45,30 @@ test("credential ciphertext is bound to its id: a swapped credentialId fails clo
 
 test("wrong KEK cannot decrypt (throws, no wrong-secret)", () => {
   assert.throws(() => decryptTargetSecret(target(), new Uint8Array(randomBytes(32))));
+});
+
+test("versioned KEKs select the exact target key while overlap serves old ID-less snapshots", async () => {
+  const nextKek = new Uint8Array(randomBytes(32));
+  const nextDek = new Uint8Array(randomBytes(32));
+  const nextCiphertext = packBase64(sealAesGcm(nextDek, utf8(SECRET), credentialAad("cred_next")));
+  const nextWrappedDek = packBase64(wrapDek(nextKek, nextDek));
+  const resolve = makeSecretResolver(KEK, { kek_old: KEK, kek_new: nextKek });
+  assert.equal(await resolve(target()), SECRET, "legacy ID-less target uses explicit legacy KEK");
+  assert.equal(await resolve(target({ credentialId: "cred_next", kekId: "kek_new", credentialCiphertext: nextCiphertext, wrappedDek: nextWrappedDek })), SECRET);
+  await assert.rejects(resolve(target({ kekId: "missing" })), /matching credential encryption key/);
+  await assert.rejects(makeSecretResolver(undefined, { kek_new: nextKek })(target()), /matching credential encryption key/);
+  await assert.rejects(makeSecretResolver(KEK, { kek_new: nextKek })(target({ kekId: "kek_new" })));
+});
+
+test("rotation env parsers reject malformed pepper and KEK keyrings without echoing material", () => {
+  for (const value of ["", "[]", "[\"a\",\"b\",\"c\"]", "[\"\"]", "{\"x\":1}"]) {
+    assert.throws(() => parseKeyPeppers(value), /MANIFOLD_KEY_PEPPERS/);
+  }
+  for (const value of ["", "{}", "[]", '{"kek_a":"not-base64"}', '{"kek_a":"AAAA"}']) {
+    assert.throws(() => parseDataKeks(value), /MANIFOLD_DATA_KEKS/);
+  }
+  const encoded = Buffer.from(KEK).toString("base64");
+  assert.deepEqual(Object.keys(parseDataKeks(JSON.stringify({ kek_current: encoded }))), ["kek_current"]);
 });
 
 test("tampered ciphertext ⇒ resolver rejects (GCM integrity, never a wrong secret)", async () => {

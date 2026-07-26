@@ -9,7 +9,7 @@
 //     → gateway-core.handleRequest (REAL DB reserve pre-dispatch; mock upstream returns a JSON
 //       `usage` block) → flat terminal observation carrying tokens + dispatch price + reservation
 //     → observability.journalFromPortsEvents → reduce() → project() (§6.10 computeCost)
-//     → INSERT cost_ledger + usage_record  AND  @manifold/budget.commit (reserved→committed).
+//     → INSERT observation + cost_ledger + usage_record  AND  @manifold/budget.commit (reserved→committed).
 //
 // The reserve AND the commit are REAL DB transactions against the SAME container; the cost is REAL
 // §6.10 integer-µ$ math. Spends ZERO external tokens: an in-memory fetcher stands in for the provider.
@@ -129,7 +129,7 @@ function makeCtx(snapshot: Snapshot, fetcher: Fetcher): { ctx: GatewayContext; i
 function req(body: unknown): Request {
   return new Request(`http://${HOST}/v1/chat/completions`, {
     method: "POST",
-    headers: { host: HOST, authorization: `Bearer ${VALID_KEY}` },
+    headers: { host: HOST, authorization: `Bearer ${VALID_KEY}`, "content-type": "application/json" },
     body: JSON.stringify(body),
   });
 }
@@ -158,13 +158,13 @@ test("snapshot carries the offering's dispatch price (offerings[off].price)", as
   assert.equal(off.price?.outputPerMtokMicroUsd, String(OUTPUT_PRICE));
 });
 
-test("real request → correct cost_ledger row AND reservation reserved→committed at ACTUAL cost", async () => {
+test("real request → atomically projects observation, usage, cost ledger, and reservation reconciliation", async () => {
   const snap = await buildSnapshot(pg.sql, INSTALLATION);
   const fetcher = new UsageFetcher();
   const { ctx, ingest } = makeCtx(snap, fetcher);
 
   // Drive a REAL request. The DB reserve runs pre-dispatch; the mock upstream returns the usage body.
-  const res = await handleRequest(ctx, req({ model: "oe2e-model", max_tokens: 500 }));
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 500 }));
   assert.equal(res.status, 200, "the under-cap request dispatches");
   assert.equal(fetcher.count, 1, "upstream was called exactly once");
 
@@ -193,7 +193,45 @@ test("real request → correct cost_ledger row AND reservation reserved→commit
     producerId: INSTALLATION,
   });
 
-  // (a) cost_ledger row exists with amount_microusd == the hand-computed computeCost, to the µ$.
+  // (a) One transaction leaves the queryable observation and both derived rows present together.
+  const rows = await pg.sql<{
+    observations: string;
+    usages: string;
+    ledgers: string;
+    profile_mode: string | null;
+    final_provider: string | null;
+    final_offering_id: string | null;
+    attempts: number | null;
+    failovers: number | null;
+    input_tokens: string | null;
+    output_tokens: string | null;
+    cost_microusd: string | null;
+    cost_fidelity: string | null;
+  }[]>`
+    SELECT
+      (SELECT count(*)::text FROM observation WHERE trace_id = ${traceId}) AS observations,
+      (SELECT count(*)::text FROM usage_record WHERE trace_id = ${traceId}) AS usages,
+      (SELECT count(*)::text FROM cost_ledger WHERE trace_id = ${traceId}) AS ledgers,
+      o.profile_mode, o.final_provider, o.final_offering_id, o.attempts, o.failovers,
+      o.input_tokens::text, o.output_tokens::text, o.cost_microusd::text, o.cost_fidelity
+    FROM observation o
+    WHERE o.trace_id = ${traceId}
+  `;
+  assert.equal(rows.length, 1, "one queryable observation was written for the trace");
+  assert.equal(rows[0]!.observations, "1");
+  assert.equal(rows[0]!.usages, "1");
+  assert.equal(rows[0]!.ledgers, "1");
+  assert.equal(rows[0]!.profile_mode, "public_app", "mode is resolved from gateway_ingress_profile");
+  assert.equal(rows[0]!.final_provider, null, "flat events do not carry a provider name");
+  assert.equal(rows[0]!.final_offering_id, OFFERING);
+  assert.equal(rows[0]!.attempts, 1);
+  assert.equal(rows[0]!.failovers, 0);
+  assert.equal(BigInt(rows[0]!.input_tokens ?? "0"), INPUT_TOKENS);
+  assert.equal(BigInt(rows[0]!.output_tokens ?? "0"), OUTPUT_TOKENS);
+  assert.equal(BigInt(rows[0]!.cost_microusd ?? "0"), EXPECTED_COST);
+  assert.equal(rows[0]!.cost_fidelity, "exact");
+
+  // (b) cost_ledger row exists with amount_microusd == the hand-computed computeCost, to the µ$.
   const ledger = await pg.sql<{ amount_microusd: string; fidelity: string; offering_id: string; price_revision_id: string }[]>`
     SELECT amount_microusd, fidelity, offering_id, price_revision_id
     FROM cost_ledger WHERE trace_id = ${traceId}
@@ -210,7 +248,7 @@ test("real request → correct cost_ledger row AND reservation reserved→commit
   // The projection agrees with the returned Observation cost.
   assert.equal(result.cost.amountMicroUsd, EXPECTED_COST);
 
-  // (b) the reservation moved reserved→committed by the ACTUAL cost.
+  // (c) the reservation moved reserved→committed by the ACTUAL cost.
   const resv = await pg.sql<{ status: string; reconciled_microusd: string | null }[]>`
     SELECT status, reconciled_microusd FROM budget_reservation WHERE budget_account_id = ${BUDGET_ACCOUNT}
   `;
@@ -242,7 +280,7 @@ test("idempotent re-ingest: same trace twice ⇒ cost_ledger written ONCE and co
   const fetcher = new UsageFetcher();
   const { ctx, ingest } = makeCtx(snap, fetcher);
 
-  const res = await handleRequest(ctx, req({ model: "oe2e-model", max_tokens: 500 }));
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 500 }));
   assert.equal(res.status, 200, "the under-cap request dispatches");
   const traceId = res.headers.get("x-trace-id");
   assert.ok(traceId, "trace id returned");
@@ -267,6 +305,11 @@ test("idempotent re-ingest: same trace twice ⇒ cost_ledger written ONCE and co
   `;
   assert.equal(ledger[0]!.n, "1", "a redelivered trace must NOT double-write the money-truth ledger");
 
+  const observations = await pg.sql<{ n: string }[]>`
+    SELECT count(*)::text AS n FROM observation WHERE trace_id = ${traceId}
+  `;
+  assert.equal(observations[0]!.n, "1", "a redelivered trace must NOT duplicate the queryable observation");
+
   const after = await pg.sql<{ committed_microusd: string }[]>`
     SELECT committed_microusd FROM budget_window_state WHERE budget_account_id = ${BUDGET_ACCOUNT}
   `;
@@ -274,11 +317,10 @@ test("idempotent re-ingest: same trace twice ⇒ cost_ledger written ONCE and co
   assert.equal(committedDelta, EXPECTED_COST, "the reservation commits exactly once, not twice");
 });
 
-// review gateway-F5 / #2: a STREAMED success captures no usage, so pre-fix its terminal carried NO
-// reservation id and the hold was orphaned until an (unwired) sweep — a budget-hold DoS + headroom
-// leak. Now the terminal ALWAYS carries the reservation id, so ingest reconciles it (commits at $0,
-// releasing the hold) even with no measured usage.
-test("gateway-F5/#2: a STREAMED success (no usage) RELEASES the hold, not orphaned at 'reserved'", async () => {
+// review gateway-F5 / #2: a STREAMED success without provider usage once omitted its reservation
+// id and orphaned the hold. The terminal now carries both the reservation id and the conservative
+// admission estimate, so ingest releases the hold without understating hard-budget consumption.
+test("gateway-F5/#2: a STREAMED success without provider usage commits its conservative estimate", async () => {
   const snap = await buildSnapshot(pg.sql, INSTALLATION);
   // No content-length + event-stream ⇒ isBufferableJson=false ⇒ no usage captured (a real SSE shape).
   const streamFetcher: Fetcher = {
@@ -291,14 +333,22 @@ test("gateway-F5/#2: a STREAMED success (no usage) RELEASES the hold, not orphan
   };
   const { ctx, ingest } = makeCtx(snap, streamFetcher);
 
-  const res = await handleRequest(ctx, req({ model: "oe2e-model", max_tokens: 500 }));
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 500 }));
   assert.equal(res.status, 200, "the streamed response is relayed");
+  await res.text();
+  for (let attempt = 0; attempt < 100 && !ingest.events.some((event) => event.kind === "terminal"); attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
   const traceId = res.headers.get("x-trace-id");
   assert.ok(traceId, "trace id returned");
 
   const terminal = ingest.events.find((e) => e.kind === "terminal");
   assert.ok(terminal, "a terminal was emitted for the streamed success");
-  assert.equal(terminal.usage, undefined, "a streamed response captures NO usage (the pre-fix leak trigger)");
+  assert.deepEqual(
+    terminal.usage,
+    { inputTokens: 10, outputTokens: 500 },
+    "missing provider usage falls back to the hard-budget admission estimate",
+  );
   assert.ok(terminal.reservationId, "the streamed-success terminal MUST still carry the reservation id");
 
   // Reservation for THIS trace exists and is 'reserved' before ingest.
@@ -321,6 +371,48 @@ test("gateway-F5/#2: a STREAMED success (no usage) RELEASES the hold, not orphan
   assert.equal(
     resv[0]!.status,
     "committed",
-    "the streamed-success hold was RELEASED (committed at $0), not stranded at 'reserved'",
+    "the streamed-success hold was released with the conservative estimate, not stranded at 'reserved'",
   );
+});
+
+test("streamed SSE usage commits the provider-reported actual cost", async () => {
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
+  const streamFetcher: Fetcher = {
+    async fetch() {
+      const usageFrame = JSON.stringify({
+        usage: {
+          prompt_tokens: Number(INPUT_TOKENS),
+          completion_tokens: Number(OUTPUT_TOKENS),
+        },
+      });
+      return new Response(`data: ${usageFrame}\n\ndata: [DONE]\n\n`, {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+  };
+  const { ctx, ingest } = makeCtx(snap, streamFetcher);
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 500 }));
+  const traceId = res.headers.get("x-trace-id");
+  assert.ok(traceId);
+  await res.text();
+  for (let attempt = 0; attempt < 100 && !ingest.events.some((event) => event.kind === "terminal"); attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  const terminal = ingest.events.find((event) => event.kind === "terminal");
+  assert.equal(terminal?.usage?.inputTokens, Number(INPUT_TOKENS));
+  assert.equal(terminal?.usage?.outputTokens, Number(OUTPUT_TOKENS));
+
+  await ingestTrace({
+    sql: pg.sql as unknown as Sql,
+    events: ingest.events,
+    workspaceId: WORKSPACE,
+    producerId: INSTALLATION,
+  });
+  const ledger = await pg.sql<{ amount_microusd: string }[]>`
+    SELECT amount_microusd::text
+    FROM cost_ledger
+    WHERE trace_id = ${traceId}
+  `;
+  assert.equal(BigInt(ledger[0]!.amount_microusd), EXPECTED_COST);
 });

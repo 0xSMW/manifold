@@ -3,14 +3,21 @@
 // This is the ADAPTER seam that closes the observation/billing loop the gateway core opened. The core
 // emits FLAT `@manifold/ports` events into an IngestSink; here we (1) map them to journal events via
 // @manifold/observability's #113 mapper, (2) `reduce()` the trace to a deterministic Observation,
-// (3) `project()` it to usage_record + cost_ledger rows, (4) INSERT those into Postgres, and (5)
+// (3) `project()` it to observation + usage_record + cost_ledger rows, (4) INSERT those into
+// Postgres, and (5)
 // reconcile the hard-budget reservation reserved→committed with the ACTUAL cost via @manifold/budget.
 //
 // The DB driver touch lives HERE (an adapter), never in gateway-core or observability (§4.2): those
 // stay pure. The ingest TRANSPORT is in-process (call this directly with the collected events); the
 // DB writes and the §6.10 cost math are REAL. A durable queue/worker is the production transport, but
 // it reduces/projects with this exact code.
-import { setWorkspaceGuc, type Sql, type TransactionSql } from "@manifold/database";
+import {
+  recordProviderAttemptHealthFacts,
+  setWorkspaceGuc,
+  type ProviderAttemptHealthFactInput,
+  type Sql,
+  type TransactionSql,
+} from "@manifold/database";
 import type { HotPathObservationEvent } from "@manifold/ports";
 import { commit, ulid, ulidCreatedAt, type CommitResult } from "@manifold/budget";
 import {
@@ -43,7 +50,8 @@ export interface IngestTraceResult {
 }
 
 /**
- * Ingest one trace's flat events: map → reduce → project → INSERT usage_record + cost_ledger, then
+ * Ingest one trace's flat events: map → reduce → project → INSERT observation + usage_record +
+ * cost_ledger, then
  * (if a reservation rode on the terminal) commit it to the ACTUAL projected cost. Returns the
  * projected rows + reconcile outcome so callers/tests can assert on them.
  */
@@ -63,8 +71,9 @@ export async function ingestTrace(input: IngestTraceInput): Promise<IngestTraceR
   // than wall-clock now() (which would differ per delivery and defeat the unique).
   const occurredAt = observation.occurredAt ?? deterministicOccurredAt(observation.traceId);
 
-  // Project-insert both rows in ONE transaction so the ledger and usage rows never diverge on a partial
-  // failure (money reviewer #9). Both are ON CONFLICT DO NOTHING, so a redelivery is a clean no-op.
+  // Project-insert all three rows in ONE transaction so the queryable journal, ledger, and usage rows
+  // never diverge on a partial failure (money reviewer #9). Every write is ON CONFLICT DO NOTHING,
+  // so a redelivery is a clean no-op.
   //
   // Scope the tenant GUC FIRST, before either INSERT (review live-money-wiring #3): usage_record and
   // cost_ledger are FORCE-RLS workspace-scoped tables (migration 0001 §9), and their policy governs
@@ -75,8 +84,20 @@ export async function ingestTrace(input: IngestTraceInput): Promise<IngestTraceR
   // EXEMPT from RLS and would pass either way, which is exactly why this bug shipped invisibly.
   await sql.begin(async (tx) => {
     await setWorkspaceGuc(tx, workspaceId);
+    await insertObservation(tx, observationId, occurredAt, observation, events, producerId, cost.amountMicroUsd);
     await insertUsageRecord(tx, observationId, occurredAt, usage);
     await insertCostLedger(tx, observationId, occurredAt, cost);
+    // Provider-attempt facts are deliberately admitted in the same RLS-scoped
+    // transaction as durable billing telemetry.  The health helper validates
+    // ownership against the active route revision and signed snapshot, making
+    // stale or forged attribution a harmless telemetry-only event.  Its stable
+    // source-event id also makes a retried ingest a no-op.
+    await recordProviderAttemptHealthFacts(
+      tx,
+      workspaceId,
+      producerId,
+      providerAttemptHealthFacts(events),
+    );
   });
 
   // BUDGET RECONCILE (§8.4): move the hold reserved→committed at the ACTUAL cost AND actual tokens. The
@@ -91,6 +112,129 @@ export async function ingestTrace(input: IngestTraceInput): Promise<IngestTraceR
   }
 
   return { observation, usage, cost, committed };
+}
+
+/**
+ * The flat gateway event carries the stable profile ID rather than a duplicated mode. Resolve its
+ * mode from the RLS-scoped ingress-profile source of truth at projection time, so an installation
+ * with both profile types never has an opaque ID mistaken for a trust-model label. A trace emitted
+ * before profile resolution has no profile ID; record that fact as `unknown` rather than inventing
+ * a profile mode.
+ */
+async function profileModeFor(
+  sql: Sql | TransactionSql,
+  workspaceId: string,
+  events: readonly HotPathObservationEvent[],
+): Promise<string> {
+  const profileId = events.find((event) => event.profileId.length > 0)?.profileId;
+  if (!profileId) return "unknown";
+  const rows = await sql<{ mode: string }[]>`
+    SELECT mode
+    FROM gateway_ingress_profile
+    WHERE workspace_id = ${workspaceId} AND id = ${profileId}
+    LIMIT 1
+  `;
+  return rows[0]?.mode ?? "unknown";
+}
+
+/** Gateway-core caps capture envelopes; preserve that cap at the durable adapter boundary too. */
+const MAX_CAPTURE_REF_BYTES = 4 * 1024;
+
+/** Translate a terminal capture envelope into the capture_ref shape read by the control plane. */
+function captureRef(events: readonly HotPathObservationEvent[]): Record<string, unknown> | null {
+  const terminal = events.find((event) => event.kind === "terminal");
+  const capture = terminal?.capture;
+  if (!capture || (capture.mode !== "redacted" && capture.mode !== "full")) return null;
+  const redacted = capture.mode === "redacted";
+  if (capture.truncated === true) return { redacted, truncated: true, bytes: 0 };
+  const request = capture.request;
+  const response = capture.response;
+  const bytes = Buffer.byteLength(
+    JSON.stringify({ ...(request ? { request } : {}), ...(response ? { response } : {}) }),
+    "utf8",
+  );
+  if (bytes > MAX_CAPTURE_REF_BYTES) return { redacted, truncated: true, bytes: 0 };
+  return {
+    redacted,
+    truncated: false,
+    bytes,
+    ...(request ? { request } : {}),
+    ...(response ? { response } : {}),
+  };
+}
+
+/**
+ * Insert the queryable observation before its derived usage/cost rows. Its unique key shares this
+ * trace's deterministic timestamp, so at-least-once redelivery cannot duplicate the projection set.
+ */
+async function insertObservation(
+  sql: Sql | TransactionSql,
+  observationId: string,
+  occurredAt: string,
+  observation: Observation,
+  events: readonly HotPathObservationEvent[],
+  installationId: string,
+  amountMicroUsd: bigint,
+): Promise<void> {
+  const tokens = observation.tokens;
+  const profileMode = await profileModeFor(sql, observation.workspaceId, events);
+  const storedCaptureRef = captureRef(events);
+  await sql`
+    INSERT INTO observation (
+      id, workspace_id, trace_id, installation_id, profile_mode,
+      route_id, route_revision_id, final_provider, final_offering_id, price_revision_id,
+      app_id, team_id, cost_center_id, virtual_key_id,
+      status, http_status,
+      input_tokens, output_tokens, cache_read_tokens, reasoning_tokens,
+      cache_write_tokens, audio_input_tokens, audio_output_tokens,
+      cost_microusd, cost_fidelity, attempts, failovers, reason_codes, capture_ref,
+      occurred_at, created_at
+    ) VALUES (
+      ${observationId}, ${observation.workspaceId}, ${observation.traceId}, ${installationId}, ${profileMode},
+      ${observation.routeId}, ${observation.routeRevisionId}, ${observation.finalProvider}, ${observation.finalOfferingId}, ${observation.priceRevisionId},
+      ${observation.appId}, ${observation.teamId}, ${observation.costCenterId}, ${observation.virtualKeyId},
+      ${observation.status}, ${observation.httpStatus},
+      ${p(tokens.inputTokens)}, ${p(tokens.outputTokens)}, ${p(tokens.cacheReadTokens)}, ${p(tokens.reasoningTokens)},
+      ${p(tokens.cacheWriteTokens)}, ${p(tokens.audioInputTokens)}, ${p(tokens.audioOutputTokens)},
+      ${p(amountMicroUsd)}, ${observation.costFidelity}, ${observation.attempts}, ${observation.failovers},
+      ${sql.json(observation.reasonCodes)}, ${storedCaptureRef === null ? null : sql.json(storedCaptureRef as Parameters<typeof sql.json>[0])},
+      ${occurredAt}, ${occurredAt}
+    )
+    ON CONFLICT (workspace_id, trace_id, created_at) DO NOTHING
+  `;
+}
+
+/**
+ * Only fully attributed provider attempts can influence the target-health
+ * projection.  Keep this narrow at the gateway boundary: billing reduction
+ * still receives every event, while the database helper independently checks
+ * current installation/snapshot/revision ownership before it accepts a fact.
+ */
+function providerAttemptHealthFacts(
+  events: readonly HotPathObservationEvent[],
+): ProviderAttemptHealthFactInput[] {
+  const facts: ProviderAttemptHealthFactInput[] = [];
+  for (const event of events) {
+    if (
+      event.kind !== "provider_attempt" ||
+      !event.targetId ||
+      !event.routeRevisionId ||
+      !event.snapshotRevision ||
+      !event.attemptOutcome
+    ) continue;
+
+    facts.push({
+      sourceEventId: `${event.traceId}:${event.seq}`,
+      targetId: event.targetId,
+      routeRevisionId: event.routeRevisionId,
+      snapshotRevisionId: event.snapshotRevision,
+      outcome: event.attemptOutcome,
+      httpStatus: event.status,
+      reasonCodes: event.reasonCodes,
+      occurredAt: event.occurredAt,
+    });
+  }
+  return facts;
 }
 
 /** A deterministic occurred_at/created_at for a trace with no terminal timestamp: decode the trace

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "fluid": true,
+  "regions": ["iad1"],
+  "installCommand": "cd ../.. && corepack pnpm install --frozen-lockfile --ignore-scripts && corepack pnpm exec tsc -b packages/gateway-core packages/budget packages/config packages/crypto packages/database packages/domain packages/observability",
+  "functions": {
+    "api/gateway.ts": {
+      "maxDuration": 300
+    },
+    "api/internal/jobs/drain.ts": {
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "/api/health"
+    },
+    {
+      "source": "/ready",
+      "destination": "/api/ready"
+    },
+    {
+      "source": "/v1/models",
+      "destination": "/api/gateway?__manifold_original_path=/v1/models"
+    },
+    {
+      "source": "/v1/chat/completions",
+      "destination": "/api/gateway?__manifold_original_path=/v1/chat/completions"
+    },
+    {
+      "source": "/v1/responses",
+      "destination": "/api/gateway?__manifold_original_path=/v1/responses"
+    },
+    {
+      "source": "/v1/embeddings",
+      "destination": "/api/gateway?__manifold_original_path=/v1/embeddings"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/internal/jobs/drain",
+      "schedule": "* * * * *"
+    }
+  ]
+}

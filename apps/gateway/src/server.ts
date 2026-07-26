@@ -3,7 +3,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import type { SnapshotTarget } from "@manifold/ports";
+import type { IngestSink, Snapshot, SnapshotTarget } from "@manifold/ports";
 import {
   DEV_PEPPER,
   credentialAad,
@@ -15,24 +15,83 @@ import {
 } from "@manifold/crypto";
 import { handleRequest, type GatewayContext, type SsrfPolicy } from "@manifold/gateway-core";
 import {
-  EgressFetcher,
   JsonlIngestSink,
   makeDbBudgetReserver,
   makeDbIngestSink,
   NodeCrypto,
   SnapshotFileStore,
   SystemClock,
-} from "./adapters.ts";
+} from "./adapters.js";
+import { PinnedEgressFetcher } from "./pinnedEgress.js";
 
 // DEV_PEPPER / DEV_KEK and the env resolvers are owned once by @manifold/crypto so the
 // control plane (seal / mint) and this gateway (open / authenticate) resolve identical key
 // material. Re-exported here to preserve this module's public surface.
 export { DEV_PEPPER };
 
+const MAX_PEPPERS = 2;
+const MAX_PEPPER_LENGTH = 4_096;
+const MAX_KEKS = 4;
+const MAX_KEK_ID_LENGTH = 256;
+const KEK_ID_RE = /^[A-Za-z0-9_-]+$/;
+const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+function invalidEnv(name: string): never {
+  throw new Error(`${name} is malformed`);
+}
+
+/** Strictly parse bounded virtual-key pepper overlap without including values in errors. */
+export function parseKeyPeppers(raw: string): readonly string[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return invalidEnv("MANIFOLD_KEY_PEPPERS"); }
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > MAX_PEPPERS ||
+    parsed.some((pepper) => typeof pepper !== "string" || !pepper || pepper.length > MAX_PEPPER_LENGTH)) {
+    return invalidEnv("MANIFOLD_KEY_PEPPERS");
+  }
+  return Object.freeze([...parsed]);
+}
+
+/** Strictly parse versioned 32-byte KEKs. Keys are never put into error text. */
+export function parseDataKeks(raw: string): Readonly<Record<string, Uint8Array>> {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return invalidEnv("MANIFOLD_DATA_KEKS"); }
+  if (!parsed || Array.isArray(parsed) || Object.getPrototypeOf(parsed) !== Object.prototype) return invalidEnv("MANIFOLD_DATA_KEKS");
+  const entries = Object.entries(parsed);
+  if (entries.length === 0 || entries.length > MAX_KEKS) return invalidEnv("MANIFOLD_DATA_KEKS");
+  const result: Record<string, Uint8Array> = {};
+  for (const [kekId, encoded] of entries) {
+    if (!kekId || kekId.length > MAX_KEK_ID_LENGTH || !KEK_ID_RE.test(kekId) ||
+      typeof encoded !== "string" || !encoded || !BASE64_RE.test(encoded)) return invalidEnv("MANIFOLD_DATA_KEKS");
+    const decoded = Buffer.from(encoded, "base64");
+    if (decoded.byteLength !== 32 || decoded.toString("base64") !== encoded) return invalidEnv("MANIFOLD_DATA_KEKS");
+    result[kekId] = new Uint8Array(decoded);
+  }
+  return Object.freeze(result);
+}
+
+function normalizePeppers(peppers: readonly string[]): readonly Uint8Array[] {
+  const validated = parseKeyPeppers(JSON.stringify(peppers));
+  return Object.freeze(validated.map((pepper) => new TextEncoder().encode(pepper)));
+}
+
+function normalizeKeks(keks: Readonly<Record<string, Uint8Array>>): Readonly<Record<string, Uint8Array>> {
+  const encoded: Record<string, string> = {};
+  for (const [id, key] of Object.entries(keks)) encoded[id] = Buffer.from(key).toString("base64");
+  return parseDataKeks(JSON.stringify(encoded));
+}
+
 export interface ServerOptions {
+  /** Preloaded, already-verified snapshot. Runtime adapters use this instead of a local file. */
+  snapshot?: Snapshot;
   snapshotPath?: string;
+  /** Pinned snapshot-signing public key for the local-file adapter. */
+  snapshotPublicKey?: string;
   observationsPath?: string;
+  /** Runtime-specific ingest transport. Vercel supplies a request-scoped durable job sink. */
+  ingest?: IngestSink;
   pepper?: string;
+  /** Rotation overlap, ordered new then old. Takes precedence over `pepper`. */
+  peppers?: readonly string[];
   installationId?: string;
   port?: number;
   host?: string;
@@ -42,6 +101,8 @@ export interface ServerOptions {
   fetcher?: GatewayContext["fetcher"];
   /** KEK override for credential decryption (tests supply a known 32-byte key). */
   kek?: Uint8Array;
+  /** Versioned KEKs for targets carrying `kekId`; may coexist with legacy `kek`. */
+  keks?: Readonly<Record<string, Uint8Array>>;
   /**
    * Hard-budget reserver (SPEC §16.3, ADR-0012). Optional: when unset, a key that carries a hard
    * budget fails closed in the core. Production binds this to @manifold/budget via
@@ -57,6 +118,8 @@ export interface ServerOptions {
    * belongs to exactly one workspace, so one running gateway process has exactly one answer here.
    */
   workspaceId?: string;
+  /** Explicit pooled runtime database URL. Falls back to gateway env vars. */
+  budgetDbUrl?: string;
 }
 
 /**
@@ -89,7 +152,10 @@ export function decryptTargetSecret(
  * fail-OPEN credential). The throw is mapped by handleRequest to 502 CREDENTIAL_UNAVAILABLE — never
  * dispatched, never leaked.
  */
-export function makeSecretResolver(kek: Uint8Array): (target: SnapshotTarget) => Promise<string> {
+export function makeSecretResolver(
+  legacyKek?: Uint8Array,
+  keyring?: Readonly<Record<string, Uint8Array>>,
+): (target: SnapshotTarget) => Promise<string> {
   return async (target) => {
     if (!target.credentialCiphertext || !target.wrappedDek) {
       throw new Error(
@@ -97,6 +163,10 @@ export function makeSecretResolver(kek: Uint8Array): (target: SnapshotTarget) =>
           "no credentialCiphertext/wrappedDek to decrypt (fail closed, §14.3)",
       );
     }
+    // A versioned target must use its exact KEK. Falling back to the legacy key would make a
+    // typo/deleted key silently decrypt under an unintended trust root.
+    const kek = target.kekId ? keyring?.[target.kekId] : legacyKek;
+    if (!kek) throw new Error("no matching credential encryption key is available");
     const secret = decryptTargetSecret(target, kek);
     // An envelope that decrypts to EMPTY is NOT a real credential — returning "" would let
     // handleRequest dispatch `x-api-key: ''` / `Authorization: Bearer ` upstream (fail-OPEN).
@@ -112,15 +182,37 @@ export function makeSecretResolver(kek: Uint8Array): (target: SnapshotTarget) =>
 }
 
 export async function buildContext(opts: ServerOptions = {}): Promise<GatewayContext> {
-  const snapshotPath =
-    opts.snapshotPath ?? process.env.MANIFOLD_SNAPSHOT ?? "./snapshot.example.json";
-  const installationId = opts.installationId ?? "local-dev";
-  const store = new SnapshotFileStore(snapshotPath);
-  const snapshot = await store.loadActive(installationId);
+  const installationId =
+    opts.installationId ?? process.env.MANIFOLD_INSTALLATION_ID ?? "local-dev";
+  let snapshot = opts.snapshot;
+  if (!snapshot) {
+    const snapshotPath =
+      opts.snapshotPath ?? process.env.MANIFOLD_SNAPSHOT ?? "./snapshot.example.json";
+    const store = new SnapshotFileStore(
+      snapshotPath,
+      opts.snapshotPublicKey ?? process.env.MANIFOLD_SNAPSHOT_PUBLIC_KEY,
+    );
+    snapshot = await store.loadActive(installationId);
+  }
+  if (snapshot.meta.installationId !== installationId) {
+    throw new Error("loaded snapshot installation does not match gateway installation");
+  }
 
-  const pepper = new TextEncoder().encode(
-    opts.pepper ?? resolveKeyPepper(process.env.MANIFOLD_KEY_PEPPER),
-  );
+  const envPeppers = process.env.MANIFOLD_KEY_PEPPERS;
+  const peppers = opts.peppers
+    ? normalizePeppers(opts.peppers)
+    : envPeppers === undefined
+      ? Object.freeze([new TextEncoder().encode(opts.pepper ?? resolveKeyPepper(process.env.MANIFOLD_KEY_PEPPER))])
+      : normalizePeppers(parseKeyPeppers(envPeppers));
+  const envKeks = process.env.MANIFOLD_DATA_KEKS;
+  const keyring = opts.keks
+    ? normalizeKeks(opts.keks)
+    : envKeks === undefined ? undefined : parseDataKeks(envKeks);
+  // Keep a legacy KEK only when explicitly supplied alongside the keyring. A keyring-only runtime
+  // must fail closed for old ID-less snapshots instead of silently using a dev/default value.
+  const legacyKek = opts.kek ?? (keyring
+    ? (process.env.MANIFOLD_DATA_KEK?.trim() ? resolveDataKek(process.env.MANIFOLD_DATA_KEK) : undefined)
+    : resolveDataKek(process.env.MANIFOLD_DATA_KEK));
 
   // Hard-budget reservation (SPEC §16.3, ADR-0012) + the observation/billing ingest (§8.3-8.4): an
   // explicit test override (reserveBudget) wins for the reserver; otherwise, when a reservation DB
@@ -131,10 +223,13 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
   // production never wrote cost_ledger and every hard-budget hold was stranded at 'reserved'). With
   // no DB configured, `reserveBudget` stays undefined (a hard budget fails closed in the core, never
   // dispatched unmetered) and ingest stays JSONL-only, exactly the prior dev behavior.
-  const budgetDbUrl = process.env.MANIFOLD_BUDGET_DB_URL ?? process.env.DATABASE_URL;
-  const jsonlIngest = new JsonlIngestSink(opts.observationsPath ?? "./observations.log");
+  const budgetDbUrl =
+    opts.budgetDbUrl ?? process.env.MANIFOLD_BUDGET_DB_URL ?? process.env.DATABASE_URL;
+  const jsonlIngest = opts.ingest
+    ? undefined
+    : new JsonlIngestSink(opts.observationsPath ?? "./observations.log");
   let reserveBudget = opts.reserveBudget;
-  let ingest: GatewayContext["ingest"] = jsonlIngest;
+  let ingest: GatewayContext["ingest"] = opts.ingest ?? jsonlIngest!;
   if (budgetDbUrl) {
     const workspaceId = opts.workspaceId ?? process.env.MANIFOLD_WORKSPACE_ID;
     if (!workspaceId) {
@@ -152,8 +247,10 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
       const reserver = makeDbBudgetReserver(budgetDbUrl, workspaceId);
       reserveBudget = (input) => reserver.reserve(input);
     }
-    // Keep JSONL too — a dev/debug trail of the raw flat events, independent of the DB write.
-    ingest = makeDbIngestSink(budgetDbUrl, workspaceId, installationId, jsonlIngest);
+    if (!opts.ingest) {
+      // Keep JSONL too for the local server — a debug trail independent of the DB write.
+      ingest = makeDbIngestSink(budgetDbUrl, workspaceId, installationId, jsonlIngest);
+    }
   }
 
   return {
@@ -162,9 +259,10 @@ export async function buildContext(opts: ServerOptions = {}): Promise<GatewayCon
     crypto: new NodeCrypto(),
     clock: new SystemClock(),
     ingest,
-    fetcher: opts.fetcher ?? new EgressFetcher(opts.ssrfPolicy),
-    pepper,
-    resolveSecret: makeSecretResolver(opts.kek ?? resolveDataKek(process.env.MANIFOLD_DATA_KEK)),
+    fetcher: opts.fetcher ?? new PinnedEgressFetcher(opts.ssrfPolicy),
+    pepper: peppers[0]!,
+    peppers,
+    resolveSecret: makeSecretResolver(legacyKek, keyring),
     ssrfPolicy: opts.ssrfPolicy,
     reserveBudget,
   };

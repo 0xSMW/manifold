@@ -98,6 +98,14 @@ function makeCtx(o: CtxOpts): { ctx: GatewayContext; ingest: FakeIngestSink } {
   return { ctx, ingest };
 }
 
+async function waitForTerminal(ingest: FakeIngestSink): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (ingest.events.some((event) => event.kind === "terminal")) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  assert.fail("terminal observation was not delivered");
+}
+
 function makeRequest(
   path: string,
   opts: { key?: string; method?: string; body?: string } = {},
@@ -133,6 +141,7 @@ test("(a) valid key streams mock SSE chunks through", async () => {
   const res = await handleRequest(ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
   assert.equal(res.status, 200);
   const text = await res.text();
+  await waitForTerminal(ingest);
   assert.ok(text.includes("chunk-one"), "streamed chunk-one");
   assert.ok(text.includes("chunk-two"), "streamed chunk-two");
   assert.ok(res.headers.get("x-trace-id"), "X-Trace-Id present");
@@ -270,6 +279,7 @@ test("(h) success path emits accepted + terminal (trace is complete)", async () 
 
   const res = await handleRequest(ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
   assert.equal(res.status, 200);
+  await waitForTerminal(ingest);
 
   const kinds = ingest.events.map((e) => e.kind);
   assert.ok(kinds.includes("accepted"), "accepted emitted");
@@ -298,6 +308,7 @@ test("(i) occurredAt is per-event (accepted ≠ terminal with a ticking clock)",
   });
 
   await handleRequest(ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  await waitForTerminal(ingest);
   const accepted = ingest.events.find((e) => e.kind === "accepted");
   const terminal = ingest.events.find((e) => e.kind === "terminal");
   assert.ok(accepted && terminal, "both events emitted");
@@ -383,12 +394,14 @@ test("#7: a content-encoded JSON response is NOT buffered for usage (decompressi
   const gz = new FakeFetcher(() => new Response(usageBody, { status: 200, headers: { ...base, "content-encoding": "gzip" } }));
   const g1 = makeCtx({ snapshot: makeSnapshot(makeTarget()), fetcher: gz });
   await handleRequest(g1.ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  await waitForTerminal(g1.ingest);
   const t1 = g1.ingest.events.find((e) => e.kind === "terminal");
   assert.equal(t1?.usage, undefined, "a content-encoded response must NOT be buffered for usage");
 
   const plain = new FakeFetcher(() => new Response(usageBody, { status: 200, headers: base }));
   const g2 = makeCtx({ snapshot: makeSnapshot(makeTarget()), fetcher: plain });
   await handleRequest(g2.ctx, makeRequest("/v1/messages", { key: VALID_KEY, body: "{}" }));
+  await waitForTerminal(g2.ingest);
   const t2 = g2.ingest.events.find((e) => e.kind === "terminal");
   assert.equal(t2?.usage?.inputTokens, 10, "the identical PLAIN response IS buffered and usage captured");
 });

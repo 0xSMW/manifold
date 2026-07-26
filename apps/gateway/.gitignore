@@ -1,3 +1,5 @@
 observations.log
 dist
 tsconfig.tsbuildinfo
+.vercel
+.env*

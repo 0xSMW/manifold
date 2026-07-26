@@ -13,7 +13,7 @@ import { test } from "node:test";
 import { computeContentHash, generateSigningKeyPair, signSnapshot } from "@manifold/config";
 import type { Snapshot } from "@manifold/ports";
 import { SnapshotFileStore } from "../src/adapters.ts";
-import { verifySnapshot } from "../src/snapshotVerify.ts";
+import { assertSnapshotTrusted, parseSnapshotPublicKeys, verifySnapshot } from "../src/snapshotVerify.ts";
 
 const tmp = mkdtempSync(join(tmpdir(), "manifold-snap-"));
 
@@ -97,6 +97,29 @@ test("§7.3: a snapshot signed by a DIFFERENT key is REJECTED under the pinned k
   const signed = signSnapshot(baseSnapshot() as never, other.privateKeyBase64, other.signingKeyId);
   const path = writeSnap("wrong-key.json", signed);
   assert.throws(() => new SnapshotFileStore(path, publicKeyBase64), /bad_signature/);
+});
+
+test("§7.3 rotation: a keyring accepts each listed signingKeyId and rejects an unlisted ID", () => {
+  const old = generateSigningKeyPair();
+  const next = generateSigningKeyPair();
+  const keyring = {
+    [old.signingKeyId]: old.publicKeyBase64,
+    [next.signingKeyId]: next.publicKeyBase64,
+  };
+  const oldSnapshot = signSnapshot(baseSnapshot() as never, old.privateKeyBase64, old.signingKeyId) as unknown as Snapshot;
+  const newSnapshot = signSnapshot(baseSnapshot() as never, next.privateKeyBase64, next.signingKeyId) as unknown as Snapshot;
+  assert.doesNotThrow(() => assertSnapshotTrusted(oldSnapshot, { publicKeys: keyring }));
+  assert.doesNotThrow(() => assertSnapshotTrusted(newSnapshot, { publicKeys: keyring }));
+
+  const unknown = structuredClone(newSnapshot);
+  unknown.meta.signingKeyId = "key_not_pinned";
+  assert.throws(() => assertSnapshotTrusted(unknown, { publicKeys: keyring }), /unknown_signing_key_id/);
+});
+
+test("§7.3 rotation: malformed keyring environment values fail closed without exposing key material", () => {
+  for (const value of ["", "[]", "{}", '{"key_a": 1}', '{"key_a":""}', '{"a":"x","b":"x","c":"x","d":"x","e":"x"}']) {
+    assert.throws(() => parseSnapshotPublicKeys(value), /MANIFOLD_SNAPSHOT_PUBLIC_KEYS/);
+  }
 });
 
 // BUG (fail-OPEN in production): with NO pinned public key the loader previously only WARNED and

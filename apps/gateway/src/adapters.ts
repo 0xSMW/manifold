@@ -25,8 +25,8 @@ import { bucketStart, reserve as budgetReserve } from "@manifold/budget";
 // and its `getClient` opener from it, so the reservation connection is created (and its json/jsonb
 // serializers applied) in the one place allowed to touch the driver — not re-opened here.
 import { getClient, setWorkspaceGuc, type Sql } from "@manifold/database";
-import { assertSnapshotTrusted } from "./snapshotVerify.ts";
-import { ingestTrace } from "./observe.ts";
+import { assertSnapshotTrusted } from "./snapshotVerify.js";
+import { ingestTrace } from "./observe.js";
 
 /** node:crypto-backed Crypto port (§14.3). */
 export class NodeCrypto implements Crypto {
