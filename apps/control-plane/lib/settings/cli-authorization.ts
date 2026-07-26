@@ -6,6 +6,9 @@
 import { randomBytes } from "node:crypto";
 import { keyedHash } from "@/lib/crypto";
 import { ManifoldError } from "@/lib/http";
+import { canonicalAuthOrigin } from "@/lib/auth-origin";
+
+type Environment = Record<string, string | undefined>;
 
 const TOKEN_SCOPES = new Set([
   "routes:read", "observations:read", "registry:read", "budgets:read", "audit:read", "system:read",
@@ -46,14 +49,20 @@ export function allowedClient(clientId: unknown): { id: string; name: string } {
   return { id: clientId, name: clientId === "mfctl" ? "mfctl compatibility CLI" : "Manifold CLI" };
 }
 
-export function verificationOrigin(): string {
-  const raw = process.env.MANIFOLD_CONSOLE_ORIGIN ?? (process.env.NODE_ENV === "production" ? "" : "http://localhost:3000");
+export function verificationOrigin(env: Environment = process.env): string {
+  const override = env.MANIFOLD_CONSOLE_ORIGIN?.trim();
+  if (override) {
+    try {
+      return canonicalAuthOrigin({ ...env, MANIFOLD_AUTH_ORIGIN: override });
+    } catch {
+      throw new Error("MANIFOLD_CONSOLE_ORIGIN must be an absolute HTTPS origin without path, query, fragment, or credentials");
+    }
+  }
+
   try {
-    const url = new URL(raw);
-    if ((url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && url.protocol === "http:")) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error();
-    return url.origin;
+    return canonicalAuthOrigin({ ...env, MANIFOLD_AUTH_ORIGIN: env.MANIFOLD_AUTH_ORIGIN?.trim() || (env.NODE_ENV === "production" ? undefined : "http://localhost:3000") });
   } catch {
-    throw new Error("MANIFOLD_CONSOLE_ORIGIN must be an absolute HTTPS origin without path or credentials");
+    throw new Error("MANIFOLD_AUTH_ORIGIN must be an absolute HTTPS origin without path, query, fragment, or credentials");
   }
 }
 

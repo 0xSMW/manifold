@@ -36,11 +36,13 @@ export async function POST(req: Request) { return wrapInEnvelope(async (requestI
       await sql`UPDATE cli_authorization SET last_polled_at = now(), poll_not_before = now() + (${row.interval_seconds} * interval '1 second') WHERE id = ${row.id} AND workspace_id = ${row.workspace_id}`;
       return state("authorization_pending", requestId, row.interval_seconds);
     }
-    const approved = await sql<{ approved_by: string | null }[]>`SELECT approved_by FROM cli_authorization WHERE id = ${row.id} AND workspace_id = ${row.workspace_id} FOR UPDATE`;
-    if (!approved[0]?.approved_by) return state("expired", requestId);
+    const approved = await sql<{ approved_by: string | null; user_id: string | null; disabled_at: string | null; accepted_at: string | null }[]>`SELECT c.approved_by, m.user_id, m.disabled_at, m.accepted_at FROM cli_authorization c LEFT JOIN member m ON m.id = c.approved_by AND m.workspace_id = c.workspace_id WHERE c.id = ${row.id} AND c.workspace_id = ${row.workspace_id} FOR UPDATE`;
+    if (!approved[0]?.approved_by || !approved[0].user_id || approved[0].disabled_at || !approved[0].accepted_at) return state("expired", requestId);
+    const verified = await sql<{ session_version: number }[]>`SELECT * FROM auth_lookup_verified_member(${row.workspace_id}, ${approved[0].approved_by})`;
+    if (!verified[0]) return state("expired", requestId);
     const token = generateSecret("mf_tok_"); const tokenId = genId("tok");
-    await sql`INSERT INTO api_token (id, workspace_id, display_prefix, keyed_hash, scopes, created_by, created_at)
-      VALUES (${tokenId}, ${row.workspace_id}, ${token.displayPrefix}, ${token.keyedHash}, ${sql.json(row.scopes as never)}, ${approved[0].approved_by}, now())`;
+    await sql`INSERT INTO api_token (id, workspace_id, display_prefix, keyed_hash, scopes, created_by, kind, user_id, created_at)
+      VALUES (${tokenId}, ${row.workspace_id}, ${token.displayPrefix}, ${token.keyedHash}, ${sql.json(row.scopes as never)}, ${approved[0].approved_by}, 'personal', ${approved[0].user_id}, now())`;
     const issued = await sql<{ id: string }[]>`UPDATE cli_authorization SET status = 'issued', issued_token_id = ${tokenId}, last_polled_at = now()
       WHERE id = ${row.id} AND workspace_id = ${row.workspace_id} AND status = 'approved' AND issued_token_id IS NULL RETURNING id`;
     if (!issued[0]) throw new ManifoldError({ status: 409, code: "IDEMPOTENCY_CONFLICT", message: "device authorization was already exchanged", reasonCodes: [] });

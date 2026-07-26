@@ -31,6 +31,13 @@ function idempotencyKey(): string {
   return globalThis.crypto.randomUUID();
 }
 
+function cookieValue(name: string): string | null {
+  if (typeof document === "undefined") return null;
+  const prefix = `${encodeURIComponent(name)}=`;
+  const entry = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith(prefix));
+  return entry ? decodeURIComponent(entry.slice(prefix.length)) : null;
+}
+
 export async function apiRequest<T>(
   path: string,
   init: ApiRequestInit = {},
@@ -47,6 +54,10 @@ export async function apiRequest<T>(
   }
   if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("Idempotency-Key")) {
     headers.set("Idempotency-Key", idempotencyKey());
+  }
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("X-Manifold-CSRF")) {
+    const csrf = cookieValue("manifold_csrf");
+    if (csrf) headers.set("X-Manifold-CSRF", csrf);
   }
 
   const response = await fetch(path.startsWith("/api/") ? path : `/api/v1${path}`, {

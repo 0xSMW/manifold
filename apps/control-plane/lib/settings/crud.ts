@@ -35,17 +35,17 @@ export function role(body: Record<string, unknown>): MemberRole {
   return value as MemberRole;
 }
 
-/** An admin may only manage roles strictly below admin; owners retain the owner ceiling. */
+/** Admins manage strictly lower roles; owners may appoint peers. */
 export function enforceRoleCeiling(principal: Principal, target: MemberRole): void {
   const actor = principal.member?.role as MemberRole | undefined;
-  if (!actor || !(actor in RANK) || RANK[target] >= RANK[actor]) {
+  if (!actor || !(actor in RANK) || (actor !== "owner" && RANK[target] >= RANK[actor])) {
     throw new ManifoldError({ status: 403, code: "FORBIDDEN", message: "the requested role exceeds your management ceiling", reasonCodes: ["ROLE_CEILING"] });
   }
 }
 
 export function enforceTargetCeiling(principal: Principal, target: string): void {
   const actor = principal.member?.role as MemberRole | undefined;
-  if (!actor || !(actor in RANK) || !(target in RANK) || RANK[target as MemberRole] >= RANK[actor]) {
+  if (!actor || !(actor in RANK) || !(target in RANK) || (actor !== "owner" && RANK[target as MemberRole] >= RANK[actor])) {
     throw new ManifoldError({ status: 403, code: "FORBIDDEN", message: "you cannot manage a member at or above your role", reasonCodes: ["ROLE_CEILING"] });
   }
 }

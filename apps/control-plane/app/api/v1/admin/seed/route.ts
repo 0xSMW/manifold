@@ -101,8 +101,8 @@ export async function POST(req: Request): Promise<Response> {
 
       const memberId = genId("mbr");
       await sql`
-        INSERT INTO member (id, workspace_id, email, name, role)
-        VALUES (${memberId}, ${wsId}, ${email}, 'Seed Owner', 'owner')`;
+        INSERT INTO member (id, workspace_id, email, name, role, accepted_at)
+        VALUES (${memberId}, ${wsId}, ${email}, 'Seed Owner', 'owner', now())`;
 
       const tokenId = genId("tok");
       await sql`
