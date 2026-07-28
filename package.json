@@ -22,7 +22,7 @@
     "test:security": "node scripts/run-security-gates.mjs",
     "test:desktop": "pnpm --dir apps/control-plane exec playwright test --project=chromium",
     "test:mobile": "pnpm --dir apps/control-plane exec playwright test --project=mobile",
-    "test:playwright": "pnpm run test:desktop && pnpm run test:mobile",
+    "test:playwright": "pnpm --dir apps/control-plane exec playwright test",
     "lint:boundaries": "node scripts/lint-boundaries.mjs",
     "lint:queries": "node scripts/lint-workspace-queries.mjs",
     "check:migrations": "node scripts/check-migrations.mjs && node scripts/check-database-schema-freshness.mjs && node --test packages/database/test/migration-documentation.source.test.mjs",

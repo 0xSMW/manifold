@@ -34,7 +34,7 @@ test("root command surface exposes every SPEC §21 release gate", async () => {
   assert.match(scripts["test:control-plane"], /tsx --tsconfig tsconfig\.json --test/);
   assert.match(scripts["test:storage-release"], /^pnpm exec tsx --tsconfig packages\/storage\/tsconfig\.json --test packages\/storage\/test\//);
   assert.doesNotMatch(scripts["test:storage-release"], /--filter .* exec tsx/);
-  assert.match(scripts["test:playwright"], /test:desktop.*test:mobile/);
+  assert.equal(scripts["test:playwright"], "pnpm --dir apps/control-plane exec playwright test", "the full browser gate must run every configured project in one invocation");
 });
 
 test("CI installs Node 22 and keeps security/storage gates independent", async () => {
