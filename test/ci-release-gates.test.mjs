@@ -96,6 +96,15 @@ test("security gate builds only its TypeScript dependency closure and invokes ro
   assert.match(rootImporter, /      typescript:\n        specifier: 5\.9\.3\n        version: 5\.9\.3/);
 });
 
+test("real Postgres gate builds the storage runtime export before running its suites", async () => {
+  const realPg = await read("scripts/run-real-pg-gates.mjs");
+  const build = realPg.indexOf('spawnSync("pnpm", ["exec", "tsc", "-b", "packages/storage"], { stdio: "inherit" })');
+  const suites = realPg.indexOf("for (const [workspace, tests] of suites)");
+  assert.ok(build >= 0, "real Postgres gate must build storage's TypeScript project reference closure");
+  assert.ok(build < suites, "storage runtime dist must be built before any real Postgres suite runs");
+  assert.match(realPg, /if \(storageBuild\.status !== 0\) process\.exit\(storageBuild\.status \?\? 1\);/);
+});
+
 test("production promotion is master-only, requires successful CI for its exact revision, and pins its deploy CLI", async () => {
   const workflow = await read(".github/workflows/production-promotion.yml");
   const live = await read(".github/workflows/live-acceptance.yml");

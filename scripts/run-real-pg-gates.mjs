@@ -9,6 +9,11 @@ const suites = [
   ["@manifold/control-plane", ["test/*-pg.test.ts"]],
 ];
 
+// Downstream PG suites import @manifold/storage through its published dist export.
+// Build its TypeScript project reference closure from a clean checkout before running them.
+const storageBuild = spawnSync("pnpm", ["exec", "tsc", "-b", "packages/storage"], { stdio: "inherit" });
+if (storageBuild.status !== 0) process.exit(storageBuild.status ?? 1);
+
 for (const [workspace, tests] of suites) {
   // Each test owns a real Postgres container. Serializing files keeps the release gate within
   // ordinary CI/Docker disk limits and prevents one exhausted fixture from crashing its peers.
