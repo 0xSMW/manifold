@@ -3,6 +3,7 @@
 // Undici connector is forced to the selected answer while retaining the URL hostname
 // for Host and TLS SNI.
 import { isIP } from "node:net";
+import { Readable } from "node:stream";
 import { lookup } from "node:dns/promises";
 import { Agent, Pool, buildConnector, fetch as undiciFetch } from "undici";
 import type { Fetcher } from "@manifold/ports";
@@ -179,7 +180,12 @@ export class PinnedEgressFetcher implements Fetcher {
         response = (await undiciFetch(current.url, {
           method: current.method,
           headers: Array.from(current.headers.entries()),
-          body: current.method === "GET" || current.method === "HEAD" ? undefined : current.body,
+          body:
+            current.method === "GET" || current.method === "HEAD"
+              ? undefined
+              : current.body
+                ? Readable.fromWeb(current.body as unknown as import("node:stream/web").ReadableStream)
+                : undefined,
           signal: current.signal,
           dispatcher: agent,
           redirect: "manual",

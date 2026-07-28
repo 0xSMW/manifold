@@ -91,7 +91,9 @@ test("security gate builds only its TypeScript dependency closure and invokes ro
   assert.match(security, /pnpm", \["exec", "tsc", "-b", "packages\/crypto", "packages\/config", "packages\/gateway-core", "packages\/budget"\]/);
   assert.match(security, /pnpm", \["exec", "tsx", "--tsconfig", tsconfig, "--test"/);
   assert.doesNotMatch(security, /--filter", workspace, "exec", "tsx"/);
-  assert.match(lockfile, /^  \.:\n    devDependencies:\n      tsx:\n        specifier: 4\.23\.1\n        version: 4\.23\.1\n      typescript:\n        specifier: 5\.9\.3\n        version: 5\.9\.3/m);
+  const rootImporter = lockfile.match(/^  \.:\n(?<body>(?: {4}.*\n| {6}.*\n| {8}.*\n)*)/m)?.groups?.body ?? "";
+  assert.match(rootImporter, /      tsx:\n        specifier: 4\.23\.1\n        version: 4\.23\.1/);
+  assert.match(rootImporter, /      typescript:\n        specifier: 5\.9\.3\n        version: 5\.9\.3/);
 });
 
 test("production promotion is master-only, requires successful CI for its exact revision, and pins its deploy CLI", async () => {
