@@ -10,8 +10,15 @@ on:
       control_plane_deployment_id: { required: true, type: string }
       gateway_deployment_id: { required: true, type: string }
     secrets:
-      MANIFOLD_LIVE_DIAGNOSTICS_TOKEN: { required: true }
-      MANIFOLD_LIVE_CONTROL_PLANE_TOKEN: { required: true }
+      # Provider/observation diagnostics are optional. Candidate provenance health
+      # is the promotion gate; authenticated diagnostics run only when both tokens
+      # and the diagnostics model variable are present.
+      MANIFOLD_LIVE_DIAGNOSTICS_TOKEN: { required: false }
+      MANIFOLD_LIVE_CONTROL_PLANE_TOKEN: { required: false }
+      # Required for immutable *.vercel.app candidates when Deployment Protection
+      # SSO is enabled for non-custom domains.
+      MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS: { required: false }
+      MANIFOLD_LIVE_GATEWAY_PROTECTION_BYPASS: { required: false }
   workflow_dispatch:
   schedule:
     - cron: "17 * * * *"
@@ -59,10 +66,12 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - name: Verify candidate readiness and provenance
-        # Dedicated diagnostic secrets stay scoped to the only step that uses them.
+        # Dedicated diagnostic/bypass secrets stay scoped to the only step that uses them.
         env:
           MANIFOLD_LIVE_DIAGNOSTICS_TOKEN: ${{ secrets.MANIFOLD_LIVE_DIAGNOSTICS_TOKEN }}
           MANIFOLD_LIVE_CONTROL_PLANE_TOKEN: ${{ secrets.MANIFOLD_LIVE_CONTROL_PLANE_TOKEN }}
+          MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS: ${{ secrets.MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS }}
+          MANIFOLD_LIVE_GATEWAY_PROTECTION_BYPASS: ${{ secrets.MANIFOLD_LIVE_GATEWAY_PROTECTION_BYPASS }}
           MANIFOLD_LIVE_DIAGNOSTICS_MODEL: ${{ vars.MANIFOLD_LIVE_DIAGNOSTICS_MODEL }}
           MANIFOLD_LIVE_DIAGNOSTICS_ENDPOINT: ${{ vars.MANIFOLD_LIVE_DIAGNOSTICS_ENDPOINT }}
         run: node scripts/run-live-acceptance.mjs

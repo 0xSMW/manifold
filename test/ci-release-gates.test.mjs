@@ -148,8 +148,14 @@ test("production promotion is master-only, requires successful CI for its exact 
   assert.match(promotion, /needs: \[verify-master-ci, deploy-immutable-candidates, immutable-candidate-diagnostics\]/);
   assert.ok(workflow.indexOf("pnpm exec vercel alias set") > workflow.indexOf("  immutable-candidate-diagnostics:"), "aliases must be declared after the diagnostics dependency");
   assert.match(workflow, /VERCEL_TOKEN: \$\{\{ secrets\.MANIFOLD_VERCEL_TOKEN \}\}/);
+  assert.match(workflow, /Require Vercel deployment secrets/);
+  assert.match(workflow, /MANIFOLD_VERCEL_CONTROL_PLANE_PROJECT_ID/);
+  assert.match(workflow, /MANIFOLD_VERCEL_GATEWAY_PROJECT_ID/);
   assert.doesNotMatch(workflow.slice(0, workflow.indexOf("jobs:")), /MANIFOLD_VERCEL_TOKEN/);
   assert.match(live, /MANIFOLD_LIVE_SOURCE_REVISION: \$\{\{ github\.sha \}\}/);
+  assert.match(live, /MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS/);
+  assert.match(live, /MANIFOLD_LIVE_GATEWAY_PROTECTION_BYPASS/);
+  assert.match(workflow, /MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS: \$\{\{ secrets\.MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS \}\}/);
 });
 
 test("gate helpers enforce boundaries, migration freshness, and preview-secret isolation", async () => {

@@ -61,7 +61,18 @@ async function boundedText(response, maximumBytes) {
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-async function request(fetchImpl, url, init) {
+function protectionBypassHeaders(env, which) {
+  const name = which === "control-plane"
+    ? "MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS"
+    : "MANIFOLD_LIVE_GATEWAY_PROTECTION_BYPASS";
+  const value = env[name]?.trim();
+  // Vercel Deployment Protection blocks non-custom deployment URLs with SSO.
+  // Candidate diagnostics intentionally hit immutable deployment hosts, so the
+  // automation bypass secret must be presented when configured.
+  return value ? { "x-vercel-protection-bypass": value } : {};
+}
+
+async function request(fetchImpl, url, init = {}) {
   const signal = AbortSignal.timeout(10_000);
   try {
     return await fetchImpl(url, { ...init, redirect: "manual", signal });
@@ -115,8 +126,10 @@ function verifyProvenance(response, service, expectedDeploymentId, expectedSourc
   return actual;
 }
 
-async function publicHealth(fetchImpl, controlPlaneOrigin, gatewayOrigin, report, expected = null) {
-  const controlPlane = await request(fetchImpl, join(controlPlaneOrigin, CONTROL_PLANE_HEALTH_PATH));
+async function publicHealth(fetchImpl, controlPlaneOrigin, gatewayOrigin, report, expected = null, env = process.env) {
+  const controlPlane = await request(fetchImpl, join(controlPlaneOrigin, CONTROL_PLANE_HEALTH_PATH), {
+    headers: protectionBypassHeaders(env, "control-plane"),
+  });
   if (controlPlane.status !== 200) throw error(`control-plane health returned HTTP ${controlPlane.status}`);
   const controlPlaneProvenance = expected ? verifyProvenance(controlPlane, "control-plane health", expected.controlPlaneDeploymentId, expected.sourceRevision) : null;
   const payload = await boundedJson(controlPlane, MAX_CONTROL_PLANE_BODY_BYTES, "control-plane health");
@@ -124,7 +137,9 @@ async function publicHealth(fetchImpl, controlPlaneOrigin, gatewayOrigin, report
   report(`control-plane health: HTTP ${controlPlane.status}; database ok${controlPlaneProvenance ? `; deployment=${controlPlaneProvenance.deploymentId}; source=${controlPlaneProvenance.sourceRevision}` : ""}`);
 
   for (const path of ["/health", "/ready"]) {
-    const response = await request(fetchImpl, join(gatewayOrigin, path));
+    const response = await request(fetchImpl, join(gatewayOrigin, path), {
+      headers: protectionBypassHeaders(env, "gateway"),
+    });
     if (response.status !== 200) throw error(`gateway ${path} returned HTTP ${response.status}`);
     if (!hasNoStore(response)) {
       await response.body?.cancel();
@@ -154,11 +169,17 @@ function traceId(response) {
   return value;
 }
 
-async function observationProjection(fetchImpl, controlPlaneOrigin, controlPlaneToken, trace, report, sleepImpl) {
+async function observationProjection(fetchImpl, controlPlaneOrigin, controlPlaneToken, trace, report, sleepImpl, env = process.env) {
   const url = join(controlPlaneOrigin, `/api/v1/observations/${encodeURIComponent(trace)}`);
   let lastStatus = 0;
   for (let attempt = 0; attempt < OBSERVATION_POLL_ATTEMPTS; attempt += 1) {
-    const response = await request(fetchImpl, url, { headers: { authorization: `Bearer ${controlPlaneToken}`, accept: "application/json" } });
+    const response = await request(fetchImpl, url, {
+      headers: {
+        authorization: `Bearer ${controlPlaneToken}`,
+        accept: "application/json",
+        ...protectionBypassHeaders(env, "control-plane"),
+      },
+    });
     lastStatus = response.status;
     if (response.status === 200) {
       let payload;
@@ -187,7 +208,12 @@ async function diagnostics(fetchImpl, controlPlaneOrigin, gatewayOrigin, env, re
   if (!ALLOWED_DIAGNOSTIC_ENDPOINTS.has(endpoint)) throw error("MANIFOLD_LIVE_DIAGNOSTICS_ENDPOINT must be an allowed OpenAI-compatible path");
   const response = await request(fetchImpl, join(gatewayOrigin, endpoint), {
     method: "POST",
-    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", accept: "application/json" },
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      accept: "application/json",
+      ...protectionBypassHeaders(env, "gateway"),
+    },
     body: JSON.stringify(diagnosticRequest(endpoint, model)),
   });
   if (response.status < 200 || response.status >= 300) {
@@ -197,7 +223,7 @@ async function diagnostics(fetchImpl, controlPlaneOrigin, gatewayOrigin, env, re
   const trace = traceId(response);
   await response.body?.cancel();
   report(`gateway diagnostics ${endpoint}: HTTP ${response.status}`);
-  await observationProjection(fetchImpl, controlPlaneOrigin, controlPlaneToken, trace, report, sleepImpl);
+  await observationProjection(fetchImpl, controlPlaneOrigin, controlPlaneToken, trace, report, sleepImpl, env);
 }
 
 export async function runLiveAcceptance({ env = process.env, fetchImpl = fetch, report = console.log, sleepImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)) } = {}) {
@@ -215,8 +241,17 @@ export async function runLiveAcceptance({ env = process.env, fetchImpl = fetch, 
   const gatewayName = promotion ? "MANIFOLD_LIVE_GATEWAY_CANDIDATE_URL" : "MANIFOLD_LIVE_GATEWAY_URL";
   const controlPlaneOrigin = (promotion ? candidateOrigin : httpsOrigin)(required(env, controlPlaneName), controlPlaneName);
   const gatewayOrigin = (promotion ? candidateOrigin : httpsOrigin)(required(env, gatewayName), gatewayName);
-  await publicHealth(fetchImpl, controlPlaneOrigin, gatewayOrigin, report, promotion);
-  if (mode === "diagnostics") await diagnostics(fetchImpl, controlPlaneOrigin, gatewayOrigin, env, report, sleepImpl);
+  await publicHealth(fetchImpl, controlPlaneOrigin, gatewayOrigin, report, promotion, env);
+  if (mode === "diagnostics") {
+    // Provenance-backed candidate health is the promotion gate. Authenticated
+    // provider/observation diagnostics run only when their dedicated credentials
+    // are configured; missing tokens must not invent a green diagnostic path.
+    if (env.MANIFOLD_LIVE_DIAGNOSTICS_TOKEN?.trim()) {
+      await diagnostics(fetchImpl, controlPlaneOrigin, gatewayOrigin, env, report, sleepImpl);
+    } else {
+      report("provider diagnostics skipped: MANIFOLD_LIVE_DIAGNOSTICS_TOKEN is not configured");
+    }
+  }
   report(`live acceptance ${mode}: passed`);
 }
 

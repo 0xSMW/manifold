@@ -511,20 +511,43 @@ Do not use a mutable production alias or operator-supplied labels as provenance.
 Configure the `live-acceptance` GitHub environment with:
 
 - variables `MANIFOLD_LIVE_CONTROL_PLANE_URL`, `MANIFOLD_LIVE_GATEWAY_URL`,
-  `MANIFOLD_LIVE_DIAGNOSTICS_MODEL`, and optional `MANIFOLD_LIVE_DIAGNOSTICS_ENDPOINT`;
-- dedicated secrets `MANIFOLD_LIVE_DIAGNOSTICS_TOKEN` and
-  `MANIFOLD_LIVE_CONTROL_PLANE_TOKEN`.
+  optional `MANIFOLD_LIVE_DIAGNOSTICS_MODEL`, and optional `MANIFOLD_LIVE_DIAGNOSTICS_ENDPOINT`;
+- optional secrets `MANIFOLD_LIVE_DIAGNOSTICS_TOKEN` and
+  `MANIFOLD_LIVE_CONTROL_PLANE_TOKEN` (provider/observation diagnostics only).
+
+Repository secrets required for the callable candidate gate when Vercel Deployment Protection SSO
+covers non-custom domains:
+
+- `MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS`
+- `MANIFOLD_LIVE_GATEWAY_PROTECTION_BYPASS`
+
+These must match each project's Vercel automation protection-bypass secret so immutable
+`*.vercel.app` candidates remain reachable without assigning production aliases first.
 
 The tracked manual `Production promotion` workflow additionally requires GitHub secrets
 `MANIFOLD_VERCEL_TOKEN`, `MANIFOLD_VERCEL_ORG_ID`,
-`MANIFOLD_VERCEL_CONTROL_PLANE_PROJECT_ID`, and `MANIFOLD_VERCEL_GATEWAY_PROJECT_ID`. It deploys
-both projects with `--skip-domain`, derives the candidate URLs and deployment IDs from Vercel,
-waits for the callable diagnostic gate, and only then assigns the explicit aliases supplied at
-dispatch. Do not promote aliases outside that dependency chain.
+`MANIFOLD_VERCEL_CONTROL_PLANE_PROJECT_ID`, and `MANIFOLD_VERCEL_GATEWAY_PROJECT_ID`.
 
-Candidate diagnostics send one bounded request, require a valid gateway trace ID, then poll the
-control-plane observation endpoint until the matching observation and cost projection are durable.
-Use narrowly scoped, revocable tokens and never reuse a customer credential.
+Recommended values for this deployment team:
+
+| Secret | Value |
+| --- | --- |
+| `MANIFOLD_VERCEL_ORG_ID` | Vercel team id (`team_…`), not the display slug alone |
+| `MANIFOLD_VERCEL_CONTROL_PLANE_PROJECT_ID` | control-plane project id (`prj_…`) |
+| `MANIFOLD_VERCEL_GATEWAY_PROJECT_ID` | gateway project id (`prj_…`) |
+| `MANIFOLD_VERCEL_TOKEN` | dedicated personal/automation token with deploy rights on that team |
+
+Create the token with `vercel tokens add "manifold-github-production"` and store only the
+one-time `bearerToken`. The workflow fails closed before deploy if any of the four Vercel secrets
+are empty. It deploys both projects with `--skip-domain`, derives the candidate URLs and deployment
+IDs from Vercel, waits for the callable diagnostic gate (candidate provenance health is required;
+authenticated provider diagnostics run only when their tokens are configured), and only then
+assigns the explicit aliases supplied at dispatch. Do not promote aliases outside that dependency
+chain.
+
+When provider diagnostics are configured, they send one bounded request, require a valid gateway
+trace ID, then poll the control-plane observation endpoint until the matching observation and cost
+projection are durable. Use narrowly scoped, revocable tokens and never reuse a customer credential.
 
 Required Preview checks:
 

@@ -55,18 +55,43 @@ test("health mode fails when the control-plane database is not healthy", async (
   }), /checks\.db=ok/);
 });
 
-test("diagnostics mode fails closed without its dedicated gateway token, control-plane token, and model", async () => {
-  await assert.rejects(() => runLiveAcceptance({
+test("diagnostics mode can pass candidate provenance without provider credentials, and fails closed when only a partial provider setup is present", async () => {
+  const reports = [];
+  await runLiveAcceptance({
     env: { ...baseEnv, ...candidateEnv },
     fetchImpl: async (url) => String(url).endsWith("/api/v1/health") ? response(200, JSON.stringify({ checks: { db: "ok" } }), provenanceHeaders) : gatewayHealth(String(url), { "x-manifold-deployment-id": "dpl_gateway_1", "x-manifold-source-revision": "a1b2c3d4" }),
-    report: () => {},
-  }), /MANIFOLD_LIVE_DIAGNOSTICS_TOKEN is required/);
+    report: (line) => reports.push(line),
+  });
+  assert.ok(reports.some((line) => /provider diagnostics skipped/.test(line)));
+  assert.ok(reports.includes("live acceptance diagnostics: passed"));
 
   await assert.rejects(() => runLiveAcceptance({
     env: { ...baseEnv, ...candidateEnv, MANIFOLD_LIVE_DIAGNOSTICS_TOKEN: "gateway-token" },
     fetchImpl: async (url) => String(url).endsWith("/api/v1/health") ? response(200, JSON.stringify({ checks: { db: "ok" } }), provenanceHeaders) : gatewayHealth(String(url), { "x-manifold-deployment-id": "dpl_gateway_1", "x-manifold-source-revision": "a1b2c3d4" }),
     report: () => {},
   }), /MANIFOLD_LIVE_CONTROL_PLANE_TOKEN is required/);
+});
+
+test("candidate diagnostics send Vercel protection-bypass headers when configured", async () => {
+  const calls = [];
+  await runLiveAcceptance({
+    env: {
+      ...baseEnv,
+      ...candidateEnv,
+      MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS: "cp-bypass",
+      MANIFOLD_LIVE_GATEWAY_PROTECTION_BYPASS: "gw-bypass",
+    },
+    fetchImpl: async (url, init = {}) => {
+      calls.push([String(url), init?.headers ?? {}]);
+      if (String(url).endsWith("/api/v1/health")) return response(200, JSON.stringify({ checks: { db: "ok" } }), provenanceHeaders);
+      return gatewayHealth(String(url), { "x-manifold-deployment-id": "dpl_gateway_1", "x-manifold-source-revision": "a1b2c3d4" });
+    },
+    report: () => {},
+  });
+  const health = calls.find(([url]) => url.endsWith("/api/v1/health"));
+  const ready = calls.find(([url]) => url.endsWith("/ready"));
+  assert.equal(health[1]["x-vercel-protection-bypass"], "cp-bypass");
+  assert.equal(ready[1]["x-vercel-protection-bypass"], "gw-bypass");
 });
 
 test("diagnostics mode sends bounded authenticated gateway and control-plane requests without reporting private data", async () => {
