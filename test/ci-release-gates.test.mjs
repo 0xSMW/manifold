@@ -5,6 +5,18 @@ import test from "node:test";
 const root = new URL("..", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
 
+function assertPnpmAvailableBeforeCache(workflow, expectedOccurrences, name) {
+  const cachedNodeSetups = [...workflow.matchAll(/- uses: actions\/setup-node@v4\n\s+with:\n\s+node-version: 22\n\s+cache: pnpm/g)];
+  assert.equal(cachedNodeSetups.length, expectedOccurrences, `${name} must have the expected pnpm-cached Node 22 setups`);
+  for (const setup of cachedNodeSetups) {
+    const prefix = workflow.slice(0, setup.index);
+    const pnpmSetupIndex = prefix.lastIndexOf("- uses: pnpm/action-setup@v4");
+    assert.ok(pnpmSetupIndex >= 0, `${name} must install pnpm before setup-node cache resolution`);
+    assert.match(prefix.slice(pnpmSetupIndex), /- uses: pnpm\/action-setup@v4\n\s+with:\n\s+version: 10\.33\.3\s*$/m, `${name} must install the repository-declared pnpm version before setup-node cache resolution`);
+  }
+  assert.doesNotMatch(workflow, /corepack enable/, `${name} must not rely on post-cache Corepack activation`);
+}
+
 test("root command surface exposes every SPEC §21 release gate", async () => {
   const { scripts } = JSON.parse(await read("package.json"));
   for (const name of [
@@ -32,6 +44,7 @@ test("CI installs Node 22 and keeps security/storage gates independent", async (
   assert.match(workflow, /Install k6 0\.58\.0/);
   assert.match(workflow, /pnpm --dir apps\/control-plane run lint:copy/);
   assert.match(workflow, /Upload Playwright artifacts[\s\S]*?if: failure\(\)/);
+  assertPnpmAvailableBeforeCache(workflow, 2, "CI");
 });
 
 test("CI protects master while scheduled alias health remains separate from the callable promotion gate", async () => {
@@ -84,6 +97,7 @@ test("production promotion is master-only, requires successful CI for its exact 
   assert.match(lockfile, /^\s{2}vercel@58\.0\.0:/m);
   assert.doesNotMatch(workflow, /(?:npx|vercel)@latest/);
   assert.match(workflow, /pnpm install --frozen-lockfile/);
+  assertPnpmAvailableBeforeCache(workflow, 2, "production promotion");
   assert.match(workflow, /pnpm exec vercel deploy/);
   assert.match(workflow, /pnpm exec vercel alias set/);
   assert.match(workflow, /deploy-immutable-candidates:/);
@@ -94,6 +108,14 @@ test("production promotion is master-only, requires successful CI for its exact 
   assert.match(workflow, /uses: \.\/\.github\/workflows\/live-acceptance\.yml/);
   assert.match(workflow, /control_plane_candidate_url: \$\{\{ needs\.deploy-immutable-candidates\.outputs\.control_plane_candidate_url \}\}/);
   assert.match(workflow, /gateway_deployment_id: \$\{\{ needs\.deploy-immutable-candidates\.outputs\.gateway_deployment_id \}\}/);
+  const gatewayDeployment = workflow.slice(
+    workflow.indexOf("      - name: Deploy immutable gateway candidate without aliases"),
+    workflow.indexOf("  immutable-candidate-diagnostics:"),
+  );
+  assert.match(gatewayDeployment, /runs from the repository root/);
+  assert.match(gatewayDeployment, /Root Directory;[\s\S]*running from that app directory uploads an incomplete workspace/);
+  assert.doesNotMatch(gatewayDeployment, /working-directory:\s*apps\/gateway/);
+  assert.doesNotMatch(gatewayDeployment, /--cwd\s+apps\/gateway/);
   const promotion = workflow.slice(workflow.indexOf("  promote-production-aliases:"));
   assert.match(promotion, /needs: \[verify-master-ci, deploy-immutable-candidates, immutable-candidate-diagnostics\]/);
   assert.ok(workflow.indexOf("pnpm exec vercel alias set") > workflow.indexOf("  immutable-candidate-diagnostics:"), "aliases must be declared after the diagnostics dependency");

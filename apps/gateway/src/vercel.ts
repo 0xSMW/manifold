@@ -53,6 +53,21 @@ export function genericErrorResponse(): Response {
   );
 }
 
+/**
+ * Vercel otherwise applies its cache policy to responses that omit one. Keep
+ * the gateway-core response stream and every other response detail intact,
+ * while making public data-plane responses explicitly non-cacheable.
+ */
+export function nonCacheableGatewayResponse(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "no-store");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function contextWithWaitUntil(ctx: GatewayContext, waitUntil: WaitUntilRegistrar): GatewayContext {
   return {
     ...ctx,
@@ -86,7 +101,7 @@ export function createVercelGatewayHandler(
   return async (request: Request): Promise<Response> => {
     try {
       const ctx = contextWithWaitUntil(await getContext(), waitUntil);
-      return await handleRequest(ctx, reconstructGatewayRequest(request));
+      return nonCacheableGatewayResponse(await handleRequest(ctx, reconstructGatewayRequest(request)));
     } catch {
       return genericErrorResponse();
     }

@@ -64,11 +64,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - name: Deploy immutable control-plane candidate without aliases
         id: control-plane
@@ -87,13 +89,16 @@ jobs:
           printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
       - name: Deploy immutable gateway candidate without aliases
         id: gateway
-        working-directory: apps/gateway
         env:
           VERCEL_TOKEN: ${{ secrets.MANIFOLD_VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.MANIFOLD_VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.MANIFOLD_VERCEL_GATEWAY_PROJECT_ID }}
         run: |
           set -euo pipefail
+          # This command deliberately runs from the repository root. The gateway
+          # Vercel project owns `apps/gateway` as its configured Root Directory;
+          # running from that app directory uploads an incomplete workspace and
+          # prevents Vercel from attaching immutable Git provenance.
           pnpm exec vercel link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
           candidate_url="$(pnpm exec vercel deploy --yes --prod --skip-domain --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" | tail -n 1)"
           deployment_id="$(pnpm exec vercel inspect "$candidate_url" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" --json | jq --raw-output '.id')"
@@ -126,11 +131,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.3
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-      - run: corepack enable
       - run: pnpm install --frozen-lockfile
       - name: Promote both aliases only after candidate diagnostics
         env:

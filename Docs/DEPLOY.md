@@ -1,8 +1,8 @@
 # Manifold deployment and operations runbook
 
-This runbook describes a reusable Vercel control-plane and gateway deployment procedure. Do not
-place credential material, virtual keys, one-time installation keys, or release-specific evidence
-in this document.
+This runbook describes a reusable Vercel control-plane and gateway deployment procedure. Keep
+credential material, virtual keys, and one-time installation keys out of this document. The dated
+checkpoint below may record only non-secret deployment, source, snapshot, and health evidence.
 
 ## Runtime and readiness
 
@@ -19,19 +19,28 @@ independently for signed installation snapshots and an OpenAI-compatible provide
 
 ### Current internal-dogfood checkpoint
 
-Live checks on 2026-07-28 established:
+An earlier 2026-07-28 check found control-plane health and gateway liveness at 200 while gateway
+readiness returned 503. After applying migrations through `0035`, repairing the runtime-role
+privilege/readiness checks, and configuring the gateway Vercel project Root Directory as
+`apps/gateway`, immutable candidates from source revision
+`cba8abf5f99e7ca992f954bdff4ab2316dc6d469` passed the public promotion gate:
 
-- control-plane production `GET /api/v1/health` returned 200 with database status `ok`;
-- gateway production `GET /health` returned 200;
-- gateway production `GET /ready` returned 503 with `{"ok":false,"error":"unavailable"}`;
-- Vercel environment-name listings showed the expected human-auth names on the control plane and
-  core gateway names on the gateway. Values were not inspected.
+- control plane `dpl_75Pjr3B6yeSZfJL8wauchcUoxUMB`: `GET /api/v1/health` returned 200 with
+  `checks.db = "ok"`, `/login` returned 200, and activation status returned
+  `{"required":false,"configured":true}`;
+- gateway `dpl_5zN7QMoYBnfFEwRX8URDaasPFWLh`: `GET /health` returned 200 with `no-store`, and
+  `GET /ready` returned 200 with verified snapshot revision
+  `cfgrev_01KYDZRH2BF6YHT2G79QS3FGM0`;
+- both provenance responses matched the immutable Vercel deployment ID and exact source revision;
+- the verified candidates were assigned to `manifold-puce.vercel.app` and
+  `manifold-gateway.vercel.app`, and alias-mode health acceptance passed.
 
-This is a dated diagnostic checkpoint, not a launch record. Environment-name presence does not
-prove a nonempty or correctly scoped value, matching cross-project key material, database role/RLS,
-snapshot fetch or signature verification, Cron authorization, email delivery, provider traffic,
-durable accounting, or acceptance/SLO gates. The gateway is unavailable for dogfood traffic while
-`/ready` is non-200. Re-run and record the checks for the exact deployment before promotion.
+This evidence establishes database-backed control-plane health, public login-route availability,
+gateway liveness, signed-snapshot readiness, runtime database privileges, and immutable release
+provenance. The authenticated provider/observation diagnostic was not run because dedicated live
+diagnostic credentials were unavailable. Email delivery, Cron execution, object-store permissions,
+provider billing, load/soak, rotation, and recovery gates still require their separate acceptance
+checks before customer traffic.
 
 Choose a supported Fluid memory class and verify its limits against the current
 [Vercel function memory](https://vercel.com/docs/functions/configuring-functions/memory)
@@ -95,6 +104,7 @@ Project settings must remain:
 |---|---|
 | Team | designated deployment team |
 | Project | designated gateway project |
+| Root Directory | `apps/gateway` |
 | Node.js | `22.x` |
 | Fluid Compute | enabled |
 | Region | `iad1` |
@@ -106,10 +116,10 @@ Verify before every production promotion:
 
 ```bash
 vercel project inspect <gateway-project> --scope <team>
-vercel pull --yes --environment=preview --cwd apps/gateway --scope <team>
-vercel build --standalone --cwd apps/gateway
-jq . apps/gateway/.vercel/output/functions/api/gateway.func/.vc-config.json
-du -sh apps/gateway/.vercel/output
+vercel pull --yes --environment=preview --scope <team>
+vercel build --standalone
+jq . .vercel/output/functions/api/gateway.func/.vc-config.json
+du -sh .vercel/output
 ```
 
 The emitted gateway runtime must be `nodejs22.x`; every emitted relative import must use `.js`.
@@ -418,12 +428,12 @@ npm test -w apps/gateway
 ```
 
 The control plane and gateway are separate Vercel projects. Confirm the project name and configured
-Root Directory before invoking the CLI. The control-plane Vercel project currently configures
-`apps/control-plane` as its Root Directory, so its CLI source directory must be the repository root;
-running from `apps/control-plane` would apply the remote root a second time. The gateway project
-has no remote Root Directory, so the gateway commands below use `apps/gateway`. Use a clean checkout
-or separate Vercel link for the control plane when the repository-root `.vercel` link belongs to
-the gateway. Do not relink or deploy from an ambiguous project binding.
+Root Directory before invoking the CLI. The control-plane project configures `apps/control-plane` and
+the gateway project configures `apps/gateway` as their Root Directories. Invoke the CLI from the
+repository root for both projects: running from either application directory applies the remote root
+a second time, uploads an incomplete workspace, and loses Vercel's immutable Git provenance. Use a
+clean checkout or an explicit project link for each command; do not relink or deploy from an ambiguous
+project binding.
 
 Control-plane repository gates include:
 
@@ -456,15 +466,14 @@ Before building, confirm the inspect/pull output still reports Root Directory
 Gateway Preview:
 
 ```bash
-vercel pull --yes --environment=preview --cwd apps/gateway --scope <team>
-vercel build --standalone --cwd apps/gateway
-vercel deploy --prebuilt --target=preview --cwd apps/gateway --scope <team>
+vercel pull --yes --environment=preview --scope <team>
+vercel build --standalone
+vercel deploy --prebuilt --target=preview --scope <team>
 ```
 
 Use authenticated Vercel curl when Preview Deployment Protection is enabled:
 
 ```bash
-cd apps/gateway
 vercel curl /health --deployment <preview-deployment-id> -- --include
 vercel curl /ready --deployment <preview-deployment-id> -- --include
 ```
@@ -472,17 +481,22 @@ vercel curl /ready --deployment <preview-deployment-id> -- --include
 Production:
 
 ```bash
-vercel pull --yes --environment=production --cwd apps/gateway --scope <team>
-vercel build --prod --standalone --cwd apps/gateway
-vercel deploy --prebuilt --prod --cwd apps/gateway --scope <team>
+vercel deploy --prod --skip-domain --scope <team>
+vercel inspect <immutable-candidate-url> --scope <team> --json
+vercel curl /health --deployment <immutable-candidate-url> -- --include
+vercel curl /ready --deployment <immutable-candidate-url> -- --include
 ```
 
-Never promote unless Preview readiness is 200 and every applicable gate below passes.
+Run this source deployment from the repository root. A locally prebuilt gateway artifact is useful
+for package validation, but a prebuilt CLI deployment does not provide the Git source metadata
+required by the immutable-candidate provenance gate. Never assign the production alias unless the
+candidate's readiness, deployment ID, exact source revision, and every applicable gate below pass.
 
-For the control-plane project, use the same pull → build → prebuilt deploy progression against its
-own Vercel project and environment. After deployment, require `GET /api/v1/health` to return 200
-with `checks.db = "ok"`, then run the human-auth acceptance in `Docs/HUMAN_AUTH.md` and verify
-the Cron routes above. A Ready Vercel deployment or a 200 health response alone is insufficient.
+For the control-plane project, use the same source-deploy → immutable-candidate inspection
+progression against its own Vercel project and environment. After deployment, require
+`GET /api/v1/health` to return 200 with `checks.db = "ok"`, then run the human-auth acceptance in
+`Docs/HUMAN_AUTH.md` and verify the Cron routes above. A Ready Vercel deployment or a 200 health
+response alone is insufficient.
 
 ## Smoke and billing checks
 

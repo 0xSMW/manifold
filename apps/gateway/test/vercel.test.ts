@@ -7,6 +7,7 @@ import { FakeCrypto, FakeFetcher, FakeIngestSink, FixedClock, keyedHashHex } fro
 import {
   ORIGINAL_PATH_QUERY_PARAM,
   createVercelGatewayHandler,
+  nonCacheableGatewayResponse,
   reconstructGatewayRequest,
 } from "../src/vercel.ts";
 
@@ -115,7 +116,34 @@ test("Vercel rewrites preserve each supported OpenAI path without a wildcard pla
   assert.equal(rewrites.get("/ready"), "/api/ready");
 });
 
-test("Vercel handler passes a streaming core response through without buffering", async () => {
+test("the Vercel cache-policy wrapper preserves the exact response body stream and other headers", async () => {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("body identity"));
+      controller.close();
+    },
+  });
+  const coreResponse = new Response(body, {
+    status: 201,
+    statusText: "Created",
+    headers: {
+      "cache-control": "public, max-age=0, must-revalidate",
+      "content-type": "application/json",
+      "x-trace-id": "trace-boundary-123",
+    },
+  });
+  const response = nonCacheableGatewayResponse(coreResponse);
+
+  assert.equal(response.body, body);
+  assert.equal(response.status, 201);
+  assert.equal(response.statusText, "Created");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.equal(response.headers.get("content-type"), "application/json");
+  assert.equal(response.headers.get("x-trace-id"), "trace-boundary-123");
+  assert.equal(await response.text(), "body identity");
+});
+
+test("Vercel handler makes a streaming core response non-cacheable without replacing its body or headers", async () => {
   const upstream = new FakeFetcher(
     () =>
       new Response(
@@ -126,7 +154,7 @@ test("Vercel handler passes a streaming core response through without buffering"
             controller.close();
           },
         }),
-        { headers: { "content-type": "text/event-stream" } },
+        { headers: { "content-type": "text/event-stream", "x-upstream-trace": "provider-trace-123" } },
       ),
   );
   const background: Promise<unknown>[] = [];
@@ -143,12 +171,41 @@ test("Vercel handler passes a streaming core response through without buffering"
 
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("content-type"), "text/event-stream");
+  assert.equal(response.headers.get("x-upstream-trace"), "provider-trace-123");
+  assert.ok(response.headers.get("x-trace-id"), "gateway trace header is preserved");
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(await response.text(), "data: first\n\ndata: second\n\n");
   assert.equal(new URL(upstream.lastRequest!.url).pathname, "/v1/messages");
   assert.equal(new URL(upstream.lastRequest!.url).searchParams.get("stream"), "true");
   assert.equal(new URL(upstream.lastRequest!.url).searchParams.has(ORIGINAL_PATH_QUERY_PARAM), false);
   await Promise.all(background);
   assert.ok(background.length >= 2, "accepted and terminal observations are registered best-effort");
+});
+
+test("Vercel handler makes OpenAI-shaped auth failures non-cacheable without losing trace metadata", async () => {
+  const handler = createVercelGatewayHandler({
+    contextProvider: async () => context(new FakeFetcher(() => {
+      throw new Error("invalid bearer must not reach the upstream");
+    })),
+  });
+  const response = await handler(
+    new Request(
+      `https://gateway.test/api/gateway?${ORIGINAL_PATH_QUERY_PARAM}=%2Fv1%2Fmodels`,
+      { headers: { host: "gateway.test" } },
+    ),
+  );
+
+  assert.equal(response.status, 401);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.ok(response.headers.get("x-trace-id"), "gateway trace header is preserved");
+  assert.deepEqual(await response.json(), {
+    error: {
+      message: "no api key presented",
+      type: "authentication_error",
+      param: null,
+      code: "AUTH_KEY_UNKNOWN",
+    },
+  });
 });
 
 test("Vercel handler returns a generic error when context initialization fails", async () => {

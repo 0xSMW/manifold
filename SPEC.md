@@ -39,8 +39,8 @@ Status terms in this subsection are evidence labels, not requirement changes:
 
 | Surface | Current evidence | Status |
 |---|---|---|
-| Control plane | The Next.js console, the broad `/api/v1` route surface, first-party human authentication, configuration publication/recovery, observations, governance, deployment diagnostics, storage controls, and Vercel Cron declarations exist in `apps/control-plane`. Production `/api/v1/health` returned HTTP 200 with database status `ok` on 2026-07-28. | **Implemented in the repository; production health verified.** Email delivery, the complete human-auth production checklist, production Cron activation, production migration receipts, and object-store permissions remain **unverified**. |
-| Vercel gateway | `apps/gateway/api/gateway.ts` exposes a Web `Request` handler; `vercel.json` enables Fluid, rewrites the four §10.2 paths, and schedules the durable ledger drainer. Runtime initialization loads an installation-authenticated signed snapshot, checks strict Postgres admission, and wires durable terminal ingest. Production `/health` returned HTTP 200 on 2026-07-28. | **Partial operational readiness.** Production `/ready` returned HTTP 503 `{ok:false,error:"unavailable"}` on 2026-07-28. Because the public handler intentionally suppresses dependency details, the failing snapshot/runtime dependency is **unverified** here. Do not call the production gateway ready until `/ready` is 200 and the release gates pass. |
+| Control plane | The Next.js console, the broad `/api/v1` route surface, first-party human authentication, configuration publication/recovery, observations, governance, deployment diagnostics, storage controls, and Vercel Cron declarations exist in `apps/control-plane`. On 2026-07-28, immutable deployment `dpl_75Pjr3B6yeSZfJL8wauchcUoxUMB` from source `cba8abf5f99e7ca992f954bdff4ab2316dc6d469` returned HTTP 200 with database status `ok`; `/login` returned 200 and activation reported configured. | **Implemented in the repository; production public health and login-route availability verified.** Migrations through `0035` were applied. Email delivery, an authenticated production login, production Cron execution, provider billing, and object-store permissions remain separate acceptance gates. |
+| Vercel gateway | `apps/gateway/api/gateway.ts` exposes a Web `Request` handler; `vercel.json` enables Fluid, rewrites the four §10.2 paths, and schedules the durable ledger drainer. Runtime initialization loads an installation-authenticated signed snapshot, checks strict Postgres admission, and wires durable terminal ingest. After an earlier same-day 503 was repaired, immutable deployment `dpl_5zN7QMoYBnfFEwRX8URDaasPFWLh` from source `cba8abf5f99e7ca992f954bdff4ab2316dc6d469` returned HTTP 200/no-store from `/health` and `/ready`; readiness reported verified snapshot `cfgrev_01KYDZRH2BF6YHT2G79QS3FGM0`, and response provenance matched the candidate. | **Ready for internal public-health dogfooding.** The authenticated provider-to-observation diagnostic, billing smoke, load/soak, rotation, and recovery gates remain unverified and are required before customer traffic. |
 | Data-plane endpoints and providers | Repository handlers and rewrites cover chat completions, Responses, embeddings, and model listing. Explicit adapter metadata covers OpenAI and Azure OpenAI for all three write endpoints and the Anthropic bridge for chat. Billable POSTs dispatch once by default; target-scoped replay requires a signed provider-idempotency contract. Responses streaming recognizes `response.completed` and legacy `[DONE]`. | **Implemented in the repository; live provider credentials and production calls unverified.** Catalog presence alone is not provider support. |
 | Control-plane API and UI | The implemented route surface is broader than the compact normative reference in §10.3, and the §11 screen inventory exists. | **Implemented in the repository.** Uniform per-endpoint middleware, audit, idempotency, and negative-test coverage must still be judged by §10.8 and the release gates rather than file presence. |
 | Go CLI | Device authorization login/logout/status/whoami, health/ping, provider create/validate/rotate/revoke, route listing, key mint/rotate/revoke/scope update, and config plan/apply/active/history/rollback perform control-plane calls and use the OS keyring where applicable. Other domain commands still emit structured stub results. | **Partial.** The command tree exists; full HTTP parity, global flags, retries/idempotency, streaming output, and the §12 acceptance contract remain requirements. |
@@ -2702,14 +2702,14 @@ Code promotes staging→prod by Vercel promotion; rollback is instant to a prior
 `manifold installation register` (or the Deployments wizard) creates the installation, generates its keypair, binds the first profile + hostname, and prints the deploy command. First config apply publishes the initial snapshot; readiness turns green when the gateway reports `applied_config_revision == active` (§11 Deployments).
 
 The Deployments wizard and control-plane installation/profile APIs are implemented. The CLI
-`installation register` command remains a stub. Production liveness does not establish this
-bootstrap contract: on 2026-07-28 the gateway `/health` was 200 while `/ready` was 503, so the
-active-snapshot/runtime readiness dependency was unavailable and its public error intentionally did
-not identify which dependency failed. The repository readiness handler now checks current
-Postgres admission on every request and measures snapshot freshness from the last successful
-verified remote fetch rather than immutable `snapshot.meta.builtAt`. This removes the known
-freshness divergence; deployed readiness and the live acceptance gate still require separate
-verification.
+`installation register` command remains a stub. An earlier 2026-07-28 production check found
+`/health` at 200 and `/ready` at 503. After the runtime-role/readiness and deployment-root repairs,
+the immutable gateway candidate returned 200 from `/ready` with a verified active snapshot and
+matching deployment/source provenance, and the promoted alias passed the public health acceptance.
+The repository readiness handler checks current Postgres admission and the complete runtime
+privilege matrix on every request, and measures snapshot freshness from the last successful
+verified remote fetch rather than immutable `snapshot.meta.builtAt`. Authenticated provider,
+observation, billing, and recovery checks remain separate gates.
 
 ### 19.7 First-party human access rollout
 
