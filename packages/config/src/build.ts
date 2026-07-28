@@ -182,6 +182,38 @@ export function snapshotRetryPolicy(value: unknown): SnapshotRetryPolicy | undef
   return bounded && !Array.isArray(bounded) ? (bounded as SnapshotRetryPolicy) : undefined;
 }
 
+/**
+ * The route API writes a target-id-bound replay contract only after checking
+ * the selected offering adapter. Recheck while building the signed snapshot:
+ * direct/legacy DB edits must degrade to the no-replay default, never grant a
+ * billable POST retry.
+ */
+function retryPolicyWithVerifiedProviderIdempotency(
+  policy: SnapshotRetryPolicy | undefined,
+  targets: readonly SnapshotTarget[],
+  targetCapabilities: ReadonlyMap<string, unknown>,
+): SnapshotRetryPolicy | undefined {
+  if (!policy) return undefined;
+  const contract = policy.provider_idempotency;
+  if (!contract || typeof contract !== "object" || Array.isArray(contract)) return policy;
+  const record = contract as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  const targetId = record.target_id;
+  const supported = typeof targetId === "string" &&
+    keys.length === 2 && keys[0] === "header_name" && keys[1] === "target_id" &&
+    record.header_name === "idempotency-key" &&
+    targets.some((target) => target.targetId === targetId) &&
+    providerIdempotencySupported(targetCapabilities.get(targetId));
+  if (supported) return policy;
+  const { provider_idempotency: _discarded, ...withoutContract } = policy;
+  return withoutContract;
+}
+
+function providerIdempotencySupported(capabilities: unknown): boolean {
+  return capabilities !== null && typeof capabilities === "object" && !Array.isArray(capabilities) &&
+    (capabilities as Record<string, unknown>).providerIdempotency === "supported";
+}
+
 /** Fail closed for capture: absent/malformed revision policy means no payload tee. */
 export function snapshotCapturePolicy(value: unknown): SnapshotCapturePolicy {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { mode: "none", maxBytes: 0 };
@@ -293,6 +325,7 @@ export async function assembleSnapshot(
     if (!rev) continue;
     const targetRows = await q.readTargets(sql, rev.id);
     const targets: SnapshotTarget[] = [];
+    const targetCapabilities = new Map<string, unknown>();
     for (const t of targetRows) {
       // readCredential filters revoked/invalid credentials (db.ts): a target that points at a
       // revoked or invalid provider credential returns null here and is DROPPED — a dead key never
@@ -331,6 +364,7 @@ export async function assembleSnapshot(
         allowedHosts,
         authInject: authInjectFor(cred.provider),
       });
+      targetCapabilities.set(t.id, offering?.capabilities);
       // offerings section (budget eligibility + dispatch-time price, §7.1/§6.10)
       if (offering && !offerings[offering.id]) {
         const price = await q.readEffectivePrice(
@@ -362,7 +396,11 @@ export async function assembleSnapshot(
           ? (timeout["overallMs"] as number)
           : 60_000;
 
-    const retryPolicy = snapshotRetryPolicy(rev.retry_policy);
+    const retryPolicy = retryPolicyWithVerifiedProviderIdempotency(
+      snapshotRetryPolicy(rev.retry_policy),
+      targets,
+      targetCapabilities,
+    );
     const snapRoute: SnapshotRoute & { capturePolicy: SnapshotCapturePolicy } = {
       routeId: route.id,
       revision: rev.id,

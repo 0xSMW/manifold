@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleRequest, type GatewayContext } from "../dist/handleRequest.js";
+import { handleRequest, relayObservedStream, type GatewayContext } from "../src/handleRequest.ts";
+import type { SseUsageTransform } from "../src/sseUsage.ts";
 import type { HotPathObservationEvent, IngestSink, Snapshot, SnapshotTarget } from "@manifold/ports";
 import { FakeCrypto, FixedClock, keyedHashHex } from "@manifold/ports/testing";
 
@@ -277,7 +278,7 @@ test("hard-budget non-stream success without provider usage commits its conserva
   assert.equal(terminal.reservationId, "reservation");
 });
 
-test("fallback usage keeps the actual failover target's offering and price provenance", async () => {
+test("an ambiguous billable failure does not fail over to a second offering", async () => {
   const emitted: HotPathObservationEvent[] = [];
   const ingest: IngestSink = { async emit(event) { emitted.push(event); } };
   const ctx = context(ingest, true);
@@ -320,17 +321,12 @@ test("fallback usage keeps the actual failover target's offering and price prove
   };
 
   const response = await handleRequest(ctx, request());
-  assert.equal(response.status, 200);
-  assert.equal(attempts, 2);
+  assert.equal(response.status, 500);
+  assert.equal(attempts, 1);
   const terminal = emitted.at(-1)!;
-  assert.equal(terminal.offeringId, "test.offering.cheap");
-  assert.deepEqual(terminal.usage, { inputTokens: 8, outputTokens: 10 });
-  assert.deepEqual(terminal.price, {
-    inputPerMtokMicroUsd: "1000000",
-    outputPerMtokMicroUsd: "2000000",
-  });
-  assert.equal(terminal.priceRevisionId, "price_cheap");
-  assert.equal(terminal.costFidelity, "estimated");
+  assert.equal(terminal.offeringId, "test.offering");
+  assert.equal(terminal.status, 500);
+  assert.deepEqual(terminal.reasonCodes, ["PROVIDER_HTTP_5XX"]);
 });
 
 test("hard-budget incomplete SSE without usage commits its conservative reservation estimate", async () => {
@@ -353,7 +349,74 @@ test("hard-budget incomplete SSE without usage commits its conservative reservat
   const terminal = emitted.at(-1)!;
   assert.equal(terminal.kind, "terminal");
   assert.equal(terminal.status, 502);
+  assert.deepEqual(terminal.reasonCodes, ["PROVIDER_STREAM_ABORTED"]);
   assert.deepEqual(terminal.usage, { inputTokens: 8, outputTokens: 10 });
   assert.equal(terminal.costFidelity, "estimated");
   assert.equal(terminal.reservationId, "reservation");
+});
+
+test("Responses failed and incomplete terminals are not recorded as stream aborts", async () => {
+  const encoder = new TextEncoder();
+  for (const eventType of ["response.failed", "response.incomplete"]) {
+    const emitted: HotPathObservationEvent[] = [];
+    const ingest: IngestSink = { async emit(event) { emitted.push(event); } };
+    const ctx = context(ingest, true);
+    ctx.fetcher = {
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`event: ${eventType}\ndata: {\"type\":\"${eventType}\"}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+    };
+
+    const response = await handleRequest(ctx, request());
+    await response.text();
+    await microtasks();
+    const terminal = emitted.at(-1)!;
+    assert.equal(terminal.kind, "terminal");
+    assert.equal(terminal.status, 200, eventType);
+    assert.deepEqual(
+      terminal.reasonCodes,
+      [eventType === "response.failed" ? "PROVIDER_RESPONSE_FAILED" : "PROVIDER_RESPONSE_INCOMPLETE"],
+      eventType,
+    );
+  }
+});
+
+test("awaits terminal accounting when the stream reader cancellation rejects", async () => {
+  const cancellationError = new Error("provider reader cancellation failed");
+  const accountingError = new Error("terminal accounting failed");
+  const stream = new TransformStream<Uint8Array, Uint8Array>();
+  let rejectAccounting!: (reason: unknown) => void;
+  const observer = {
+    stream,
+    result: new Promise<void>((_resolve, reject) => { rejectAccounting = reject; }),
+    abort() {},
+  } as SseUsageTransform;
+  // The relay's reader is deliberately mocked at this boundary: native
+  // pipeThrough cancellation can normalize source cancellation failures into
+  // transformer failures before this function sees them.
+  const source = {
+    pipeThrough() {
+      return {
+        getReader() {
+          return {
+            read: async () => ({ done: true, value: undefined }),
+            cancel: async () => {
+              rejectAccounting(accountingError);
+              throw cancellationError;
+            },
+          };
+        },
+      };
+    },
+  };
+  const response = relayObservedStream(source as unknown as ReadableStream<Uint8Array>, observer);
+  const reader = response.getReader();
+  await assert.rejects(
+    reader.cancel("client stopped reading"),
+    (error: unknown) => error instanceof AggregateError &&
+      error.errors.includes(cancellationError) && error.errors.includes(accountingError),
+  );
 });

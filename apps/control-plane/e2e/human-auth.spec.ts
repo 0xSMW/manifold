@@ -222,6 +222,32 @@ test("authenticated settings actions use CSRF, maintain invitation/session/servi
   await expect(page).toHaveURL(/\/login$/);
 });
 
+test("invitation delivery failure offers a targeted resend and never claims it was sent", async ({ consolePage: page }) => {
+  await setCsrfCookie(page);
+  const invitations = [{ id: "invite-recovery", email: "recover@example.test", role: "viewer", status: "pending", expiresAt, acceptedAt: null, revokedAt: null, createdAt: expiresAt }];
+  let resendAttempts = 0;
+  await page.route("**/api/v1/settings/invitations**", (route) => {
+    if (route.request().method() === "GET") return json(route, { data: invitations, nextCursor: null });
+    expectCsrf(route.request());
+    if (route.request().url().endsWith("/invitations")) {
+      expect(body(route.request())).toEqual({ email: "recover@example.test", role: "viewer" });
+      return json(route, { error: { code: "INTERNAL", message: "invitation was created but email delivery failed", reason_codes: ["INVITATION_DELIVERY_FAILED"], remediation: "resend", request_id: "fixture", schema: "2026-07-01", retryable: true, details: { invitationId: "invite-recovery", retryPath: "/api/v1/settings/invitations/invite-recovery/resend" } } }, 503);
+    }
+    resendAttempts += 1;
+    return json(route, { data: { id: "invite-recovery", status: "pending", resent: true, expiresAt } });
+  });
+
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Invitations" }).click();
+  await page.getByLabel("Invite email").fill("recover@example.test");
+  await page.getByRole("button", { name: "Send invitation" }).click();
+  await expect(page.getByText("The invitation was created, but delivery failed. Retry delivery.")).toBeVisible();
+  await expect(page.getByText("Invitation sent.")).toHaveCount(0);
+  await page.getByRole("button", { name: "Retry delivery" }).click();
+  await expect(page.getByText("Invitation resent.")).toBeVisible();
+  expect(resendAttempts).toBe(1);
+});
+
 test("human-auth forms remain accessible and their narrow layout works on mobile", async ({ consolePage: page }) => {
   await page.route("**/api/v1/auth/activation/status", (route) => json(route, { required: false, configured: true }));
   await page.setViewportSize({ width: 390, height: 844 });

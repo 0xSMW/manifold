@@ -307,7 +307,7 @@ test("a signed key rate limit rejects with 429 before provider egress", async ()
   assert.equal((await response.json() as { error: { code: string } }).error.code, "RATE_LIMIT_KEY");
 });
 
-test("transient provider failure fails over to the next healthy target", async () => {
+test("a provider that may have billed before a 5xx is not retried or failed over", async () => {
   const first = target("offering_first", "https://first.provider.test");
   const second = { ...target("offering_second", "https://second.provider.test"), priority: 1 };
   const retryRoute = {
@@ -321,38 +321,63 @@ test("transient provider failure fails over to the next healthy target", async (
     offering_first: { providerModelId: "first-native" },
     offering_second: { providerModelId: "second-native" },
   }));
-  let calls = 0;
   setup.context.fetcher = {
     fetch: async (upstream) => {
       setup.upstreamRequests.push(upstream);
-      calls += 1;
-      return calls === 1 ? new Response("retry", { status: 503 }) : new Response("ok", { status: 200 });
+      return new Response("retry", { status: 503 });
     },
   };
 
   const response = await handleRequest(setup.context, request("/v1/chat/completions", "POST", {
     model: "retry-public",
   }));
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 503);
   assert.deepEqual(setup.upstreamRequests.map((item) => new URL(item.url).hostname), [
     "first.provider.test",
-    "second.provider.test",
   ]);
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(setup.observations.map((event) => event.kind), [
     "accepted",
     "provider_attempt",
-    "provider_attempt",
     "terminal",
   ]);
   assert.deepEqual(setup.observations[1]!.reasonCodes, [
     "PROVIDER_HTTP_5XX",
-    "RETRY_ATTEMPT",
-    "FAILOVER_ATTEMPT",
   ]);
   assert.equal(setup.observations[1]!.offeringId, "offering_first");
-  assert.deepEqual(setup.observations[2]!.reasonCodes, []);
-  assert.equal(setup.observations[2]!.offeringId, "offering_second");
+});
+
+test("an ambiguous provider network failure is not retried or failed over", async () => {
+  const first = target("offering_network_first", "https://network-first.provider.test");
+  const second = { ...target("offering_network_second", "https://network-second.provider.test"), priority: 1 };
+  const setup = await contextFor(baseSnapshot({
+    "profile_public:chat:network-public": {
+      ...route("route_network", first),
+      targets: [first, second],
+      retryPolicy: { max_attempts: 2, backoff_ms: 0 },
+    },
+  }, {
+    offering_network_first: { providerModelId: "network-first-native" },
+    offering_network_second: { providerModelId: "network-second-native" },
+  }));
+  setup.context.fetcher = {
+    fetch: async (upstream) => {
+      setup.upstreamRequests.push(upstream);
+      throw new TypeError("connection reset after provider acceptance");
+    },
+  };
+
+  const response = await handleRequest(setup.context, request("/v1/chat/completions", "POST", {
+    model: "network-public",
+  }));
+  assert.equal(response.status, 502);
+  assert.deepEqual(setup.upstreamRequests.map((item) => new URL(item.url).hostname), [
+    "network-first.provider.test",
+  ]);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(setup.observations.filter((event) => event.kind === "provider_attempt").map((event) => event.reasonCodes), [
+    ["PROVIDER_HTTP_5XX"],
+  ]);
 });
 
 test("request-size admission rejects before provider egress", async () => {
@@ -434,13 +459,12 @@ test("an opened target circuit is skipped on the next request", async () => {
 
   assert.equal((await handleRequest(setup.context, request("/v1/chat/completions", "POST", {
     model: "circuit-public",
-  }))).status, 200);
+  }))).status, 503);
   assert.equal((await handleRequest(setup.context, request("/v1/chat/completions", "POST", {
     model: "circuit-public",
   }))).status, 200);
   assert.deepEqual(setup.upstreamRequests.map((upstream) => new URL(upstream.url).hostname), [
     "circuit-first.provider.test",
-    "circuit-second.provider.test",
     "circuit-second.provider.test",
   ]);
 });

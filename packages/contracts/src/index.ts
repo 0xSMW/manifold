@@ -50,6 +50,8 @@ export const REASON_CODES = [
   "PROVIDER_HTTP_5XX",
   "PROVIDER_HTTP_4XX",
   "PROVIDER_STREAM_ABORTED",
+  "PROVIDER_RESPONSE_FAILED",
+  "PROVIDER_RESPONSE_INCOMPLETE",
   // limit
   "RATE_LIMIT_KEY",
   // ingest
@@ -412,7 +414,7 @@ export const DeploymentContracts = {
   diagnosticsQuery: z.object({ limit: z.coerce.number().int().min(1).max(50).default(20) }).strict(),
   profile: z.object({ hostname: NonEmptyString, mode: z.enum(["public_app", "enterprise_egress"]), networkExposure: z.enum(["public", "vpc", "mtls"]), authConfig: JsonValue, networkConfig: JsonValue.nullable().optional(), policyRevisionId: z.string().nullable().optional(), defaultRouteSet: z.array(NonEmptyString).nullable().optional() }).strict(),
   profileResponse: z.object({ id: z.string(), installationId: z.string(), hostname: z.string(), mode: z.string(), networkExposure: z.string(), authConfig: JsonValue, networkConfig: JsonValue.nullable(), policyRevisionId: z.string().nullable(), defaultRouteSet: JsonValue.nullable(), status: z.literal("draft"), published: z.literal(false), bindingEffective: z.literal(false), unpublishedChanges: z.number(), trustedHostInvariant: z.string() }).strict(),
-  diagnosticsResponse: z.object({ installationId: z.string(), lastHeartbeat: z.object({ observedAt: z.string().nullable(), appliedConfigRevision: z.string().nullable(), installationStatus: z.enum(["active", "disabled"]), reportingAvailable: z.literal(true) }).strict(), recentConfigOperations: z.array(z.object({ id: z.string(), outcome: z.string(), baseConfigHash: z.string().nullable(), targetConfigHash: z.string().nullable(), planHash: z.string().nullable(), edgeConfigVersion: z.string().nullable(), tripwireItems: JsonValue, error: JsonValue, createdAt: z.string() }).strict()), syntheticTest: z.object({ available: z.boolean(), lastResult: z.object({ id: z.string(), createdAt: z.string(), detail: JsonValue }).strict().nullable(), reason: z.string() }).strict() }).strict(),
+  diagnosticsResponse: z.object({ installationId: z.string(), lastHeartbeat: z.object({ observedAt: z.string().nullable(), appliedConfigRevision: z.string().nullable(), installationStatus: z.enum(["active", "disabled"]), reportingAvailable: z.literal(true), limitation: z.string() }).strict(), recentConfigOperations: z.array(z.object({ id: z.string(), outcome: z.string(), operationKind: z.string(), servingMode: z.string(), acceleratorStatus: z.enum(["not_configured", "pending", "published", "reconciliation_required", "superseded"]), baseConfigHash: z.string().nullable(), targetConfigHash: z.string().nullable(), planHash: z.string().nullable(), edgeConfigVersion: z.string().nullable(), tripwireItems: JsonValue, error: JsonValue, reconciliationAttempts: z.number().int().nonnegative(), lastReconcileAt: z.string().nullable(), completedAt: z.string().nullable(), createdAt: z.string() }).strict()), syntheticTest: z.object({ available: z.boolean(), lastResult: z.object({ id: z.string(), createdAt: z.string(), detail: z.discriminatedUnion("kind", [z.object({ kind: z.literal("gateway_response"), installationId: z.string(), profileId: z.string(), endpointKind: z.enum(["chat", "responses", "embeddings"]), configRevisionId: z.string().nullable(), appliedConfigRevisionId: z.string().nullable(), gatewayStatus: z.number().int(), traceId: z.string().nullable(), responseTruncated: z.boolean() }).strict(), z.object({ kind: z.literal("execution_failure"), installationId: z.string(), profileId: z.string(), endpointKind: z.enum(["chat", "responses", "embeddings"]), configRevisionId: z.string().nullable(), appliedConfigRevisionId: z.string().nullable(), failureCode: z.enum(["SYNTHETIC_NOT_CONFIGURED", "SYNTHETIC_POLICY", "SYNTHETIC_DNS", "SYNTHETIC_TIMEOUT", "SYNTHETIC_NETWORK", "SYNTHETIC_EXECUTION_FAILED"]), retryable: z.boolean() }).strict()]) }).strict().nullable(), activeConfigRevisionId: z.string().nullable(), appliedConfigRevisionId: z.string().nullable(), freshnessThresholdSeconds: z.number().int().positive(), reason: z.string() }).strict() }).strict(),
   readinessResponse: z.object({ installationId: z.string(), ready: z.boolean(), checks: JsonValue }).strict(),
   response: z.union([CursorResponse, DataResponse, IdResponse, StatusResponse]),
 } as const;
@@ -777,8 +779,14 @@ export const InternalContracts = {
   response: InternalResponse,
 } as const;
 export const AdminContracts = {
-  seed: z.object({ slug: z.string().min(1).optional(), name: z.string().min(1).optional(), email: z.string().email().optional(), region: z.string().min(1).optional() }).strict(),
-  seedResponse: z.object({ workspaceId: z.string(), slug: z.string(), hostname: z.string(), apiToken: z.string(), memberId: z.string(), tokenId: z.string(), installationId: z.string(), profileId: z.string(), appId: z.string(), offeringId: z.string() }).strict(),
+  seed: z.object({ slug: z.string().min(1).optional(), name: z.string().min(1).optional(), email: z.string().email().optional(), region: z.string().min(1).optional(), hostname: z.string().min(1).optional() }).strict(),
+  seedResponse: z.object({
+    status: z.enum(["seeded", "already_seeded"]), workspaceId: z.string(), slug: z.string(), hostname: z.string(),
+    apiToken: z.string().nullable(), apiTokenShownOnce: z.boolean(), memberId: z.string(), tokenId: z.string().nullable(),
+    installationId: z.string(), profileId: z.string(), appId: z.string(), offeringId: z.string().nullable(),
+    MANIFOLD_INSTALLATION_ID: z.string(), MANIFOLD_INSTALLATION_PRIVATE_KEY: z.string().nullable(),
+    installationIdentityPublicKey: z.string(), installationPrivateKeyShownOnce: z.boolean(),
+  }).strict(),
   response: z.union([DataResponse, StatusResponse, InternalResponse]),
 } as const;
 
@@ -810,6 +818,8 @@ const StrictRateLimit = z.object({
   burst: z.number().int().positive().optional(),
 }).strict().nullable();
 const StrictTarget = z.object({
+  /** Request-local reference used only to bind a provider replay contract. Never persisted as an id. */
+  clientRef: NonEmptyString.optional(),
   providerCredentialId: NonEmptyString,
   offeringId: NonEmptyString,
   baseUrl: z.string().url().nullable().optional(),
@@ -818,10 +828,18 @@ const StrictTarget = z.object({
   weight: z.number().int().nonnegative().optional(),
   priority: z.number().int().nonnegative().optional(),
 }).strict();
+/**
+ * The only provider replay contract currently supported. It is bound to the
+ * generated target id in this revision; keys are never shared across targets.
+ */
+const StrictProviderIdempotency = z.object({
+  targetRef: NonEmptyString,
+  headerName: z.literal("idempotency-key"),
+}).strict();
 const StrictRevision = z.object({
   mode: z.string().optional(),
   targets: z.array(StrictTarget).min(1),
-  retryPolicy: z.object({ maxAttempts: z.number().int().positive().optional(), retryOn: z.array(z.string()).optional(), backoffMs: z.number().int().nonnegative().optional() }).strict().optional(),
+  retryPolicy: z.object({ maxAttempts: z.number().int().positive().optional(), retryOn: z.array(z.string()).optional(), backoffMs: z.number().int().nonnegative().optional(), providerIdempotency: StrictProviderIdempotency.optional() }).strict().optional(),
   timeoutPolicy: z.object({ connectMs: z.number().int().nonnegative().optional(), firstByteMs: z.number().int().nonnegative().optional(), overallMs: z.number().int().nonnegative().optional() }).strict().optional(),
   capturePolicy: z.record(JsonValue).optional(),
 }).strict();

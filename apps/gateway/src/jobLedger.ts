@@ -8,6 +8,61 @@ import type { HotPathObservationEvent } from "@manifold/ports";
 /** Stable persisted name. Do not rename: existing jobs use this as their dispatch contract. */
 export const OBSERVATION_INGEST_JOB_KIND = "observation.ingest.v1" as const;
 
+/**
+ * Every relation the deployed gateway worker touches after request admission.
+ * Keep this beside the worker rather than migrations: readiness proves the
+ * grants that the runtime path actually requires, without issuing writes.
+ */
+const RUNTIME_TABLE_PRIVILEGES = [
+  ["gateway_installation", "SELECT"],
+  ["gateway_ingress_profile", "SELECT"],
+  ["virtual_key", "SELECT"],
+  ["gateway_rate_limit_state", "SELECT"],
+  ["gateway_rate_limit_state", "INSERT"],
+  ["gateway_rate_limit_state", "UPDATE"],
+  ["gateway_concurrency_lease", "SELECT"],
+  ["gateway_concurrency_lease", "INSERT"],
+  ["gateway_concurrency_lease", "UPDATE"],
+  ["observation", "INSERT"],
+  ["usage_record", "INSERT"],
+  ["cost_ledger", "INSERT"],
+  ["budget_account", "SELECT"],
+  ["budget_account", "UPDATE"],
+  ["budget_window_state", "SELECT"],
+  ["budget_window_state", "INSERT"],
+  ["budget_window_state", "UPDATE"],
+  ["budget_reservation", "SELECT"],
+  ["budget_reservation", "INSERT"],
+  ["budget_reservation", "UPDATE"],
+  ["audit_event", "SELECT"],
+  ["audit_event", "INSERT"],
+  // audit_event INSERT fires enqueue_audit_delivery (0015), which reads
+  // configured destinations and creates one delivery job per destination.
+  ["audit_destination", "SELECT"],
+  ["audit_delivery_job", "INSERT"],
+  ["gateway_target", "SELECT"],
+  ["gateway_route", "SELECT"],
+  ["gateway_route_revision", "SELECT"],
+  ["gateway_config_revision", "SELECT"],
+  ["gateway_target_health_observation", "INSERT"],
+  ["job_ledger", "SELECT"],
+  ["job_ledger", "INSERT"],
+  ["job_ledger", "UPDATE"],
+] as const;
+
+interface RuntimeRoleRow {
+  current_user: string;
+  session_user: string;
+  rolsuper: boolean;
+  rolbypassrls: boolean;
+}
+
+interface RuntimePrivilegeRow {
+  table_name: string;
+  privilege_name: string;
+  granted: boolean;
+}
+
 export type JobLedgerStatus = "pending" | "claimed" | "done" | "failed" | "dead";
 
 /** Complete, already-collected trace sent to the durable ingest worker. */
@@ -160,6 +215,54 @@ export class JobLedgerService {
       maxDelayMs: options.maxDelayMs,
       jitter: options.jitter,
     };
+  }
+
+  /**
+   * Prove this is the restricted runtime connection and that every deployed
+   * worker capability has its required grants. This is read-only: it neither
+   * writes a probe job nor changes durable state.
+   */
+  async checkReady(workspaceId: string): Promise<void> {
+    if (!nonEmptyString(workspaceId)) throw new Error("workspaceId is required");
+    await this.sql.begin(async (tx) => {
+      await setWorkspaceGuc(tx, workspaceId);
+      const roles = await tx<RuntimeRoleRow[]>`
+        SELECT current_user, session_user, r.rolsuper, r.rolbypassrls
+        FROM pg_roles AS r
+        WHERE r.rolname = current_user
+      `;
+      const role = roles[0];
+      if (
+        role?.current_user !== "manifold_app" ||
+        role.session_user !== "manifold_app" ||
+        role.rolsuper ||
+        role.rolbypassrls
+      ) {
+        throw new Error("gateway runtime must connect directly as restricted manifold_app");
+      }
+
+      const privileges = await tx<RuntimePrivilegeRow[]>`
+        WITH required(table_name, privilege_name) AS (
+          VALUES ${tx(RUNTIME_TABLE_PRIVILEGES)}
+        )
+        SELECT
+          table_name,
+          privilege_name,
+          has_table_privilege(current_user, format('public.%I', table_name), privilege_name) AS granted
+        FROM required
+      `;
+      if (privileges.length !== RUNTIME_TABLE_PRIVILEGES.length || privileges.some((privilege) => !privilege.granted)) {
+        throw new Error("gateway runtime table privileges are unavailable");
+      }
+
+      await tx`
+        SELECT id, workspace_id, kind, payload, idempotency_key, status, attempts,
+               max_attempts, run_after, claimed_at, claimed_by, last_error, created_at, updated_at
+        FROM job_ledger
+        WHERE workspace_id = ${workspaceId}
+        LIMIT 0
+      `;
+    });
   }
 
   /** Insert a complete trace once. The transaction scopes RLS before the write. */

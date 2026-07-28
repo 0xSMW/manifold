@@ -36,7 +36,8 @@ export interface MutationGuardOptions {
  * request waits for the durable response instead of re-running either the DB or accelerator work.
  */
 export interface PostCommitMutationGuardOptions extends Omit<MutationGuardOptions, "handler"> {
-  handler: () => Promise<Response>;
+  /** `recovered` is true only when an expired in-progress claim is reclaimed after a crash. */
+  handler: (recovered: boolean) => Promise<Response>;
 }
 
 interface IdempotencyRow {
@@ -313,7 +314,7 @@ export async function runMutationGuard(options: MutationGuardOptions): Promise<R
 }
 
 type PostCommitClaim =
-  | { kind: "execute"; id: string }
+  | { kind: "execute"; id: string; recovered: boolean }
   | { kind: "response"; response: Response }
   | { kind: "wait" };
 
@@ -355,7 +356,7 @@ async function claimPostCommitMutation(
         WHERE workspace_id = ${options.principal.workspaceId} AND id = ${row.id}
           AND state = 'in_progress' AND lease_expires_at <= now()
         RETURNING id`;
-      return reclaimed[0] ? { kind: "execute", id: row.id } : { kind: "wait" };
+      return reclaimed[0] ? { kind: "execute", id: row.id, recovered: true } : { kind: "wait" };
     }
     // Replays never consume another quota unit. A rejected first attempt leaves no claim because
     // it performed no mutation, so a later retry can legitimately attempt the operation again.
@@ -369,7 +370,7 @@ async function claimPostCommitMutation(
       response.headers.set("retry-after", String(retryAfter));
       return { kind: "response", response };
     }
-    return { kind: "execute", id: row.id };
+    return { kind: "execute", id: row.id, recovered: false };
   });
 }
 
@@ -396,9 +397,9 @@ export async function runPostCommitMutationGuard(options: PostCommitMutationGuar
         await new Promise<void>((resolve) => setTimeout(resolve, Math.min(500, 25 * 2 ** Math.min(attempts, 4))));
         continue;
       }
-      const response = await invokePostCommitHandler(options.handler, options.requestId);
+      const response = await invokePostCommitHandler(options.handler, options.requestId, claim.recovered);
       return withWorkspace(options.principal.workspaceId, (sql) =>
-        durableResponse(sql, options.principal.workspaceId, claim.id, response, shouldEncryptReplay(options)));
+        durableResponse(sql, options.principal.workspaceId, claim.id, response, shouldEncryptReplay(options as unknown as MutationGuardOptions)));
     }
     return errorEnvelope(conflict("Idempotency-Key request is still in progress", true), options.requestId);
   } catch (err) {
@@ -406,9 +407,9 @@ export async function runPostCommitMutationGuard(options: PostCommitMutationGuar
   }
 }
 
-async function invokePostCommitHandler(handler: PostCommitMutationGuardOptions["handler"], requestId: string): Promise<Response> {
+async function invokePostCommitHandler(handler: PostCommitMutationGuardOptions["handler"], requestId: string, recovered: boolean): Promise<Response> {
   try {
-    return await handler();
+    return await handler(recovered);
   } catch (err) {
     if (err instanceof ManifoldError) return errorEnvelope(err, requestId);
     console.error(`[${requestId}] unhandled post-commit guarded mutation error:`, err);

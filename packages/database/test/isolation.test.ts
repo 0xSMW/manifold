@@ -69,6 +69,9 @@ before(async () => {
     INSERT INTO cost_ledger (id, workspace_id, amount_microusd, fidelity, occurred_at) VALUES
       ('cl-1','ws_a',500,'exact', now());
 
+    INSERT INTO usage_record (id, workspace_id, observation_id, trace_id, fidelity, occurred_at) VALUES
+      ('ur-1','ws_a','obs-usage','tr-usage','exact', now());
+
     INSERT INTO observation
       (id, workspace_id, trace_id, installation_id, profile_mode, status, occurred_at) VALUES
       ('obs-del','ws_a','tr-1','inst_a','public_app','ok', now()),
@@ -347,6 +350,61 @@ test("immutability: DELETE on observation raises IMMUTABLE_ROW", async () => {
   }
   assert.ok(err, "observation DELETE must be blocked");
   assert.match(err!.message ?? "", /IMMUTABLE_ROW/);
+});
+
+test("immutability: usage_record raises IMMUTABLE_ROW for owner mutations", async () => {
+  await assert.rejects(
+    () => sql.unsafe("UPDATE usage_record SET fidelity = 'unknown' WHERE id = 'ur-1'"),
+    /IMMUTABLE_ROW/,
+  );
+  await assert.rejects(
+    () => sql.unsafe("DELETE FROM usage_record WHERE id = 'ur-1'"),
+    /IMMUTABLE_ROW/,
+  );
+});
+
+test("usage_record: manifold_app can read/insert in its workspace but cannot update or delete", async () => {
+  const inserted = await sql.begin(async (tx: Sql) => {
+    await tx.unsafe("SET LOCAL ROLE manifold_app");
+    await tx.unsafe("SELECT set_config('manifold.workspace_id','ws_a', true)");
+    const readable = await tx.unsafe("SELECT id FROM usage_record WHERE id = 'ur-1'");
+    assert.equal(readable.length, 1, "workspace-scoped usage must remain readable to ingestion");
+    return tx.unsafe(
+      "INSERT INTO usage_record (id, workspace_id, observation_id, trace_id, fidelity, occurred_at)" +
+      " VALUES ('ur-app','ws_a','obs-usage-app','tr-usage-app','estimated',now())",
+    );
+  });
+  assert.equal(inserted.count, 1, "manifold_app must retain append-only usage ingestion");
+
+  await assert.rejects(
+    () => sql.begin(async (tx: Sql) => {
+      await tx.unsafe("SET LOCAL ROLE manifold_app");
+      await tx.unsafe("SELECT set_config('manifold.workspace_id','ws_a', true)");
+      return tx.unsafe("UPDATE usage_record SET fidelity = 'unknown' WHERE id = 'ur-app'");
+    }),
+    /permission denied/i,
+  );
+  await assert.rejects(
+    () => sql.begin(async (tx: Sql) => {
+      await tx.unsafe("SET LOCAL ROLE manifold_app");
+      await tx.unsafe("SELECT set_config('manifold.workspace_id','ws_a', true)");
+      return tx.unsafe("DELETE FROM usage_record WHERE id = 'ur-app'");
+    }),
+    /permission denied/i,
+  );
+});
+
+test("usage_record: a future partition retains append-only manifold_app grants", async () => {
+  const [{ partition_name }] = await sql.unsafe<{ partition_name: string }[]>(
+    "SELECT create_month_partition('usage_record', DATE '2032-01-01') AS partition_name",
+  );
+  const [grants] = await sql<{ can_insert: boolean; can_select: boolean; can_update: boolean; can_delete: boolean }[]>`
+    SELECT has_table_privilege('manifold_app', ${partition_name}, 'INSERT') AS can_insert,
+           has_table_privilege('manifold_app', ${partition_name}, 'SELECT') AS can_select,
+           has_table_privilege('manifold_app', ${partition_name}, 'UPDATE') AS can_update,
+           has_table_privilege('manifold_app', ${partition_name}, 'DELETE') AS can_delete
+  `;
+  assert.deepEqual(grants, { can_insert: true, can_select: true, can_update: false, can_delete: false });
 });
 
 test("immutability: observation.compacted false->true is ALLOWED", async () => {

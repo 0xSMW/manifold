@@ -1,4 +1,4 @@
-import type { SnapshotTarget } from "@manifold/ports";
+import type { Crypto, SnapshotTarget } from "@manifold/ports";
 
 /**
  * Retry limits deliberately stay small: an upstream POST is only replayed when
@@ -129,6 +129,74 @@ export interface RetryableFailure {
   networkError?: boolean;
 }
 
+/**
+ * A provider idempotency contract is deliberately bound to one persisted target.
+ * Provider idempotency stores are not shared between credentials/providers, so a
+ * client key may only authorize a replay to this exact target.
+ */
+export interface ProviderIdempotencyContract {
+  targetId: string;
+  headerName: "idempotency-key";
+}
+
+const MAX_INBOUND_IDEMPOTENCY_KEY_CHARS = 1_024;
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+/**
+ * Derive the provider-facing idempotency value from the only three identities
+ * that may authorize a billable replay. The client value is deliberately never
+ * forwarded or recorded: the fixed-size HMAC output is safe for provider
+ * headers and remains distinct for every installation/target pair.
+ */
+export async function deriveProviderIdempotencyKey(
+  crypto: Crypto,
+  pepper: Uint8Array,
+  installationId: string,
+  targetId: string,
+  clientKey: string | null | undefined,
+): Promise<string | undefined> {
+  if (
+    !installationId ||
+    !targetId ||
+    typeof clientKey !== "string" ||
+    clientKey.trim().length === 0 ||
+    clientKey.length > MAX_INBOUND_IDEMPOTENCY_KEY_CHARS
+  ) return undefined;
+  const message = new TextEncoder().encode(JSON.stringify([
+    "manifold-provider-idempotency-v1",
+    installationId,
+    targetId,
+    clientKey,
+  ]));
+  const digest = await crypto.hmacSha256(pepper, message);
+  return `mf_${base64Url(digest)}`;
+}
+
+/**
+ * Read the only replay contract understood by the gateway from signed route
+ * policy. Unknown/malformed policy is not a contract. The persisted wire shape
+ * is deliberately canonical and closed: `target_id` + `header_name` only.
+ */
+export function providerIdempotencyContractFromSnapshot(
+  input: Record<string, unknown> | undefined,
+): ProviderIdempotencyContract | undefined {
+  const raw = input?.provider_idempotency;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const record = raw as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (keys.length !== 2 || keys[0] !== "header_name" || keys[1] !== "target_id") return undefined;
+  const targetId = record.target_id;
+  const headerName = record.header_name;
+  if (typeof targetId !== "string" || targetId.trim().length === 0) return undefined;
+  if (headerName !== "idempotency-key") return undefined;
+  return { targetId, headerName: "idempotency-key" };
+}
+
 /** Retry only transient provider responses and explicit timeout/network failures. */
 export function isRetryableFailure(
   failure: RetryableFailure,
@@ -144,13 +212,17 @@ export function isRetryableFailure(
 }
 
 /**
- * A POST may be replayed before any provider response bytes are observed. Once
- * bytes have crossed the boundary, the caller must have supplied a non-empty
- * Idempotency-Key before replaying it.
+ * A billable POST is replayable only when the signed route explicitly binds a
+ * provider idempotency contract to this target and the client supplied a key.
+ * Response-byte counts cannot establish whether the provider accepted/billed a
+ * request, so zero bytes is intentionally not treated as safe.
  */
-export function isSafePostRetry(responseBytesReceived: number, idempotencyKey?: string | null): boolean {
-  if (responseBytesReceived <= 0) return true;
-  return typeof idempotencyKey === "string" && idempotencyKey.trim().length > 0;
+export function isSafePostRetry(
+  _responseBytesReceived: number,
+  idempotencyKey?: string | null,
+  contract?: ProviderIdempotencyContract,
+): boolean {
+  return contract !== undefined && typeof idempotencyKey === "string" && idempotencyKey.trim().length > 0;
 }
 
 /** Remaining route-level time, never negative. */
@@ -164,6 +236,7 @@ export interface RetryDecisionInput {
   failure: RetryableFailure;
   responseBytesReceived: number;
   idempotencyKey?: string | null;
+  providerIdempotencyContract?: ProviderIdempotencyContract;
   retryAfter?: string | null;
   startedAtMs: number;
   deadlineMs: number;
@@ -180,7 +253,7 @@ export function decideRetry(input: RetryDecisionInput): RetryDecision {
   const policy = normalizeRetryPolicy(input.policy);
   if (input.completedAttempt >= policy.maxAttempts) return { retry: false, reason: "attempt_cap" };
   if (!isRetryableFailure(input.failure, policy.retryOn)) return { retry: false, reason: "not_retryable" };
-  if (!isSafePostRetry(input.responseBytesReceived, input.idempotencyKey)) return { retry: false, reason: "unsafe_post" };
+  if (!isSafePostRetry(input.responseBytesReceived, input.idempotencyKey, input.providerIdempotencyContract)) return { retry: false, reason: "unsafe_post" };
 
   const nowMs = input.nowMs ?? Date.now();
   const delayMs = retryDelayMs(input.completedAttempt, policy, input.retryAfter, nowMs);

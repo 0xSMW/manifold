@@ -1,0 +1,146 @@
+name: Production promotion
+
+on:
+  # Production promotion is deliberately an explicit, reviewable operation.
+  workflow_dispatch:
+    inputs:
+      control_plane_production_alias:
+        description: Exact existing production alias for the control plane.
+        required: true
+        type: string
+      gateway_production_alias:
+        description: Exact existing production alias for the gateway.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: manifold-production-promotion
+  cancel-in-progress: false
+
+jobs:
+  verify-master-ci:
+    # `workflow_dispatch` may target any ref. Never give a non-master ref a
+    # path to deployment credentials, even if it has a similarly named CI run.
+    if: ${{ github.ref == 'refs/heads/master' }}
+    name: verify-master-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Require successful CI release-gates run for this exact revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/master"
+          gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&branch=master&event=push&status=completed&per_page=100" \
+            | jq --exit-status --arg sha "$GITHUB_SHA" '
+                any(.workflow_runs[];
+                  .head_sha == $sha
+                  and .head_branch == "master"
+                  and .event == "push"
+                  and .conclusion == "success")
+              ' >/dev/null
+
+  deploy-immutable-candidates:
+    name: deploy-immutable-candidates
+    needs: verify-master-ci
+    if: ${{ github.ref == 'refs/heads/master' && needs.verify-master-ci.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      control_plane_candidate_url: ${{ steps.control-plane.outputs.candidate_url }}
+      control_plane_deployment_id: ${{ steps.control-plane.outputs.deployment_id }}
+      gateway_candidate_url: ${{ steps.gateway.outputs.candidate_url }}
+      gateway_deployment_id: ${{ steps.gateway.outputs.deployment_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Deploy immutable control-plane candidate without aliases
+        id: control-plane
+        env:
+          VERCEL_TOKEN: ${{ secrets.MANIFOLD_VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.MANIFOLD_VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.MANIFOLD_VERCEL_CONTROL_PLANE_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          pnpm exec vercel link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
+          candidate_url="$(pnpm exec vercel deploy --yes --prod --skip-domain --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" | tail -n 1)"
+          deployment_id="$(pnpm exec vercel inspect "$candidate_url" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" --json | jq --raw-output '.id')"
+          test -n "$candidate_url" && test "$candidate_url" != "null"
+          test -n "$deployment_id" && test "$deployment_id" != "null"
+          printf 'candidate_url=%s\n' "$candidate_url" >> "$GITHUB_OUTPUT"
+          printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
+      - name: Deploy immutable gateway candidate without aliases
+        id: gateway
+        working-directory: apps/gateway
+        env:
+          VERCEL_TOKEN: ${{ secrets.MANIFOLD_VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.MANIFOLD_VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.MANIFOLD_VERCEL_GATEWAY_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          pnpm exec vercel link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
+          candidate_url="$(pnpm exec vercel deploy --yes --prod --skip-domain --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" | tail -n 1)"
+          deployment_id="$(pnpm exec vercel inspect "$candidate_url" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" --json | jq --raw-output '.id')"
+          test -n "$candidate_url" && test "$candidate_url" != "null"
+          test -n "$deployment_id" && test "$deployment_id" != "null"
+          printf 'candidate_url=%s\n' "$candidate_url" >> "$GITHUB_OUTPUT"
+          printf 'deployment_id=%s\n' "$deployment_id" >> "$GITHUB_OUTPUT"
+
+  immutable-candidate-diagnostics:
+    name: immutable-candidate-diagnostics
+    needs: deploy-immutable-candidates
+    if: ${{ github.ref == 'refs/heads/master' && needs.deploy-immutable-candidates.result == 'success' }}
+    uses: ./.github/workflows/live-acceptance.yml
+    with:
+      control_plane_candidate_url: ${{ needs.deploy-immutable-candidates.outputs.control_plane_candidate_url }}
+      gateway_candidate_url: ${{ needs.deploy-immutable-candidates.outputs.gateway_candidate_url }}
+      control_plane_deployment_id: ${{ needs.deploy-immutable-candidates.outputs.control_plane_deployment_id }}
+      gateway_deployment_id: ${{ needs.deploy-immutable-candidates.outputs.gateway_deployment_id }}
+    secrets:
+      MANIFOLD_LIVE_DIAGNOSTICS_TOKEN: ${{ secrets.MANIFOLD_LIVE_DIAGNOSTICS_TOKEN }}
+      MANIFOLD_LIVE_CONTROL_PLANE_TOKEN: ${{ secrets.MANIFOLD_LIVE_CONTROL_PLANE_TOKEN }}
+
+  promote-production-aliases:
+    name: promote-production-aliases
+    needs: [verify-master-ci, deploy-immutable-candidates, immutable-candidate-diagnostics]
+    if: ${{ github.ref == 'refs/heads/master' && needs.verify-master-ci.result == 'success' && needs.deploy-immutable-candidates.result == 'success' && needs.immutable-candidate-diagnostics.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - name: Promote both aliases only after candidate diagnostics
+        env:
+          VERCEL_TOKEN: ${{ secrets.MANIFOLD_VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.MANIFOLD_VERCEL_ORG_ID }}
+          CONTROL_PLANE_CANDIDATE_URL: ${{ needs.deploy-immutable-candidates.outputs.control_plane_candidate_url }}
+          GATEWAY_CANDIDATE_URL: ${{ needs.deploy-immutable-candidates.outputs.gateway_candidate_url }}
+          CONTROL_PLANE_ALIAS: ${{ inputs.control_plane_production_alias }}
+          GATEWAY_ALIAS: ${{ inputs.gateway_production_alias }}
+        run: |
+          set -euo pipefail
+          pnpm exec vercel alias set "$CONTROL_PLANE_CANDIDATE_URL" "$CONTROL_PLANE_ALIAS" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
+          pnpm exec vercel alias set "$GATEWAY_CANDIDATE_URL" "$GATEWAY_ALIAS" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"

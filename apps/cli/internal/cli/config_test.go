@@ -193,3 +193,65 @@ func TestConfigApply_MissingRequiredFlags_Exit2(t *testing.T) {
 		t.Fatalf("expected usage error exit %d, got %v", ExitUsage, err)
 	}
 }
+
+func TestConfigRollback_RealHTTP_PostsContractAndMapsErrors(t *testing.T) {
+	var method, path, idempotencyKey string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		method, path, idempotencyKey = req.Method, req.URL.Path, req.Header.Get("Idempotency-Key")
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"operationId":"op_1","revisionId":"rev_1","activeContentHash":"sha256:new","servingMode":"boot_fallback","acceleratorStatus":"not_configured","edgeConfigVersion":null,"byteIdentical":true}`))
+	}))
+	defer srv.Close()
+	out, err := runCLI(t, "config", "rollback", "--installation", "inst_1", "--revision", "rev_1", "--base-config-hash", "sha256:old", "--yes", "--base-url", srv.URL, "--json")
+	if err != nil {
+		t.Fatalf("rollback returned error: %v", err)
+	}
+	if method != http.MethodPost || path != "/api/v1/config/rollback" || idempotencyKey == "" || body["installationId"] != "inst_1" || body["revisionId"] != "rev_1" || body["baseConfigHash"] != "sha256:old" || !json.Valid([]byte(out)) {
+		t.Fatalf("request/output mismatch: %s %s %#v %q", method, path, body, out)
+	}
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":{"code":"CONFIG_PRECONDITION_FAILED","message":"stale"}}`))
+	}))
+	defer errSrv.Close()
+	_, err = runCLI(t, "config", "rollback", "--installation", "inst_1", "--revision", "rev_1", "--base-config-hash", "sha256:old", "--yes", "--base-url", errSrv.URL)
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitPrecondition {
+		t.Fatalf("expected precondition error, got %v", err)
+	}
+}
+
+func TestConfigRollback_RequiresCurrentHash(t *testing.T) {
+	_, err := runCLI(t, "config", "rollback", "--installation", "inst_1", "--revision", "rev_1", "--base-url", "http://127.0.0.1:1")
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitUsage {
+		t.Fatalf("expected usage error, got %v", err)
+	}
+}
+
+func TestConfigHistory_RealHTTP_QueriesInstallationAndMapsErrors(t *testing.T) {
+	var method, path, installation string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		method, path, installation = req.Method, req.URL.Path, req.URL.Query().Get("installationId")
+		_, _ = w.Write([]byte(`{"installationId":"inst_1","revisions":[],"operations":[]}`))
+	}))
+	defer srv.Close()
+	out, err := runCLI(t, "config", "history", "--installation", "inst_1", "--base-url", srv.URL, "--json")
+	if err != nil {
+		t.Fatalf("history returned error: %v", err)
+	}
+	if method != http.MethodGet || path != "/api/v1/config/history" || installation != "inst_1" || !json.Valid([]byte(out)) {
+		t.Fatalf("request/output mismatch: %s %s %s %q", method, path, installation, out)
+	}
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"denied"}}`))
+	}))
+	defer errSrv.Close()
+	_, err = runCLI(t, "config", "history", "--installation", "inst_1", "--base-url", errSrv.URL)
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitAuth {
+		t.Fatalf("expected auth error, got %v", err)
+	}
+}

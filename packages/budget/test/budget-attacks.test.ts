@@ -63,6 +63,8 @@ const ACCOUNTS: Array<{ id: string; window: string; unit?: string; limit?: bigin
   { id: "ba_neg_cost", window: "monthly" }, // bug #2: negative estMicroUsd clamp
   { id: "ba_neg_tokens", window: "monthly", unit: "tokens", limit: TOKEN_LIMIT }, // bug #2: negative token clamp
   { id: "ba_future_skew", window: "monthly" }, // bug #4: forged-future requestId clamp
+  { id: "ba_quarantine_parent", window: "monthly" },
+  { id: "ba_quarantine_child", window: "monthly" },
 ];
 
 before(async () => {
@@ -90,6 +92,7 @@ before(async () => {
        pricing_catalog_revision_id)
     VALUES
       ${accountValues};
+    UPDATE budget_account SET parent_id = 'ba_quarantine_parent' WHERE id = 'ba_quarantine_child';
   `);
 }, { timeout: 180_000 });
 
@@ -127,6 +130,25 @@ async function windowTokens(
   const r = rows[0];
   return r ? { reserved: BigInt(r.reserved_tokens), committed: BigInt(r.committed_tokens) } : undefined;
 }
+
+test("disabled leaf or ancestor fails closed for new admission, while explicit re-enable restores it", async () => {
+  const input = {
+    budgetAccountId: "ba_quarantine_child",
+    requestId: ulid(),
+    estMicroUsd: EST,
+    workspaceId: WORKSPACE_ID,
+    windowStart: monthNow(),
+  };
+  await sql`UPDATE budget_account SET disabled_at = now() WHERE id = 'ba_quarantine_parent'`;
+  const deniedByParent = await reserve(sql, input);
+  assert.deepEqual(deniedByParent, { ok: false, reason: BUDGET_RESERVE_DENIED });
+  const counters = await windowRow("ba_quarantine_child", input.windowStart);
+  assert.equal(counters, undefined, "quarantined admission must not create or reserve a counter row");
+
+  await sql`UPDATE budget_account SET disabled_at = NULL WHERE id = 'ba_quarantine_parent'`;
+  const recovered = await reserve(sql, { ...input, requestId: ulid() });
+  assert.equal(recovered.ok, true, "operator re-enable restores admission");
+});
 
 // ---------------------------------------------------------------------------
 // (1) NO OVERSELL under concurrency — the money guarantee.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleRequest, type GatewayContext } from "@manifold/gateway-core";
+import { handleRequest, type GatewayContext } from "../src/handleRequest.ts";
 import type { HotPathObservationEvent, IngestSink, Snapshot, SnapshotTarget } from "@manifold/ports";
 import { FakeCrypto, FixedClock, keyedHashHex } from "@manifold/ports/testing";
 
@@ -62,7 +62,7 @@ function assertIdentity(event: HotPathObservationEvent, targetId: string, outcom
   assert.equal(event.attemptOutcome, outcome);
 }
 
-test("provider attempt health identity survives success, retry/failover, timeout, and final failure", async (t) => {
+test("provider attempt health identity survives success, ambiguous failure, timeout, and final failure", async (t) => {
   await t.test("success", async () => {
     const { context, events } = await setup([target("target_success", "offering_success")], async () => new Response("ok", { status: 200 }));
     assert.equal((await handleRequest(context, request())).status, 200);
@@ -71,7 +71,7 @@ test("provider attempt health identity survives success, retry/failover, timeout
     assertIdentity(attempts[0]!, "target_success", "success");
   });
 
-  await t.test("retry and failover retain each target identity", async () => {
+  await t.test("ambiguous 5xx records only the original target identity", async () => {
     let calls = 0;
     const { context, events } = await setup([
       target("target_first", "offering_first"), target("target_second", "offering_second", 1),
@@ -79,12 +79,11 @@ test("provider attempt health identity survives success, retry/failover, timeout
       calls += 1;
       return new Response(calls === 1 ? "unavailable" : "ok", { status: calls === 1 ? 503 : 200 });
     });
-    assert.equal((await handleRequest(context, request())).status, 200);
+    assert.equal((await handleRequest(context, request())).status, 503);
     const attempts = await attemptEvents(events);
-    assert.equal(attempts.length, 2);
+    assert.equal(attempts.length, 1);
     assertIdentity(attempts[0]!, "target_first", "transient_failure");
-    assert.deepEqual(attempts[0]!.reasonCodes, ["PROVIDER_HTTP_5XX", "RETRY_ATTEMPT", "FAILOVER_ATTEMPT"]);
-    assertIdentity(attempts[1]!, "target_second", "success");
+    assert.deepEqual(attempts[0]!.reasonCodes, ["PROVIDER_HTTP_5XX"]);
   });
 
   await t.test("timeout is transient and a final HTTP 4xx is permanent", async () => {

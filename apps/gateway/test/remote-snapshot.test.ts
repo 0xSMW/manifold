@@ -62,6 +62,25 @@ test("fresh cache hit avoids a second remote fetch and stale entry refreshes", a
   now.advance(6); assert.equal((await s.loadActive(id)).meta.revision, next.meta.revision); assert.equal(calls, 2);
 });
 
+test("readiness timestamps a fresh verification even when the published snapshot is unchanged", async () => {
+  const id = "readiness-refetch";
+  const now = clock(Date.parse("2026-07-24T12:00:00.000Z"));
+  const unchangedPublication = signedSnapshot(id, "2026-07-01T00:00:00.000Z");
+  const s = store(id, (async () => response(unchangedPublication)) as typeof fetch, now, {
+    freshnessTtlMs: 0,
+    maxStaleMs: 60_000,
+  });
+
+  const first = await s.checkReady(id);
+  now.advance(1_000);
+  const refetched = await s.checkReady(id);
+
+  assert.equal(first.snapshot.meta.revision, unchangedPublication.meta.revision);
+  assert.equal(refetched.snapshot.meta.revision, unchangedPublication.meta.revision);
+  assert.equal(refetched.verifiedAtMs, now.value());
+  assert.equal(refetched.snapshot.meta.builtAt, "2026-07-01T00:00:00.000Z");
+});
+
 test("bad signature and installation mismatch retain an acceptable last-known-good snapshot", async () => {
   const id = "bad-and-mismatch"; const now = clock(); const good = signedSnapshot(id); const bad = structuredClone(good); bad.meta.signature = "not-a-signature";
   const wrongInstallation = signedSnapshot("another-installation"); let call = 0;
@@ -129,6 +148,19 @@ test("fetch timeout/failure use LKG only while it is within max stale, then fail
   await s.loadActive(id); now.advance(5); assert.equal((await s.loadActive(id)).meta.contentHash, good.meta.contentHash);
   now.advance(6); await assert.rejects(s.loadActive(id), /no verified remote snapshot/);
   await assert.rejects(store("fetch-no-lkg", (async () => { throw new Error("network"); }) as typeof fetch, now).loadActive("fetch-no-lkg"), /no verified remote snapshot/);
+});
+
+test("readiness fails closed once a fetch failure outlives the configured LKG limit", async () => {
+  const id = "readiness-stale"; const now = clock(); const good = signedSnapshot(id); let calls = 0;
+  const s = store(id, (async () => {
+    if (++calls === 1) return response(good);
+    throw new Error("network");
+  }) as typeof fetch, now, { freshnessTtlMs: 0, maxStaleMs: 10 });
+  await s.checkReady(id);
+  now.advance(10);
+  assert.equal((await s.checkReady(id)).snapshot.meta.revision, good.meta.revision);
+  now.advance(1);
+  await assert.rejects(s.checkReady(id), /no verified remote snapshot/);
 });
 
 test("accelerator never receives installation credentials and an active rollback may be older", async () => {

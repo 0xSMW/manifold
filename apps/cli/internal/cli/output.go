@@ -17,13 +17,15 @@ import (
 // this is a single-process, single-invocation CLI so there is no concurrency
 // concern.
 var (
-	flagJSON      bool
-	flagContext   string
-	flagWorkspace string
-	flagBaseURL   string
-	flagToken     string
-	flagNoInput   bool
-	flagQuiet     bool
+	flagJSON           bool
+	flagContext        string
+	flagWorkspace      string
+	flagBaseURL        string
+	flagToken          string
+	flagNoInput        bool
+	flagQuiet          bool
+	flagYes            bool
+	flagIdempotencyKey string
 )
 
 const schemaVersion = "manifold.v1"
@@ -154,18 +156,27 @@ type errorEnvelope struct {
 }
 
 type errorPayload struct {
-	Code        string            `json:"code"`
-	Message     string            `json:"message"`
-	Remediation string            `json:"remediation,omitempty"`
-	Retryable   bool              `json:"retryable"`
-	RequestID   string            `json:"request_id,omitempty"`
-	Details     map[string]string `json:"details,omitempty"`
+	Code        string         `json:"code"`
+	Message     string         `json:"message"`
+	Remediation string         `json:"remediation,omitempty"`
+	Retryable   bool           `json:"retryable"`
+	RequestID   string         `json:"request_id,omitempty"`
+	Details     map[string]any `json:"details,omitempty"`
+	ReasonCodes []string       `json:"reason_codes,omitempty"`
 }
 
 // printError renders a CLIError per the agent-safe error contract. Errors go
 // to stderr in human mode; in --json mode they are printed as JSON (still to
 // stderr, so stdout stays clean for any partial data already written).
 func printError(err *CLIError) {
+	writeError(os.Stderr, err)
+}
+
+// writeError renders a CLIError to an explicit writer. Keeping formatting in
+// one place ensures recovery details are identical for the human and JSON
+// entry points while allowing callers and tests to capture the agent-safe
+// envelope without redirecting process stderr.
+func writeError(out io.Writer, err *CLIError) {
 	env := errorEnvelope{
 		Schema: schemaVersion,
 		Kind:   "error",
@@ -174,20 +185,46 @@ func printError(err *CLIError) {
 			Message:     err.Message,
 			Remediation: err.Remediation,
 			Retryable:   err.Retryable,
-			Details:     err.Details,
+			Details:     redactErrorDetails(err.Details),
+			RequestID:   err.RequestID,
+			ReasonCodes: err.ReasonCodes,
 		},
 	}
 	if flagJSON {
-		enc := json.NewEncoder(os.Stderr)
+		enc := json.NewEncoder(out)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(env)
 		return
 	}
-	fmt.Fprintf(os.Stderr, "error: %s\n", err.Message)
+	fmt.Fprintf(out, "error: %s\n", err.Message)
 	if err.Remediation != "" {
-		fmt.Fprintf(os.Stderr, "  remediation: %s\n", err.Remediation)
+		fmt.Fprintf(out, "  remediation: %s\n", err.Remediation)
 	}
-	fmt.Fprintf(os.Stderr, "  code: %s (exit %d)\n", err.ErrCode, err.Code)
+	if details := redactErrorDetails(err.Details); len(details) > 0 {
+		encoded, _ := json.Marshal(details)
+		fmt.Fprintf(out, "  details: %s\n", encoded)
+	}
+	fmt.Fprintf(out, "  code: %s (exit %d)\n", err.ErrCode, err.Code)
+}
+
+func redactErrorDetails(details map[string]any) map[string]any {
+	if len(details) == 0 {
+		return nil
+	}
+	redacted := make(map[string]any, len(details))
+	for key, value := range details {
+		lower := strings.ToLower(key)
+		if strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "plaintext") || strings.Contains(lower, "authorization") {
+			redacted[key] = "[REDACTED]"
+			continue
+		}
+		if nested, ok := value.(map[string]any); ok {
+			redacted[key] = redactErrorDetails(nested)
+		} else {
+			redacted[key] = value
+		}
+	}
+	return redacted
 }
 
 // flagString reads a string flag if it was defined on cmd, returning "" if

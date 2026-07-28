@@ -28,6 +28,8 @@ interface VercelRuntimeState {
   circuitBreaker: LocalCircuitBreaker;
   admission: PostgresDistributedAdmission;
   maxRequestBytes: number;
+  /** Probes durable request-admission dependencies for every readiness check. */
+  checkReady(): Promise<void>;
 }
 
 const discardIngest: IngestSink = { async emit() {} };
@@ -35,6 +37,49 @@ let runtimeState: Promise<VercelRuntimeState> | undefined;
 const rateLimits = new VercelRateLimitRegistry();
 let lastHeartbeatAt = 0;
 const HEARTBEAT_INTERVAL_MS = 60_000;
+
+export interface RequestDrainFailureOperationalSignal {
+  type: "manifold.gateway.request_drain.failed.v1";
+  workspaceId: string;
+  installationId: string;
+  workerId: string;
+}
+
+/** Log only correlation identifiers: rejected drains may carry provider or database failure details. */
+export function requestDrainFailureOperationalSignal(
+  workspaceId: string,
+  installationId: string,
+  workerId: string,
+): RequestDrainFailureOperationalSignal {
+  return {
+    type: "manifold.gateway.request_drain.failed.v1",
+    workspaceId,
+    installationId,
+    workerId,
+  };
+}
+
+function reportRequestDrainFailure(
+  workspaceId: string,
+  installationId: string,
+  workerId: string,
+): void {
+  console.error(JSON.stringify(requestDrainFailureOperationalSignal(workspaceId, installationId, workerId)));
+}
+
+/** Ensure serverless background rejections become observable without retaining their unsafe cause. */
+export function observeRequestDrain(
+  work: Promise<unknown>,
+  workspaceId: string,
+  installationId: string,
+  workerId: string,
+  reportDiagnostic = reportRequestDrainFailure,
+): Promise<void> {
+  return work.then(
+    () => undefined,
+    () => reportDiagnostic(workspaceId, installationId, workerId),
+  );
+}
 
 function requiredEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -107,7 +152,6 @@ async function initializeRuntime(): Promise<VercelRuntimeState> {
     installationConcurrency,
     leaseTtlMs: optionalPositiveIntegerEnv("MANIFOLD_ADMISSION_LEASE_TTL_MS"),
   });
-  await admission.checkReady();
   const ledger = new JobLedgerService({
     sql,
     observationIngestHandler: async (payload) => {
@@ -119,6 +163,10 @@ async function initializeRuntime(): Promise<VercelRuntimeState> {
       });
     },
   });
+  await Promise.all([
+    admission.checkReady(installationId),
+    ledger.checkReady(workspaceId),
+  ]);
   const snapshot = await snapshots.loadActive(installationId);
   await snapshots.reportHeartbeat(installationId, snapshot.meta.revision);
   lastHeartbeatAt = Date.now();
@@ -143,6 +191,15 @@ async function initializeRuntime(): Promise<VercelRuntimeState> {
     circuitBreaker,
     admission,
     maxRequestBytes,
+    checkReady: async () => {
+      // The strict admission probe exercises the live Postgres connection,
+      // required RLS context, and admission tables. It is intentionally not
+      // memoized: a warm instance must turn unready when Postgres disappears.
+      await Promise.all([
+        admission.checkReady(installationId),
+        ledger.checkReady(workspaceId),
+      ]);
+    },
   };
 }
 
@@ -184,9 +241,12 @@ export async function getVercelGatewayContext(
     schedule: waitUntil
       ? () => {
           waitUntil(
-            state.ledger
-              .drain(state.workspaceId, workerId, 10)
-              .catch(() => undefined),
+            observeRequestDrain(
+              state.ledger.drain(state.workspaceId, workerId, 10),
+              state.workspaceId,
+              state.installationId,
+              workerId,
+            ),
           );
         }
       : undefined,

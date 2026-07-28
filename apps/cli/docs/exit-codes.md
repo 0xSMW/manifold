@@ -1,14 +1,7 @@
 # manifold CLI exit codes
 
-Source: SPEC.md §12.4 ("Output, exit codes, idempotency, retries"). This
-skeleton implements the subset the CLI's design doc calls out explicitly for
-day-one scripting: `0`, `1`, `2`, `3`, `4`, `5`. The full spec additionally
-reserves `6` (rate-limited), `7` (server error after retries), `8`
-(timeout), and `9` (tripwire-held / needs approval) for the real backend
-integration — those are not yet produced by this skeleton, since there is no
-real backend to return 429/5xx/timeout/tripwire responses. They are listed
-below for forward compatibility; a caller that switches on exit code should
-already treat any unrecognized non-zero code as "generic failure."
+Source: SPEC.md §12.4 ("Output, exit codes, idempotency, retries"). The CLI
+implements the full process-code matrix below.
 
 | Code | Meaning | Typical cause |
 |---|---|---|
@@ -18,13 +11,10 @@ already treat any unrecognized non-zero code as "generic failure."
 | `3` | auth error | not logged in, expired/invalid token, missing scope |
 | `4` | not found | requested resource id does not exist |
 | `5` | precondition failed / conflict | e.g. `CONFIG_PRECONDITION_FAILED` — active revision advanced during apply |
-| `6`* | rate-limited | reserved; not yet emitted by this skeleton |
-| `7`* | server error (5xx after retries) | reserved; not yet emitted by this skeleton |
-| `8`* | timeout | reserved; not yet emitted by this skeleton |
-| `9`* | tripwire-held / needs approval | reserved; not yet emitted by this skeleton |
-
-`*` reserved for the full backend integration; see SPEC.md §12.4 for the
-complete registry.
+| `6` | rate-limited | control plane returns `429` / `RATE_LIMITED` |
+| `7` | server error | control plane returns `5xx` |
+| `8` | timeout | request deadline elapsed |
+| `9` | tripwire-held / needs approval | control plane returns `CONFIG_TRIPWIRE_HELD` |
 
 Every non-zero exit prints a structured error envelope (SPEC.md §0.3 /
 §12.9) to stderr:
@@ -43,7 +33,7 @@ Every non-zero exit prints a structured error envelope (SPEC.md §0.3 /
 }
 ```
 
-## Demonstrating each code in this skeleton
+## Current command behavior
 
 The device-authorization commands use the real control-plane protocol. The
 issued bearer token is stored only in the operating-system keyring; the
@@ -55,11 +45,25 @@ precedence over the keyring for CI and are never copied into it.
 | `manifold auth login --workspace-slug <slug>` | browser approval denied or expired | `3` (auth) |
 | `manifold whoami` / `manifold auth whoami` / `manifold auth status` | no stored credential and no `--token` / `MANIFOLD_TOKEN` override | `3` (auth) |
 | `manifold job get missing` | literal id `missing` | `4` (not found) |
-| `manifold config apply --plan-hash stale` | literal plan hash `stale` | `5` (precondition/conflict) |
+| `manifold config apply --installation <id> --plan-hash <hash>` | control plane returns `CONFIG_PRECONDITION_FAILED` or `CONFIG_TRIPWIRE_HELD` | `5` (precondition/conflict) |
 | any command with a bad/missing required flag, or an unknown subcommand | — | `2` (usage) |
-| `manifold installation health` / `manifold ping` with an unreachable `--base-url` | connection refused/DNS failure/non-2xx | `1` (generic) |
+| `manifold installation health` / `manifold ping` with an unreachable `--base-url` | connection refused, DNS failure, timeout, or non-2xx other than 404 | `1` (generic) |
+| `manifold installation health` / `manifold ping` | health URL returns 404 | `4` (not found) |
 
-All other commands in this skeleton return `0` and print a stub result.
+The following command paths make real control-plane calls:
+
+- device authorization login, logout, and `whoami`;
+- provider list, create, validate, rotate, and revoke;
+- route list;
+- key list, mint, rotate, revoke, and scope update;
+- config plan, apply, active, history, and rollback;
+- installation health, `health check`, and `ping` when a base URL is configured.
+
+`auth status` inspects the local context and keyring state without contacting the
+control plane.
+
+Other leaf commands currently validate their arguments, return `0`, and print a
+result with `"stub": true`; they do not mutate or query the control plane.
 
 ## Device authorization
 

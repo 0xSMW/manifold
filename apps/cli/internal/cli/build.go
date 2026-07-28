@@ -1,18 +1,19 @@
 package cli
 
 import (
+	"strconv"
+
 	"github.com/spf13/cobra"
 )
 
-// flagSpec describes one string flag a stub leaf command accepts. Every
-// stub flag is a string (the handlers do not act on values yet, they just
-// echo what was parsed), which keeps the whole command tree declarative.
+// flagSpec describes one declarative flag accepted by a leaf command.
 type flagSpec struct {
 	Name      string
 	Shorthand string
 	Default   string
 	Usage     string
 	Required  bool
+	Boolean   bool
 }
 
 // specialFunc lets a small number of leaf commands override the generic
@@ -44,6 +45,10 @@ func buildLeaf(spec cmdSpec) *cobra.Command {
 		Args:    spec.Args,
 	}
 	for _, f := range spec.Flags {
+		if f.Boolean {
+			c.Flags().BoolP(f.Name, f.Shorthand, false, f.Usage)
+			continue
+		}
 		c.Flags().StringP(f.Name, f.Shorthand, f.Default, f.Usage)
 	}
 	requiredFlags := spec.Flags
@@ -52,6 +57,13 @@ func buildLeaf(spec cmdSpec) *cobra.Command {
 	c.RunE = func(cmd *cobra.Command, args []string) error {
 		for _, f := range requiredFlags {
 			if !f.Required {
+				continue
+			}
+			if f.Boolean {
+				v, _ := cmd.Flags().GetBool(f.Name)
+				if !v {
+					return usageError("missing required flag --%s", f.Name)
+				}
 				continue
 			}
 			v, _ := flagString(cmd, f.Name)
@@ -76,8 +88,13 @@ func collectFlags(cmd *cobra.Command, specs []flagSpec) map[string]string {
 		if !cmd.Flags().Changed(f.Name) {
 			continue
 		}
-		v, _ := flagString(cmd, f.Name)
-		out[f.Name] = v
+		if f.Boolean {
+			v, _ := cmd.Flags().GetBool(f.Name)
+			out[f.Name] = strconv.FormatBool(v)
+		} else {
+			v, _ := flagString(cmd, f.Name)
+			out[f.Name] = v
+		}
 	}
 	return out
 }

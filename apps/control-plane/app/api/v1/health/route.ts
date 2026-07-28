@@ -8,6 +8,20 @@ import { HealthResponse, SCHEMA_VERSION } from "@manifold/contracts";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const DEPLOYMENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const SOURCE_REVISION = /^[0-9a-f]{7,64}$/i;
+
+/** Only Vercel-provided runtime metadata may become public release provenance. */
+export function vercelDeploymentProvenance(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const deploymentId = env.VERCEL_DEPLOYMENT_ID?.trim() ?? "";
+  const sourceRevision = env.VERCEL_GIT_COMMIT_SHA?.trim() ?? "";
+  if (!DEPLOYMENT_ID.test(deploymentId) || !SOURCE_REVISION.test(sourceRevision)) return {};
+  return {
+    "x-manifold-deployment-id": deploymentId,
+    "x-manifold-source-revision": sourceRevision.toLowerCase(),
+  };
+}
+
 export async function GET(): Promise<Response> {
   // Public (no auth), so it does not run through `wrapInEnvelope`; but it still carries the kit's
   // correlation/schema headers (X-Request-Id, X-Manifold-Schema) like every other response.
@@ -39,6 +53,6 @@ export async function GET(): Promise<Response> {
   const checked = HealthResponse.parse(body);
   return new Response(JSON.stringify(checked), {
     status: db === "ok" ? 200 : 503,
-    headers: { ...baseHeaders(requestId), "content-type": "application/json" },
+    headers: { ...baseHeaders(requestId), ...vercelDeploymentProvenance(), "content-type": "application/json" },
   });
 }

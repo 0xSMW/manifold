@@ -3,63 +3,83 @@ import { getVercelRuntime } from "../src/vercelRuntime.js";
 interface ActiveSnapshot {
   meta: {
     revision: string;
-    builtAt: string;
     installationId: string;
   };
 }
 
 interface VercelRuntimeForReadiness {
   installationId: string;
+  checkReady(): Promise<void>;
   snapshots: {
-    loadActive(installationId: string): Promise<ActiveSnapshot>;
+    checkReady(installationId: string): Promise<{
+      snapshot: ActiveSnapshot;
+      verifiedAtMs: number;
+    }>;
   };
 }
 
 export interface ReadinessDependencies {
   getRuntime?: () => Promise<VercelRuntimeForReadiness>;
   now?: () => number;
-  /** Maximum age accepted for the signed snapshot's published metadata. */
-  maxSnapshotAgeMs?: number;
+  provenance?: () => DeploymentProvenance | null;
 }
 
-const DEFAULT_MAX_SNAPSHOT_AGE_MS = 60_000;
-
-function configuredMaxSnapshotAgeMs(): number {
-  const raw = process.env.MANIFOLD_SNAPSHOT_MAX_STALE_MS?.trim();
-  if (!raw) return DEFAULT_MAX_SNAPSHOT_AGE_MS;
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 0 ? value : DEFAULT_MAX_SNAPSHOT_AGE_MS;
+interface DeploymentProvenance {
+  deploymentId: string;
+  sourceRevision: string;
 }
 
-function readyResponse(body: Record<string, unknown>, status: number): Response {
+const DEPLOYMENT_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const SOURCE_REVISION = /^[0-9a-f]{7,64}$/i;
+
+/**
+ * Vercel injects these values for the running immutable deployment. They are
+ * deliberately read only at the serving boundary: request headers and caller
+ * input cannot influence release provenance.
+ */
+export function vercelDeploymentProvenance(env: NodeJS.ProcessEnv = process.env): DeploymentProvenance | null {
+  const deploymentId = env.VERCEL_DEPLOYMENT_ID?.trim() ?? "";
+  const sourceRevision = env.VERCEL_GIT_COMMIT_SHA?.trim() ?? "";
+  if (!DEPLOYMENT_ID.test(deploymentId) || !SOURCE_REVISION.test(sourceRevision)) return null;
+  return { deploymentId, sourceRevision: sourceRevision.toLowerCase() };
+}
+
+function readyResponse(body: Record<string, unknown>, status: number, provenance: DeploymentProvenance | null = null): Response {
   return Response.json(body, {
     status,
-    headers: { "cache-control": "no-store" },
+    headers: {
+      "cache-control": "no-store",
+      ...(provenance ? {
+        "x-manifold-deployment-id": provenance.deploymentId,
+        "x-manifold-source-revision": provenance.sourceRevision,
+      } : {}),
+    },
   });
 }
 
 function checkedSnapshotMetadata(
   snapshot: ActiveSnapshot,
   installationId: string,
+  verifiedAtMs: number,
   nowMs: number,
-  maxSnapshotAgeMs: number,
-): { revision: string; builtAt: string; ageMs: number } {
-  const { revision, builtAt } = snapshot.meta;
+): { revision: string; verifiedAt: string; ageMs: number } {
+  const { revision } = snapshot.meta;
   if (
     snapshot.meta.installationId !== installationId ||
     typeof revision !== "string" ||
     revision.trim().length === 0 ||
     revision.length > 256 ||
-    typeof builtAt !== "string"
+    !Number.isSafeInteger(verifiedAtMs) ||
+    verifiedAtMs < 0 ||
+    verifiedAtMs > nowMs
   ) {
     throw new Error("snapshot metadata is invalid");
   }
-
-  const builtAtMs = Date.parse(builtAt);
-  if (!Number.isFinite(builtAtMs) || builtAtMs > nowMs || nowMs - builtAtMs > maxSnapshotAgeMs) {
-    throw new Error("snapshot metadata is stale");
-  }
-  return { revision, builtAt: new Date(builtAtMs).toISOString(), ageMs: nowMs - builtAtMs };
+  return {
+    revision,
+    verifiedAt: new Date(verifiedAtMs).toISOString(),
+    ageMs: nowMs - verifiedAtMs,
+  };
 }
 
 /**
@@ -72,22 +92,22 @@ export function createReadinessHandler(
 ): (request: Request) => Promise<Response> {
   const runtimeProvider = dependencies.getRuntime ?? getVercelRuntime;
   const now = dependencies.now ?? Date.now;
-  const maxSnapshotAgeMs = dependencies.maxSnapshotAgeMs ?? configuredMaxSnapshotAgeMs();
+  const provenance = dependencies.provenance ?? vercelDeploymentProvenance;
 
   return async (_request: Request): Promise<Response> => {
     try {
-      if (!Number.isSafeInteger(maxSnapshotAgeMs) || maxSnapshotAgeMs < 0) {
-        throw new Error("readiness snapshot age configuration is invalid");
-      }
       const runtime = await runtimeProvider();
-      const snapshot = await runtime.snapshots.loadActive(runtime.installationId);
+      const [checkedSnapshot] = await Promise.all([
+        runtime.snapshots.checkReady(runtime.installationId),
+        runtime.checkReady(),
+      ]);
       const snapshotMetadata = checkedSnapshotMetadata(
-        snapshot,
+        checkedSnapshot.snapshot,
         runtime.installationId,
+        checkedSnapshot.verifiedAtMs,
         now(),
-        maxSnapshotAgeMs,
       );
-      return readyResponse({ ok: true, snapshot: snapshotMetadata }, 200);
+      return readyResponse({ ok: true, snapshot: snapshotMetadata }, 200, provenance());
     } catch {
       // Do not expose config, database, or control-plane failure details from a public route.
       return readyResponse({ ok: false, error: "unavailable" }, 503);

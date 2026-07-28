@@ -42,22 +42,38 @@ CLI verification normally uses `MANIFOLD_AUTH_ORIGIN`; configuring `MANIFOLD_CON
 only for an intentionally separate device-approval origin. An invalid override fails closed and
 does not fall back to a different URL.
 
+Listing these variable names in Vercel proves configuration presence only. It does not prove that a
+value is nonempty, correctly scoped to Preview/Production, accepted by Resend, or that generated
+links use the intended origin. Verify those properties through the acceptance flow without
+printing values.
+
 ## Rollout
 
 1. Record the release SHA, maintenance window, current migration list, and the identity of the one
    enabled owner through an approved private operational channel.
-2. Apply `0032_human_auth.sql` using the direct owner migration connection in normal lexical order.
-   It is additive: it preserves legacy members, tokens, and sessions. Do not run a down migration.
-3. Deploy the control plane with the four variables above. Confirm the configured origin and Resend
-   sender without printing their secret values.
-4. Have the existing seeded owner request activation. The bootstrap accepts exactly one enabled
-   owner; it is not a bulk migration or a way to auto-bind existing member records by email.
-5. Complete activation from the delivered link, choose a password, sign in, and verify the link
-   cannot be used again.
+2. Run `corepack pnpm run check:migrations`, reconcile the production migration receipt, then apply
+   `0032_human_auth.sql` using the direct owner migration connection only if it is the next verified
+   unapplied migration. It is additive: it preserves legacy members, tokens, and sessions. Do not
+   replay it or run a down migration.
+3. Deploy the control plane with the four required variables above. Confirm `GET /api/v1/health`
+   returns 200 with `checks.db = "ok"`. This proves control-plane/database health, not email
+   delivery or authentication.
+4. Before activation, confirm `GET /api/v1/auth/activation/status` reports `required: true` and
+   `configured: false`. Have the existing seeded owner request activation. The public request
+   response is deliberately generic, so `accepted: true` does not prove that an address matched or
+   an email was delivered.
+5. The bootstrap accepts exactly one enabled owner; it is not a bulk migration or a way to
+   auto-bind existing member records by email. Complete activation from the delivered link, choose
+   a password, sign in, verify the link cannot be used again, and confirm activation status now
+   reports `required: false` and `configured: true`.
 6. From the signed-in owner session, create a test invitation; accept it with a second test
    identity; test resend, revoke, and expiry. Use Invitations for all normal membership changes.
-7. Test password reset, session revocation, personal-token revocation, service-account disable, and
-   CLI device approval/denial. Record only outcome evidence, never token values.
+   If delivery fails after persistence, the API returns retryable
+   `INVITATION_DELIVERY_FAILED` with the durable invitation ID and resend path. Retry that resend
+   operation; do not create a duplicate invitation.
+7. Test password reset, single-session and other-session revocation, personal-token revocation,
+   service-account disable, and CLI device approval/denial. Confirm password reset invalidates all
+   prior sessions for that person. Record only outcome evidence, never token values.
 
 ## Operational constraints and recovery
 
@@ -76,10 +92,18 @@ forward fix, never an ad hoc destructive schema rollback.
 
 ## Production acceptance
 
+- [ ] The exact production deployment SHA/ID, migration receipt, operator, and acceptance timestamp
+      are recorded without secrets or private action links.
+- [ ] `GET /api/v1/health` is 200 with database status `ok`; this evidence is kept separate from
+      authentication acceptance.
 - [ ] Resend domain is verified; `RESEND_FROM_EMAIL` is accepted by Resend.
 - [ ] `MANIFOLD_AUTH_ORIGIN` is the production HTTPS origin and every received link uses it.
+- [ ] Environment-name presence and actual delivery/link-origin behavior are recorded as separate
+      checks; no environment values are copied into the evidence.
 - [ ] `0032_human_auth.sql` is applied; `manifold_app` remains non-superuser and has no direct
       global-auth-table access.
+- [ ] Activation status changes from `{required:true, configured:false}` before bootstrap to
+      `{required:false, configured:true}` afterward.
 - [ ] The seeded owner receives activation email, completes activation, and signs in with the new
       email/password credential.
 - [ ] Activation and password-reset links are one-time; reset invalidates existing sessions.

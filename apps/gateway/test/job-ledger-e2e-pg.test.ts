@@ -6,6 +6,7 @@ import postgres from "postgres";
 import type { Sql } from "@manifold/database";
 import type { HotPathObservationEvent } from "@manifold/ports";
 import { JobLedgerService, type JobLedgerServiceOptions } from "../src/jobLedger.ts";
+import { createReadinessHandler } from "../api/ready.ts";
 import { startPg, type PgHarness } from "../../../packages/database/test/pg-harness.ts";
 
 const APP_PASSWORD = "CHANGEME_APP_PASSWORD";
@@ -39,6 +40,108 @@ beforeEach(async () => {
   await pg.sql`DELETE FROM job_ledger`;
 });
 
+function readinessStatus(service: JobLedgerService): Promise<Response> {
+  return createReadinessHandler({
+    getRuntime: async () => ({
+      installationId: "inst_job_a",
+      checkReady: () => service.checkReady(WORKSPACE_A),
+      snapshots: {
+        async checkReady() {
+          return {
+            snapshot: { meta: { installationId: "inst_job_a", revision: "test-revision" } },
+            verifiedAtMs: Date.now(),
+          };
+        },
+      },
+    }),
+  })(new Request("https://gateway.test/api/ready"));
+}
+
+test("readiness requires the direct restricted manifold_app role and writes no probe job", async () => {
+  const service = ledger(async () => {});
+  await service.checkReady(WORKSPACE_A);
+  const before = await pg.sql<{ count: string }[]>`SELECT count(*)::text AS count FROM job_ledger`;
+  assert.equal(before[0]?.count, "0");
+
+  const migrationOwner = ledger(async () => {}, pg.sql as unknown as Sql);
+  await assert.rejects(
+    migrationOwner.checkReady(WORKSPACE_A),
+    /restricted manifold_app/,
+    "a migration-owner URL must never make runtime readiness pass",
+  );
+  assert.equal((await readinessStatus(migrationOwner)).status, 503);
+});
+
+test("readiness returns 503 when any gateway worker write capability is revoked", async () => {
+  const service = ledger(async () => {});
+  const capabilities = [
+    {
+      name: "distributed admission",
+      revoke: () => pg.sql`REVOKE INSERT ON gateway_rate_limit_state FROM manifold_app`,
+      grant: () => pg.sql`GRANT INSERT ON gateway_rate_limit_state TO manifold_app`,
+    },
+    {
+      name: "observation projection",
+      revoke: () => pg.sql`REVOKE INSERT ON observation FROM manifold_app`,
+      grant: () => pg.sql`GRANT INSERT ON observation TO manifold_app`,
+    },
+    {
+      name: "usage projection",
+      revoke: () => pg.sql`REVOKE INSERT ON usage_record FROM manifold_app`,
+      grant: () => pg.sql`GRANT INSERT ON usage_record TO manifold_app`,
+    },
+    {
+      name: "cost accounting",
+      revoke: () => pg.sql`REVOKE INSERT ON cost_ledger FROM manifold_app`,
+      grant: () => pg.sql`GRANT INSERT ON cost_ledger TO manifold_app`,
+    },
+    {
+      name: "budget accounting",
+      revoke: () => pg.sql`REVOKE UPDATE ON budget_reservation FROM manifold_app`,
+      grant: () => pg.sql`GRANT UPDATE ON budget_reservation TO manifold_app`,
+    },
+    {
+      name: "audit evidence",
+      revoke: () => pg.sql`REVOKE INSERT ON audit_event FROM manifold_app`,
+      grant: () => pg.sql`GRANT INSERT ON audit_event TO manifold_app`,
+    },
+    {
+      name: "audit delivery destination lookup triggered by audit evidence",
+      revoke: () => pg.sql`REVOKE SELECT ON audit_destination FROM manifold_app`,
+      grant: () => pg.sql`GRANT SELECT ON audit_destination TO manifold_app`,
+    },
+    {
+      name: "audit delivery job enqueue triggered by audit evidence",
+      revoke: () => pg.sql`REVOKE INSERT ON audit_delivery_job FROM manifold_app`,
+      grant: () => pg.sql`GRANT INSERT ON audit_delivery_job TO manifold_app`,
+    },
+    {
+      name: "target-health ingest",
+      revoke: () => pg.sql`REVOKE INSERT ON gateway_target_health_observation FROM manifold_app`,
+      grant: () => pg.sql`GRANT INSERT ON gateway_target_health_observation TO manifold_app`,
+    },
+    {
+      name: "job ledger",
+      revoke: () => pg.sql`REVOKE UPDATE ON job_ledger FROM manifold_app`,
+      grant: () => pg.sql`GRANT UPDATE ON job_ledger TO manifold_app`,
+    },
+  ];
+
+  for (const capability of capabilities) {
+    await capability.revoke();
+    try {
+      await assert.rejects(
+        service.checkReady(WORKSPACE_A),
+        /gateway runtime table privileges are unavailable/,
+        `${capability.name} must fail the runtime privilege matrix`,
+      );
+      assert.equal((await readinessStatus(service)).status, 503, `${capability.name} must fail public readiness`);
+    } finally {
+      await capability.grant();
+    }
+  }
+});
+
 function payload(workspaceId: string, label: string) {
   const traceId = `01K${String(++traceSequence).padStart(23, "0")}`;
   const event = (kind: HotPathObservationEvent["kind"], seq: number): HotPathObservationEvent => ({
@@ -61,9 +164,9 @@ function payload(workspaceId: string, label: string) {
   };
 }
 
-function ledger(handler: JobLedgerServiceOptions["observationIngestHandler"]) {
+function ledger(handler: JobLedgerServiceOptions["observationIngestHandler"], sql = appSql) {
   return new JobLedgerService({
-    sql: appSql,
+    sql,
     now: () => new Date(now),
     baseDelayMs: 100,
     maxDelayMs: 1_000,

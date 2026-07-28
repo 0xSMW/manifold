@@ -1,4 +1,6 @@
 export type InstallationEdition = "vercel" | "cloudflare" | "compose";
+export type InstallationLifecycle = "active" | "disabled";
+export type ConfigAcceleratorStatus = "not_configured" | "pending" | "published" | "reconciliation_required" | "superseded";
 export type ProfileMode = "public_app" | "enterprise_egress";
 export type NetworkExposure = "public" | "vpc" | "mtls";
 
@@ -8,7 +10,8 @@ export interface InstallationSummary {
   edition: InstallationEdition;
   appliedConfigRevision: string | null;
   lastSeenAt: string | null;
-  status: "active" | "disabled";
+  /** Backend lifecycle. Display state also requires a returned heartbeat. */
+  status: InstallationLifecycle;
   createdAt: string;
 }
 
@@ -102,20 +105,58 @@ export interface DiagnosticsResponse {
   recentConfigOperations: Array<{
     id: string;
     outcome: string;
+    operationKind: string;
+    servingMode: string;
+    acceleratorStatus: ConfigAcceleratorStatus;
     baseConfigHash: string | null;
     targetConfigHash: string | null;
     planHash: string | null;
     edgeConfigVersion: string | null;
     tripwireItems: unknown;
     error: unknown;
+    reconciliationAttempts: number;
+    lastReconcileAt: string | null;
+    completedAt: string | null;
     createdAt: string;
   }>;
   syntheticTest: {
     available: boolean;
-    lastResult: unknown;
+    lastResult: SyntheticTestResult | null;
+    activeConfigRevisionId: string | null;
+    appliedConfigRevisionId: string | null;
+    freshnessThresholdSeconds: number;
     reason: string;
   };
 }
+
+export interface SyntheticTestResult {
+  id: string;
+  createdAt: string;
+  detail: SyntheticTestDetail;
+}
+
+export type SyntheticTestDetail =
+  | {
+      kind: "gateway_response";
+      installationId: string;
+      profileId: string;
+      endpointKind: "chat" | "responses" | "embeddings";
+      configRevisionId: string | null;
+      appliedConfigRevisionId: string | null;
+      gatewayStatus: number;
+      traceId: string | null;
+      responseTruncated: boolean;
+    }
+  | {
+      kind: "execution_failure";
+      installationId: string;
+      profileId: string;
+      endpointKind: "chat" | "responses" | "embeddings";
+      configRevisionId: string | null;
+      appliedConfigRevisionId: string | null;
+      failureCode: "SYNTHETIC_NOT_CONFIGURED" | "SYNTHETIC_POLICY" | "SYNTHETIC_DNS" | "SYNTHETIC_TIMEOUT" | "SYNTHETIC_NETWORK" | "SYNTHETIC_EXECUTION_FAILED";
+      retryable: boolean;
+    };
 
 export interface InstallationCreated extends InstallationSummary {
   installationIdentityPublicKey?: string;

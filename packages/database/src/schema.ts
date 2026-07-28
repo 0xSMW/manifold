@@ -9,6 +9,7 @@
 import { sql } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import {
+  bigint,
   boolean,
   check,
   date,
@@ -218,6 +219,30 @@ export const workspaceInvitation = pgTable(
     uniqueIndex("workspace_invitation_hash_uq").on(t.keyedHash),
     index("workspace_invitation_workspace_email_idx").on(t.workspaceId, t.email, t.expiresAt),
     check("workspace_invitation_role_chk", sql`${t.role} IN ('owner','admin','editor','viewer','billing')`),
+  ],
+);
+
+/** Durable encrypted capability outbox for invitation delivery. */
+export const workspaceInvitationDelivery = pgTable(
+  "workspace_invitation_delivery",
+  {
+    invitationId: text("invitation_id").primaryKey().references(() => workspaceInvitation.id, { onDelete: "cascade" }),
+    workspaceId: wsId(),
+    state: text("state").notNull().default("pending"),
+    generation: bigint("generation", { mode: "bigint" }).notNull().default(sql`1`),
+    tokenDigest: bytea("token_digest").notNull(),
+    tokenCiphertext: bytea("token_ciphertext").notNull(),
+    tokenIv: bytea("token_iv").notNull(),
+    tokenTag: bytea("token_tag").notNull(),
+    sentAt: ts("sent_at"),
+    failedAt: ts("failed_at"),
+    createdAt: ts("created_at").notNull().defaultNow(),
+    updatedAt: ts("updated_at").notNull().defaultNow(),
+  },
+  (t) => [
+    index("workspace_invitation_delivery_workspace_state_idx").on(t.workspaceId, t.state),
+    check("workspace_invitation_delivery_state_chk", sql`${t.state} IN ('pending','sent','failed')`),
+    check("workspace_invitation_delivery_generation_chk", sql`${t.generation} >= 1`),
   ],
 );
 

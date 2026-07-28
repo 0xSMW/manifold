@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -129,6 +131,23 @@ func TestKeyMint_MissingRequiredProfile(t *testing.T) {
 	}
 }
 
+func TestKeyMint_InvalidCopyOnceResponseIncludesExplicitRecoveryKey(t *testing.T) {
+	const recoveryKey = "mint-recovery-key"
+	const responsePlaintext = "sk-mf-must-not-leak"
+	for _, body := range []string{"", "not json", `{"plaintext":""}`, `{"plaintext":"` + responsePlaintext + `"} trailing`} {
+		t.Run("response="+strconv.Quote(body), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+
+			_, err := runCLI(t, "key", "mint", "--base-url", srv.URL, "--profile", "prof_1", "--idempotency-key", recoveryKey)
+			assertCopyOnceRecoveryError(t, err, recoveryKey, responsePlaintext)
+		})
+	}
+}
+
 func TestKeyRevoke_RealHTTP_PostsToRevokePath(t *testing.T) {
 	var gotMethod, gotPath, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -141,7 +160,7 @@ func TestKeyRevoke_RealHTTP_PostsToRevokePath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out, err := runCLI(t, "key", "revoke", "key_abc",
+	out, err := runCLI(t, "key", "revoke", "key_abc", "--yes",
 		"--base-url", srv.URL,
 		"--token", "tok_secret",
 		"--json",
@@ -175,7 +194,7 @@ func TestKeyRevoke_RealHTTP_404MapsToNotFound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := runCLI(t, "key", "revoke", "key_missing", "--base-url", srv.URL)
+	_, err := runCLI(t, "key", "revoke", "key_missing", "--yes", "--base-url", srv.URL)
 	if err == nil {
 		t.Fatal("expected an error for HTTP 404, got nil")
 	}
@@ -185,5 +204,134 @@ func TestKeyRevoke_RealHTTP_404MapsToNotFound(t *testing.T) {
 	}
 	if cliErr.Code != ExitNotFound {
 		t.Fatalf("exit code = %d, want ExitNotFound (%d)", cliErr.Code, ExitNotFound)
+	}
+}
+
+func TestKeyRotate_RealHTTP_PostsGraceAndRendersPlaintext(t *testing.T) {
+	var method, path, idempotencyKey string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		method, path, idempotencyKey = req.Method, req.URL.Path, req.Header.Get("Idempotency-Key")
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"predecessorKeyId":"key_1","successorKeyId":"key_2","displayPrefix":"sk-mf-new","plaintext":"sk-mf-copy-once","graceExpiresAt":"2026-08-01T00:00:00Z","graceSemantics":"grace","published":false}`))
+	}))
+	defer srv.Close()
+	out, err := runCLI(t, "key", "rotate", "key_1", "--grace-seconds", "120", "--base-url", srv.URL, "--json")
+	if err != nil {
+		t.Fatalf("rotate returned error: %v", err)
+	}
+	if method != http.MethodPost || path != "/api/v1/keys/key_1/rotate" || idempotencyKey == "" || body["graceSeconds"] != float64(120) {
+		t.Fatalf("request = %s %s %#v", method, path, body)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("expected JSON output, got %q", out)
+	}
+}
+
+func TestKeyRotate_ValidatesGraceAndMapsErrors(t *testing.T) {
+	_, err := runCLI(t, "key", "rotate", "key_1", "--grace-seconds", "59", "--base-url", "http://127.0.0.1:1")
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitUsage {
+		t.Fatalf("expected usage error, got %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"missing"}}`))
+	}))
+	defer srv.Close()
+	_, err = runCLI(t, "key", "rotate", "missing", "--base-url", srv.URL)
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitNotFound {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+}
+
+func TestKeyRotate_InvalidCopyOnceResponseIncludesGeneratedRecoveryKey(t *testing.T) {
+	var receivedKey string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		receivedKey = req.Header.Get("Idempotency-Key")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"plaintext":""}`))
+	}))
+	defer srv.Close()
+
+	_, err := runCLI(t, "key", "rotate", "key_1", "--base-url", srv.URL)
+	if receivedKey == "" {
+		t.Fatal("rotate request omitted generated Idempotency-Key")
+	}
+	assertCopyOnceRecoveryError(t, err, receivedKey, "")
+}
+
+func assertCopyOnceRecoveryError(t *testing.T, err error, wantKey, mustNotContain string) {
+	t.Helper()
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) {
+		t.Fatalf("expected *CLIError, got %T: %v", err, err)
+	}
+	if cliErr.ErrCode != "CLI_COPY_ONCE_RESPONSE_INVALID" {
+		t.Fatalf("ErrCode = %q", cliErr.ErrCode)
+	}
+	if cliErr.Details["idempotency_key"] != wantKey {
+		t.Fatalf("details = %#v, want recovery key %q", cliErr.Details, wantKey)
+	}
+
+	previousJSON := flagJSON
+	defer func() { flagJSON = previousJSON }()
+	for _, jsonOutput := range []bool{false, true} {
+		flagJSON = jsonOutput
+		var output bytes.Buffer
+		writeError(&output, cliErr)
+		if !strings.Contains(output.String(), wantKey) {
+			t.Fatalf("json=%t output omitted recovery key: %q", jsonOutput, output.String())
+		}
+		if mustNotContain != "" && strings.Contains(output.String(), mustNotContain) {
+			t.Fatalf("json=%t output leaked response plaintext: %q", jsonOutput, output.String())
+		}
+		if jsonOutput {
+			var parsed errorEnvelope
+			if err := json.Unmarshal(output.Bytes(), &parsed); err != nil {
+				t.Fatalf("error output is not JSON: %v", err)
+			}
+			if parsed.Error.Details["idempotency_key"] != wantKey {
+				t.Fatalf("JSON details = %#v", parsed.Error.Details)
+			}
+		}
+	}
+}
+
+func TestKeyUpdateScopes_RealHTTP_PatchesScopesAndValidatesInput(t *testing.T) {
+	var method, path string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		method, path = req.Method, req.URL.Path
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"id":"key_1","scopes":["chat","embed"],"published":true}`))
+	}))
+	defer srv.Close()
+	out, err := runCLI(t, "key", "update-scopes", "key_1", "--scopes", "chat, embed", "--base-url", srv.URL, "--json")
+	if err != nil {
+		t.Fatalf("update scopes returned error: %v", err)
+	}
+	scopes, ok := body["scopes"].([]any)
+	if method != http.MethodPatch || path != "/api/v1/keys/key_1" || !ok || len(scopes) != 2 || scopes[1] != "embed" || !json.Valid([]byte(out)) {
+		t.Fatalf("request/output mismatch: %s %s %#v %q", method, path, body, out)
+	}
+	_, err = runCLI(t, "key", "update-scopes", "key_1", "--scopes", "chat,chat", "--base-url", srv.URL)
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitUsage {
+		t.Fatalf("expected usage error, got %v", err)
+	}
+}
+
+func TestKeyUpdateScopes_MapsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"missing"}}`))
+	}))
+	defer srv.Close()
+	_, err := runCLI(t, "key", "update-scopes", "missing", "--scopes", "chat", "--base-url", srv.URL)
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitNotFound {
+		t.Fatalf("expected not found error, got %v", err)
 	}
 }

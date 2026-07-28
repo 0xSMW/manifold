@@ -232,6 +232,27 @@
       "when": 1784510276401,
       "tag": "0032_human_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784510276402,
+      "tag": "0033_invitation_delivery_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784510276403,
+      "tag": "0034_usage_record_immutability",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1784510276404,
+      "tag": "0035_invitation_delivery_generation_fence",
+      "breakpoints": true
     }
   ]
 }

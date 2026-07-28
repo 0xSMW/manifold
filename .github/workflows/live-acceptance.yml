@@ -1,0 +1,78 @@
+name: Live acceptance
+
+on:
+  # The production deployment workflow calls this before assigning production
+  # aliases. Candidate URLs and IDs must be deploy outputs, never aliases.
+  workflow_call:
+    inputs:
+      control_plane_candidate_url: { required: true, type: string }
+      gateway_candidate_url: { required: true, type: string }
+      control_plane_deployment_id: { required: true, type: string }
+      gateway_deployment_id: { required: true, type: string }
+    secrets:
+      MANIFOLD_LIVE_DIAGNOSTICS_TOKEN: { required: true }
+      MANIFOLD_LIVE_CONTROL_PLANE_TOKEN: { required: true }
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: manifold-live-acceptance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scheduled-public-health:
+    # Alias health is deliberately observational. It is never a promotion gate.
+    if: ${{ github.event_name != 'workflow_call' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: live-acceptance
+    env:
+      MANIFOLD_LIVE_ACCEPTANCE_MODE: health
+      MANIFOLD_LIVE_CONTROL_PLANE_URL: ${{ vars.MANIFOLD_LIVE_CONTROL_PLANE_URL }}
+      MANIFOLD_LIVE_GATEWAY_URL: ${{ vars.MANIFOLD_LIVE_GATEWAY_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Run public health acceptance
+        run: node scripts/run-live-acceptance.mjs
+
+  immutable-candidate-health:
+    if: ${{ github.event_name == 'workflow_call' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: live-acceptance
+    env:
+      MANIFOLD_LIVE_ACCEPTANCE_MODE: diagnostics
+      MANIFOLD_LIVE_CONTROL_PLANE_CANDIDATE_URL: ${{ inputs.control_plane_candidate_url }}
+      MANIFOLD_LIVE_GATEWAY_CANDIDATE_URL: ${{ inputs.gateway_candidate_url }}
+      MANIFOLD_LIVE_CONTROL_PLANE_DEPLOYMENT_ID: ${{ inputs.control_plane_deployment_id }}
+      MANIFOLD_LIVE_GATEWAY_DEPLOYMENT_ID: ${{ inputs.gateway_deployment_id }}
+      # This is GitHub's immutable caller revision, never an operator label.
+      MANIFOLD_LIVE_SOURCE_REVISION: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Verify candidate readiness and provenance
+        # Dedicated diagnostic secrets stay scoped to the only step that uses them.
+        env:
+          MANIFOLD_LIVE_DIAGNOSTICS_TOKEN: ${{ secrets.MANIFOLD_LIVE_DIAGNOSTICS_TOKEN }}
+          MANIFOLD_LIVE_CONTROL_PLANE_TOKEN: ${{ secrets.MANIFOLD_LIVE_CONTROL_PLANE_TOKEN }}
+          MANIFOLD_LIVE_DIAGNOSTICS_MODEL: ${{ vars.MANIFOLD_LIVE_DIAGNOSTICS_MODEL }}
+          MANIFOLD_LIVE_DIAGNOSTICS_ENDPOINT: ${{ vars.MANIFOLD_LIVE_DIAGNOSTICS_ENDPOINT }}
+        run: node scripts/run-live-acceptance.mjs
+
+  production-alias-promotion-gate:
+    # A caller may promote production aliases only after this exact candidate
+    # diagnostic job succeeds; the callable workflow makes that dependency tracked.
+    if: ${{ github.event_name == 'workflow_call' }}
+    needs: immutable-candidate-health
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - run: echo "Immutable candidate diagnostics and provenance verification passed."

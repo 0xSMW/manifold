@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SnapshotTarget } from "@manifold/ports";
+import { FakeCrypto } from "@manifold/ports/testing";
 import {
   decideRetry,
+  deriveProviderIdempotencyKey,
   isSafePostRetry,
   normalizeRetryPolicy,
   orderTargetAttempts,
   parseRetryAfterMs,
+  providerIdempotencyContractFromSnapshot,
   retryDelayMs,
   snapshotTargetIdentity,
 } from "../src/retry.ts";
+import { headerAllowlist } from "../src/headers.ts";
 
 function target(offeringId: string, credentialId: string): SnapshotTarget {
   return {
@@ -47,6 +51,8 @@ test("honors the route retry_on classifier", () => {
     deadlineMs: 10_000,
     nowMs: 100,
     policy: { retryOn: ["429"] as const },
+    idempotencyKey: "retry-key",
+    providerIdempotencyContract: { targetId: "target-safe", headerName: "idempotency-key" as const },
   };
   assert.deepEqual(decideRetry({ ...base, failure: { status: 503 } }), {
     retry: false,
@@ -73,6 +79,8 @@ test("does not schedule a retry beyond the total route deadline", () => {
     failure: { status: 429 },
     responseBytesReceived: 0,
     retryAfter: "2",
+    idempotencyKey: "retry-key",
+    providerIdempotencyContract: { targetId: "target-safe", headerName: "idempotency-key" },
     startedAtMs: 1_000,
     deadlineMs: 2_500,
     nowMs: 2_000,
@@ -81,17 +89,19 @@ test("does not schedule a retry beyond the total route deadline", () => {
     completedAttempt: 1,
     failure: { timedOut: true },
     responseBytesReceived: 0,
+    idempotencyKey: "retry-key",
+    providerIdempotencyContract: { targetId: "target-safe", headerName: "idempotency-key" },
     startedAtMs: 1_000,
     deadlineMs: 2_500,
     nowMs: 2_000,
   }), { retry: true, delayMs: 100 });
 });
 
-test("never replays a non-idempotent POST after response bytes, but accepts an Idempotency-Key", () => {
-  assert.equal(isSafePostRetry(0), true);
+test("never replays an ambiguous billable POST without a target-scoped provider contract", () => {
+  assert.equal(isSafePostRetry(0), false);
   assert.equal(isSafePostRetry(1), false);
   assert.equal(isSafePostRetry(1, "   "), false);
-  assert.equal(isSafePostRetry(1, "request-123"), true);
+  assert.equal(isSafePostRetry(0, "request-123"), false);
   assert.deepEqual(decideRetry({
     completedAttempt: 1,
     failure: { networkError: true },
@@ -100,6 +110,43 @@ test("never replays a non-idempotent POST after response bytes, but accepts an I
     deadlineMs: 10_000,
     nowMs: 100,
   }), { retry: false, reason: "unsafe_post" });
+});
+
+test("accepts only an explicit target-scoped provider idempotency contract", () => {
+  const contract = providerIdempotencyContractFromSnapshot({
+    provider_idempotency: { target_id: "target-a", header_name: "idempotency-key" },
+  });
+  assert.deepEqual(contract, { targetId: "target-a", headerName: "idempotency-key" });
+  assert.equal(isSafePostRetry(0, "request-123", contract), true);
+  assert.equal(providerIdempotencyContractFromSnapshot({
+    provider_idempotency: { target_id: "target-a", header_name: "Idempotency-Key" },
+  }), undefined);
+  assert.equal(providerIdempotencyContractFromSnapshot({
+    provider_idempotency: { target_id: "target-a", header_name: "idempotency-key", scope: "provider" },
+  }), undefined);
+});
+
+test("does not forward an inbound Idempotency-Key unless dispatch supplies a target-scoped key", () => {
+  const inbound = new Headers({ "content-type": "application/json", "idempotency-key": "client-key" });
+  assert.equal(headerAllowlist(inbound).get("idempotency-key"), null);
+  assert.equal(headerAllowlist(inbound, { providerIdempotencyKey: "target-key" }).get("idempotency-key"), "target-key");
+});
+
+test("derives a stable, bounded provider key without exposing the client key across targets", async () => {
+  const crypto = new FakeCrypto();
+  const pepper = new TextEncoder().encode("provider-idempotency-test-pepper");
+  const clientKey = "client-secret-idempotency-key";
+  const first = await deriveProviderIdempotencyKey(crypto, pepper, "installation-a", "target-a", clientKey);
+  const repeat = await deriveProviderIdempotencyKey(crypto, pepper, "installation-a", "target-a", clientKey);
+  const otherTarget = await deriveProviderIdempotencyKey(crypto, pepper, "installation-a", "target-b", clientKey);
+  const otherInstallation = await deriveProviderIdempotencyKey(crypto, pepper, "installation-b", "target-a", clientKey);
+  assert.ok(first);
+  assert.equal(first, repeat, "a retry to the persisted target must reuse the provider key");
+  assert.notEqual(first, otherTarget, "a provider key must not cross a target boundary");
+  assert.notEqual(first, otherInstallation, "a provider key must not cross an installation boundary");
+  assert.match(first, /^mf_[A-Za-z0-9_-]{43}$/u);
+  assert.equal(first.includes(clientKey), false);
+  assert.equal((await deriveProviderIdempotencyKey(crypto, pepper, "installation-a", "target-a", "x".repeat(1_025))), undefined);
 });
 
 test("orders the selected target first and preserves healthy order without repeats", () => {

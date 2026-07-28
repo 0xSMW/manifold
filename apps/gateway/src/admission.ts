@@ -240,9 +240,26 @@ export class PostgresDistributedAdmission {
    * before readiness turns green. This does not create or mutate admission
    * state.
    */
-  async checkReady(): Promise<void> {
+  async checkReady(installationId: string): Promise<void> {
+    nonEmpty("installationId", installationId);
     await this.sql.begin(async (tx) => {
       await setWorkspaceGuc(tx, this.workspaceId);
+      const bindings = await tx<{ installation_id: string }[]>`
+        SELECT i.id AS installation_id
+        FROM gateway_installation AS i
+        WHERE i.id = ${installationId}
+          AND i.workspace_id = ${this.workspaceId}
+          AND i.disabled_at IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM gateway_ingress_profile AS p
+            WHERE p.installation_id = i.id
+              AND p.workspace_id = ${this.workspaceId}
+              AND p.disabled_at IS NULL
+          )
+        LIMIT 1
+      `;
+      if (!bindings[0]) throw new Error("configured gateway installation is unavailable");
       await tx`SELECT 1 FROM gateway_rate_limit_state LIMIT 0`;
       await tx`SELECT 1 FROM gateway_concurrency_lease LIMIT 0`;
     });

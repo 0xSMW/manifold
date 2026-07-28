@@ -64,6 +64,20 @@ beforeEach(async () => {
   await pg.sql`DELETE FROM gateway_rate_limit_state`;
 });
 
+test("readiness requires the configured installation in its workspace with an active ingress binding", async () => {
+  await service(A).checkReady(A.installation);
+  await assert.rejects(
+    service(B).checkReady(A.installation),
+    /configured gateway installation is unavailable/,
+    "a configured installation from another workspace must not become ready",
+  );
+  await assert.rejects(
+    service(A).checkReady("inst_missing"),
+    /configured gateway installation is unavailable/,
+    "a missing configured installation must not become ready",
+  );
+});
+
 test("concurrent separate instances admit exactly cap and deny cap plus one", async () => {
   const one = service(A, { installationConcurrency: 2, perKeyConcurrency: 2 });
   const two = service(A, { installationConcurrency: 2, perKeyConcurrency: 2 });

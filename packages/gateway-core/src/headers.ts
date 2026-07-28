@@ -32,7 +32,10 @@ const NEVER_FORWARD = new Set(["authorization", "host", "cookie", "content-lengt
  * Produce the upstream Headers from the inbound request, forwarding only allowlisted safe
  * headers. Provider auth is added by the caller after this returns.
  */
-export function headerAllowlist(reqHeaders: Headers): Headers {
+export function headerAllowlist(
+  reqHeaders: Headers,
+  options: { providerIdempotencyKey?: string } = {},
+): Headers {
   const out = new Headers();
   for (const [name, value] of reqHeaders.entries()) {
     const lower = name.toLowerCase();
@@ -40,6 +43,12 @@ export function headerAllowlist(reqHeaders: Headers): Headers {
     if (NEVER_FORWARD.has(lower)) continue;
     if (!FORWARD_ALLOWLIST.has(lower)) continue;
     out.set(lower, value);
+  }
+  // Only the dispatch layer supplies this after it has proven a signed,
+  // target-scoped provider idempotency contract. Never pass the inbound key by
+  // default: scopes are provider-specific and must not follow a failover.
+  if (options.providerIdempotencyKey?.trim()) {
+    out.set("idempotency-key", options.providerIdempotencyKey);
   }
   return out;
 }

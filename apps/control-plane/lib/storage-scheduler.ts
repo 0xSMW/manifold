@@ -20,7 +20,8 @@ export function storageSchedulerHasTime(deadline: number, now = Date.now()): boo
 export function requireStorageCronAuthorization(req: Request): void {
   const expected = process.env.CRON_SECRET;
   const presented = req.headers.get("authorization");
-  if (!expected || !presented || !presented.startsWith("Bearer ")) {
+  // A padded configured secret is an operator error. Do not silently normalize credentials.
+  if (!expected || expected.trim() !== expected || !presented || !presented.startsWith("Bearer ")) {
     throw new ManifoldError({ status: 403, code: "FORBIDDEN", message: "invalid or missing cron secret", reasonCodes: [] });
   }
   const actual = Buffer.from(presented.slice(7));

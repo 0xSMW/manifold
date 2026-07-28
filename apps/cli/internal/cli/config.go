@@ -16,7 +16,7 @@ import (
 // planHash (the value config apply consumes), while --json passes the full body
 // through verbatim.
 func planConfig(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(cmd, flags)
+	client, err := mutationClientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}
@@ -48,9 +48,9 @@ func planConfig(cmd *cobra.Command, args []string, flags map[string]string) erro
 // 409 CONFIG_PRECONDITION_FAILED, which the shared client maps to exit 5 via
 // exitForEnvelopeCode — preserving the documented precondition/conflict
 // behavior (SPEC.md §0.3). Destructive changes without matching --approvals
-// come back as 422 CONFIG_TRIPWIRE_HELD (also exit 5).
+// come back as 422 CONFIG_TRIPWIRE_HELD (exit 9).
 func applyConfig(cmd *cobra.Command, args []string, flags map[string]string) error {
-	client, err := clientFromFlags(cmd, flags)
+	client, err := mutationClientFromFlags(cmd, flags)
 	if err != nil {
 		return err
 	}
@@ -90,6 +90,39 @@ func activeConfig(cmd *cobra.Command, args []string, flags map[string]string) er
 	return renderAPIResult(cmd, "config.active", resp)
 }
 
+func rollbackConfig(cmd *cobra.Command, args []string, flags map[string]string) error {
+	if err := confirmDestructive(cmd, flags["revision"], "config rollback"); err != nil {
+		return err
+	}
+	client, err := mutationClientFromFlags(cmd, flags)
+	if err != nil {
+		return err
+	}
+	resp, err := client.post("/config/rollback", map[string]any{
+		"installationId": flags["installation"],
+		"revisionId":     flags["revision"],
+		"baseConfigHash": flags["base-config-hash"],
+	})
+	if err != nil {
+		return err
+	}
+	return renderAPIResult(cmd, "config.rollback", resp)
+}
+
+func configHistory(cmd *cobra.Command, args []string, flags map[string]string) error {
+	client, err := clientFromFlags(cmd, flags)
+	if err != nil {
+		return err
+	}
+	q := url.Values{}
+	q.Set("installationId", flags["installation"])
+	resp, err := client.get("/config/history?" + q.Encode())
+	if err != nil {
+		return err
+	}
+	return renderAPIResult(cmd, "config.history", resp)
+}
+
 func newConfigCmd() *cobra.Command {
 	c := branch("config", "config revisions (routes/policies/prices snapshot)")
 	c.AddCommand(
@@ -124,15 +157,13 @@ otherwise the control plane replies 422 CONFIG_TRIPWIRE_HELD (also exit 5).`,
 			Kind:    "config.apply",
 			Special: applyConfig, // REAL: POST /api/v1/config/apply
 		}),
-		// STUB: no control-plane route exists for config rollback
-		// (apps/control-plane/app/api/v1/config/rollback/route.ts is absent),
-		// so this remains a stub echo rather than inventing an endpoint.
 		buildLeaf(cmdSpec{
-			Use:   "rollback",
-			Short: "republish a prior config revision (STUB: no server route yet)",
-			Args:  cobra.NoArgs,
-			Flags: []flagSpec{{Name: "revision", Required: true, Usage: "revision hash to roll back to"}},
-			Kind:  "config.rollback",
+			Use:     "rollback",
+			Short:   "republish a prior config revision",
+			Args:    cobra.NoArgs,
+			Flags:   []flagSpec{{Name: "installation", Required: true, Usage: "installation id to roll back"}, {Name: "revision", Required: true, Usage: "revision id to republish"}, {Name: "base-config-hash", Required: true, Usage: "current active content hash from config history"}, {Name: "base-url", Usage: "override the global --base-url for this call"}},
+			Kind:    "config.rollback",
+			Special: rollbackConfig,
 		}),
 		buildLeaf(cmdSpec{
 			Use:   "active",
@@ -145,10 +176,7 @@ otherwise the control plane replies 422 CONFIG_TRIPWIRE_HELD (also exit 5).`,
 			Kind:    "config.active",
 			Special: activeConfig, // REAL: GET /api/v1/config/active
 		}),
-		// STUB: no control-plane route exists for config history
-		// (apps/control-plane/app/api/v1/config/history/route.ts is absent),
-		// so this remains a stub echo rather than inventing an endpoint.
-		buildLeaf(cmdSpec{Use: "history", Short: "list past config revisions (STUB: no server route yet)", Args: cobra.NoArgs, Kind: "config.history"}),
+		buildLeaf(cmdSpec{Use: "history", Short: "list past config revisions", Args: cobra.NoArgs, Flags: []flagSpec{{Name: "installation", Required: true, Usage: "installation id whose config history to fetch"}, {Name: "base-url", Usage: "override the global --base-url for this call"}}, Kind: "config.history", Special: configHistory}),
 	)
 	return c
 }

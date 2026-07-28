@@ -29,7 +29,15 @@ import { headerAllowlist, sanitizeResponseHeaders } from "./headers.js";
 import { normalizeProviderErrorResponse } from "./providerErrors.js";
 import { resolveProfile } from "./resolveProfile.js";
 import { resolveRoute, routeKey } from "./resolveRoute.js";
-import { decideRetry, orderTargetAttempts, retryPolicyFromSnapshot, snapshotTargetIdentity } from "./retry.js";
+import {
+  decideRetry,
+  deriveProviderIdempotencyKey,
+  isSafePostRetry,
+  orderTargetAttempts,
+  providerIdempotencyContractFromSnapshot,
+  retryPolicyFromSnapshot,
+  snapshotTargetIdentity,
+} from "./retry.js";
 import {
   limitRequestBody,
   type ConcurrencyDecision,
@@ -321,7 +329,7 @@ function estimateRateLimitTokens(body: Record<string, unknown> | undefined): num
  * accounting observer. The observer's onFinalize hook is awaited before close/error/cancel
  * settles, so a terminal intent cannot be silently abandoned with the stream.
  */
-function relayObservedStream(
+export function relayObservedStream(
   source: ReadableStream<Uint8Array>,
   observer: SseUsageTransform,
 ): ReadableStream<Uint8Array> {
@@ -340,8 +348,26 @@ function relayObservedStream(
     },
     async cancel(reason) {
       observer.abort();
-      await reader.cancel(reason);
-      await observer.result;
+      let cancelError: unknown;
+      let observerError: unknown;
+      try {
+        await reader.cancel(reason);
+      } catch (error) {
+        cancelError = error;
+      }
+      try {
+        await observer.result;
+      } catch (error) {
+        observerError = error;
+      }
+      if (cancelError !== undefined && observerError !== undefined) {
+        throw new AggregateError(
+          [cancelError, observerError],
+          "provider stream cancellation and terminal accounting both failed",
+        );
+      }
+      if (cancelError !== undefined) throw cancelError;
+      if (observerError !== undefined) throw observerError;
     },
   });
 }
@@ -791,17 +817,43 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
     snapshot.routes[routeKey(profileId, decoded.endpointKind, publicModel!)],
   );
   const retryPolicy = retryPolicyFromSnapshot(route.retryPolicy);
-  if (legacyPathRoute && enforcement.forwardBody === undefined && hasBody) retryPolicy.maxAttempts = 1;
+  const inboundIdempotencyKey = decoded.request.headers.get("idempotency-key");
+  const providerIdempotencyContract = providerIdempotencyContractFromSnapshot(route.retryPolicy);
+  const selectedTargetId = target.targetId;
+  const providerIdempotencyKey = hasBody && selectedTargetId !== undefined &&
+    providerIdempotencyContract?.targetId === selectedTargetId
+    ? await deriveProviderIdempotencyKey(
+      ctx.crypto,
+      ctx.pepper,
+      ctx.installationId,
+      selectedTargetId,
+      inboundIdempotencyKey,
+    )
+    : undefined;
+  const replayablePost = isSafePostRetry(0, providerIdempotencyKey, providerIdempotencyContract);
+  // POST dispatch is billable and an absent response does not prove the
+  // provider did not accept it. A retry is permitted only for an explicit,
+  // target-scoped provider contract; even then it stays on that exact target.
+  if ((hasBody && !replayablePost) || (legacyPathRoute && enforcement.forwardBody === undefined && hasBody)) {
+    retryPolicy.maxAttempts = 1;
+  }
   const orderedTargets = orderTargetAttempts(
     target,
     route.targets
       .filter((candidate) => candidate.healthState !== "unhealthy")
       .sort((left, right) => left.priority - right.priority),
   );
-  const attempts = Array.from(
-    { length: retryPolicy.maxAttempts },
-    (_, index) => orderedTargets[index] ?? orderedTargets[index % orderedTargets.length]!,
-  );
+  const attempts = hasBody && !replayablePost
+    // A target skipped before any egress (open circuit, unavailable credential,
+    // SSRF denial) has not been billed. Continue selection until one target is
+    // actually dispatched; its outcome is then terminal for this POST.
+    ? orderedTargets
+    : Array.from(
+      { length: retryPolicy.maxAttempts },
+      (_, index) => replayablePost
+        ? target
+        : orderedTargets[index] ?? orderedTargets[index % orderedTargets.length]!,
+    );
   const startedAtMs = Date.now();
   let upstream: Response | undefined;
   let lastFailure: { code: string; message: string } | undefined;
@@ -833,7 +885,12 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
       break;
     }
 
-    const upstreamHeaders = headerAllowlist(decoded.request.headers);
+    const targetScopedIdempotency = replayablePost && target.targetId === providerIdempotencyContract?.targetId
+      ? providerIdempotencyKey
+      : undefined;
+    const upstreamHeaders = headerAllowlist(decoded.request.headers, {
+      providerIdempotencyKey: targetScopedIdempotency,
+    });
     try {
       injectProviderAuth(upstreamHeaders, target.authInject, await ctx.resolveSecret(target));
     } catch {
@@ -899,7 +956,8 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
         completedAttempt: attemptIndex + 1,
         failure: { status: candidate.status },
         responseBytesReceived: 0,
-        idempotencyKey: decoded.request.headers.get("idempotency-key"),
+        idempotencyKey: inboundIdempotencyKey,
+        ...(targetScopedIdempotency ? { providerIdempotencyContract } : {}),
         retryAfter: candidate.headers.get("retry-after"),
         startedAtMs,
         deadlineMs: route.timeoutMs,
@@ -969,7 +1027,8 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
         completedAttempt: attemptIndex + 1,
         failure: { timedOut: isTimeout, networkError: !isTimeout },
         responseBytesReceived: 0,
-        idempotencyKey: decoded.request.headers.get("idempotency-key"),
+        idempotencyKey: inboundIdempotencyKey,
+        ...(targetScopedIdempotency ? { providerIdempotencyContract } : {}),
         startedAtMs,
         deadlineMs: route.timeoutMs,
         policy: retryPolicy,
@@ -1093,7 +1152,17 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
       onFinalize: async (result) => {
         const streamUsage = result.usage ? parseUsageBlock({ usage: result.usage }) : undefined;
         const terminalUsage = streamUsage ?? reservationFallback?.usage;
-        const aborted = result.aborted || !result.completed;
+        // A dispatched Responses failure/incomplete terminal is a provider
+        // outcome, not a transport truncation. Only cancellation or no
+        // terminal kind is classified as a provider stream abort.
+        const aborted = result.aborted || result.terminalKind === null;
+        const terminalReasonCodes: ReasonCode[] = aborted
+          ? ["PROVIDER_STREAM_ABORTED"]
+          : result.terminalKind === "failed"
+            ? ["PROVIDER_RESPONSE_FAILED"]
+            : result.terminalKind === "incomplete"
+              ? ["PROVIDER_RESPONSE_INCOMPLETE"]
+              : [];
         telemetryStreamAborted = aborted;
         await enqueue({
           kind: "terminal",
@@ -1102,7 +1171,7 @@ export async function handleRequest(ctx: GatewayContext, request: Request): Prom
           routeId: route.routeId,
           offeringId: target.offeringId,
           status: aborted ? 502 : upstream.status,
-          reasonCodes: aborted ? ["PROVIDER_STREAM_ABORTED"] : [],
+          reasonCodes: terminalReasonCodes,
           ...(terminalUsage ? { usage: terminalUsage } : {}),
           ...(terminalUsage && price ? { price } : {}),
           ...(terminalUsage ? { priceRevisionId } : {}),

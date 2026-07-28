@@ -15,11 +15,15 @@ export interface OpenAiStreamUsage {
   details?: Record<string, unknown>;
 }
 
+export type SseTerminalKind = "completed" | "failed" | "incomplete";
+
 export interface SseUsageResult {
   /** The latest valid `usage` object observed in an SSE data frame. */
   usage: OpenAiStreamUsage | null;
-  /** True only when the provider emitted the OpenAI SSE completion sentinel. */
+  /** True only when the provider emitted an explicit successful SSE terminal event. */
   completed: boolean;
+  /** The Responses terminal outcome, when a complete SSE frame supplied one. */
+  terminalKind: SseTerminalKind | null;
   /** True when the supplied abort signal or `abort()` stopped observation. */
   aborted: boolean;
   malformedFrames: number;
@@ -31,8 +35,8 @@ export interface SseUsageTransformOptions {
   maxFrameBytes?: number;
   signal?: AbortSignal;
   /**
-   * Runs exactly once before a chunk containing `[DONE]` is released, or before
-   * EOF closes an incomplete stream. Rejecting fails the stream closed.
+   * Runs exactly once before a chunk containing a terminal event is released,
+   * or before EOF closes an incomplete stream. Rejecting fails the stream closed.
    */
   onFinalize?: (result: SseUsageResult) => void | Promise<void>;
 }
@@ -58,6 +62,19 @@ function appendBounded(
   joined.set(current);
   joined.set(next, current.byteLength);
   return joined;
+}
+
+function startsWithDataField(
+  prefix: Uint8Array<ArrayBufferLike>,
+  suffix: Uint8Array<ArrayBufferLike>,
+): boolean {
+  const expected = [0x64, 0x61, 0x74, 0x61, 0x3a]; // "data:"
+  if (prefix.byteLength + suffix.byteLength < expected.length) return false;
+  for (let index = 0; index < expected.length; index += 1) {
+    const value = index < prefix.byteLength ? prefix[index] : suffix[index - prefix.byteLength];
+    if (value !== expected[index]) return false;
+  }
+  return true;
 }
 
 function numeric(value: unknown): number | undefined {
@@ -94,6 +111,24 @@ function extractUsage(value: unknown): OpenAiStreamUsage | null {
   return Object.keys(extracted).length > 0 ? extracted : null;
 }
 
+function responsesTerminalKind(value: unknown): SseTerminalKind | null {
+  switch (record(value)?.type) {
+    case "response.completed": return "completed";
+    case "response.failed": return "failed";
+    case "response.incomplete": return "incomplete";
+    default: return null;
+  }
+}
+
+function eventTerminalKind(eventType: string): SseTerminalKind | null {
+  switch (eventType) {
+    case "response.completed": return "completed";
+    case "response.failed": return "failed";
+    case "response.incomplete": return "incomplete";
+    default: return null;
+  }
+}
+
 /**
  * Creates a Web Streams transform that observes OpenAI-compatible SSE usage.
  * Callers should invoke `abort()` when they cancel a pipe without supplying an
@@ -110,8 +145,11 @@ export function createSseUsageTransform(options: SseUsageTransformOptions = {}):
   let frameDiscarded = false;
   let dataParts: string[] = [];
   let dataBytes = 0;
+  let frameHasData = false;
+  let eventType = "";
   let usage: OpenAiStreamUsage | null = null;
   let completed = false;
+  let terminalKind: SseTerminalKind | null = null;
   let malformedFrames = 0;
   let oversizedFrames = 0;
   let settled = false;
@@ -126,7 +164,7 @@ export function createSseUsageTransform(options: SseUsageTransformOptions = {}):
 
   const settle = (aborted: boolean): Promise<void> => {
     if (finalizePromise) return finalizePromise;
-    const snapshot = { usage, completed, aborted, malformedFrames, oversizedFrames };
+    const snapshot = { usage, completed, terminalKind, aborted, malformedFrames, oversizedFrames };
     finalizePromise = Promise.resolve()
       .then(() => options.onFinalize?.(snapshot))
       .then(
@@ -158,22 +196,49 @@ export function createSseUsageTransform(options: SseUsageTransformOptions = {}):
   }
 
   const finishFrame = (): void => {
+    let frameTerminalKind: SseTerminalKind | null = null;
     if (!frameDiscarded && dataParts.length > 0) {
       const payload = dataParts.join("\n");
       if (payload === "[DONE]") {
-        completed = true;
+        frameTerminalKind = "completed";
       } else {
         try {
-          const observed = extractUsage(JSON.parse(payload));
+          const parsed = JSON.parse(payload);
+          const observed = extractUsage(parsed);
           if (observed) usage = observed;
+          frameTerminalKind = responsesTerminalKind(parsed);
         } catch {
           malformedFrames += 1;
         }
       }
     }
+    const declaredTerminalKind = eventTerminalKind(eventType);
+    let validTerminalKind: SseTerminalKind | null = null;
+    if (declaredTerminalKind !== null) {
+      // `event:` alone is metadata, never a terminal observation. We can
+      // trust the declared type when a data field exists but is too large to
+      // inspect; when it is inspectable, its terminal type must agree.
+      if (!frameHasData) {
+        malformedFrames += 1;
+      } else if (frameTerminalKind !== null && frameTerminalKind !== declaredTerminalKind) {
+        malformedFrames += 1;
+      } else {
+        validTerminalKind = declaredTerminalKind;
+      }
+    } else {
+      validTerminalKind = frameTerminalKind;
+    }
+    // Keep the first valid terminal immutable. This also prevents a malformed
+    // provider sequence from changing already-accounted terminal semantics.
+    if (terminalKind === null && validTerminalKind !== null) {
+      terminalKind = validTerminalKind;
+      completed = terminalKind === "completed";
+    }
     frameDiscarded = false;
     dataParts = [];
     dataBytes = 0;
+    frameHasData = false;
+    eventType = "";
   };
 
   const finishLine = (): void => {
@@ -189,8 +254,17 @@ export function createSseUsageTransform(options: SseUsageTransformOptions = {}):
       finishFrame();
       return;
     }
-    if (!text.startsWith("data:")) return;
-    const payload = text.slice(5).replace(/^ /, "");
+    const separator = text.indexOf(":");
+    const field = separator === -1 ? text : text.slice(0, separator);
+    if (field === "") return; // SSE comment.
+    const value = separator === -1 ? "" : text.slice(separator + 1).replace(/^ /, "");
+    if (field === "event") {
+      eventType = value;
+      return;
+    }
+    if (field !== "data") return;
+    frameHasData = true;
+    const payload = value;
     const payloadBytes = encoder.encode(payload).byteLength;
     const separatorBytes = dataParts.length === 0 ? 0 : 1;
     if (payloadBytes > maxFrameBytes - dataBytes - separatorBytes) {
@@ -214,6 +288,7 @@ export function createSseUsageTransform(options: SseUsageTransformOptions = {}):
         if (next === null) {
           oversizedFrames += 1;
           frameDiscarded = true;
+          if (startsWithDataField(line, chunk.subarray(start, index))) frameHasData = true;
           line = new Uint8Array();
         } else {
           line = next;
@@ -227,6 +302,7 @@ export function createSseUsageTransform(options: SseUsageTransformOptions = {}):
     if (next === null) {
       oversizedFrames += 1;
       frameDiscarded = true;
+      if (startsWithDataField(line, chunk.subarray(start))) frameHasData = true;
       line = new Uint8Array();
       droppingLine = true;
     } else {
@@ -239,12 +315,12 @@ export function createSseUsageTransform(options: SseUsageTransformOptions = {}):
       consume(chunk);
       // Hold the chunk carrying the completion sentinel until durable terminal
       // accounting succeeds. Earlier stream bytes remain fully streaming.
-      if (completed) await settle(false);
+      if (terminalKind !== null) await settle(false);
       controller.enqueue(chunk);
     },
     async flush() {
-      // A complete SSE event needs its blank line; silently ignore a partial
-      // trailing line rather than mistaking a truncation for a final frame.
+      // SSE dispatch requires a blank-line terminator. A truncated final frame
+      // cannot become a terminal result merely because EOF followed a newline.
       await settle(false);
     },
   });

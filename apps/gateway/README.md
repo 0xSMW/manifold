@@ -24,13 +24,13 @@ touchpoint arrives by dependency injection through `@manifold/ports` (ADR-0004, 
 
 ```bash
 # from the repo root, once:
-npm install
-npm run build            # builds contracts + ports + gateway-core to dist/
+corepack enable
+corepack pnpm install --frozen-lockfile
+pnpm run build            # builds every workspace that defines a build script
 
 # start the local node:http harness (loads ./snapshot.example.json by default):
-cd apps/gateway
-npm start                             # → manifold gateway listening on http://127.0.0.1:8787
-# npm run dev                         # same, with --watch
+pnpm --filter @manifold/gateway start # → manifold gateway listening on http://127.0.0.1:8787
+# pnpm --filter @manifold/gateway dev # same, with --watch
 ```
 
 Local-harness environment:
@@ -44,13 +44,14 @@ Local-harness environment:
 | `MANIFOLD_DATA_KEK` | development KEK outside production | unwraps the snapshot credential DEK |
 | `MANIFOLD_DATA_KEKS` | unset | strict `kekId → KEK` keyring for versioned snapshot targets |
 
-The example snapshot has: profile `localhost` → `public_app`; one virtual key
+The example snapshot has host bindings for `localhost` and `127.0.0.1` to
+`public_app`; one virtual key
 (**plaintext test key: `sk-manifold-localtest-key`**, stored as its HMAC hash); one route
 `/v1/messages` → `https://api.anthropic.com` with Anthropic auth injection.
 
 ## Vercel Fluid function
 
-`api/gateway.ts` is the production Web `Request`/`Response` entrypoint. `vercel.json` enables
+`api/gateway.ts` is the Vercel Web `Request`/`Response` entrypoint. `vercel.json` enables
 Fluid Compute, pins `iad1`, sets a 300-second gateway duration, exposes `/health` and `/ready`,
 rewrites the four supported public endpoints (`/v1/models`, `/v1/chat/completions`,
 `/v1/responses`, and `/v1/embeddings`), and schedules the durable job-ledger drain every minute. Production loads
@@ -62,11 +63,16 @@ See the root `.env.example` for the Vercel gateway variables. The gateway projec
 pooled `manifold_app` database URL, its installation/workspace binding, the snapshot public key,
 the shared pepper/KEK, the installation Ed25519 private key, and `CRON_SECRET`.
 
+Billable POSTs make one provider dispatch by default. A replay is allowed only when the signed
+route declares an idempotency contract for the exact target and the client supplies an
+`Idempotency-Key`; that key never follows a provider failover.
+
 Terminal accounting is a durable `job_ledger` write keyed by trace, followed by an immediate
 `waitUntil` drain and a once-per-minute Cron safety net. Claims use `FOR UPDATE SKIP LOCKED`,
 stale claims recover, failures back off to a bounded retry count, and exhausted work becomes DLQ
 state. Every completed provider response waits for durable terminal handoff before it settles.
-SSE holds its completion frame until final usage and terminal intent have been persisted.
+SSE holds its completion frame until final usage and terminal intent have been persisted. Both
+legacy `[DONE]` and the Responses API `response.completed` event are successful terminal signals.
 
 The Vercel runtime requires strict Postgres admission: one short RLS-scoped transaction atomically
 enforces fleet-wide per-key/global concurrency and RPM/TPM/burst, with a 330-second crash-recovery
@@ -106,19 +112,24 @@ curl -s -X POST http://localhost:8787/v1/messages \
 ## Test (spends zero external tokens)
 
 ```bash
-cd apps/gateway && npm test
+pnpm --filter @manifold/gateway test
 ```
 
 The suite covers codecs/model collisions, retry/failover/circuit behavior, provider-attempt
 ordering, rate/concurrency/request caps, byte-transparent SSE accounting, hard-budget terminal
 gating, signed snapshot freshness/LKG behavior, DNS pinning/rebinding/redirect attacks, durable
-job-ledger retry/DLQ/RLS behavior, and real Postgres billing reconciliation.
+job-ledger retry/DLQ/RLS behavior, and Postgres billing reconciliation. Database-backed tests
+start throwaway `postgres:16` containers through Docker and apply the repository migrations.
 
 ## Runtime readiness
 
-The Vercel runtime loads installation-authenticated signed snapshots, atomically activates only
-verified last-known-good state, and fails closed after the configured maximum staleness. `/health`
-is liveness-only; `/ready` is the release-promotion gate and must return 200 before promotion.
+The Vercel runtime code loads installation-authenticated signed snapshots, atomically activates
+only verified last-known-good state, and fails closed after the configured maximum staleness.
+`/health` is liveness-only; every `/ready` request verifies current Postgres admission plus fresh
+signed-snapshot access. Snapshot freshness is the most recent successful remote verification
+time, not the immutable revision publication time. `/ready` must return 200 before promotion.
+Repository tests and a 200 `/health` response do not
+prove that a deployed gateway is ready.
 
 Before serving customer traffic, validate provider connectivity, model discovery, streaming and
 non-streaming accounting, key revocation, credential rotation, interruption recovery, durable-job

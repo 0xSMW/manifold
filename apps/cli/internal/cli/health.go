@@ -12,10 +12,9 @@ import (
 
 const healthTimeout = 5 * time.Second
 
-// pingBaseURL performs the one real network call in this skeleton: a GET
-// {base-url}/api/v1/health with a 5s timeout. With no base URL configured it
-// falls back to the standard stub output instead of erroring, since a fresh
-// checkout has nothing to point at yet.
+// pingBaseURL performs GET {base-url}/api/v1/health with a 5s timeout. With no
+// base URL configured it falls back to the standard stub output instead of
+// erroring, since a fresh checkout has nothing to point at yet.
 func pingBaseURL(cmd *cobra.Command, args []string, flags map[string]string) error {
 	baseURL := flagBaseURL
 	if v, ok := flags["base-url"]; ok && v != "" {
@@ -62,12 +61,12 @@ func pingBaseURL(cmd *cobra.Command, args []string, flags map[string]string) err
 			ErrCode:     "CLI_HEALTH_ERROR_STATUS",
 			Message:     fmt.Sprintf("GET %s returned HTTP %d", url, resp.StatusCode),
 			Remediation: "check control-plane logs; this is not a CLI bug",
-			Details:     map[string]string{"status": fmt.Sprintf("%d", resp.StatusCode), "body": string(body)},
+			Details:     map[string]any{"status": fmt.Sprintf("%d", resp.StatusCode), "body": string(body)},
 		}
 	}
 
 	// --quiet prints "ok"; --json re-emits the server body as-is when it is
-	// valid JSON (transparent pass-through) and otherwise wraps it in a stub
+	// valid JSON (transparent pass-through) and otherwise wraps it in a result
 	// envelope; human mode shows the request/status/body.
 	return writeResult(cmd, StubResult{
 		Schema:  schemaVersion,
@@ -99,8 +98,7 @@ func newHealthCmd() *cobra.Command {
 }
 
 // newPingCmd is a convenience top-level alias for `installation health` /
-// `health check`, since it's the one command in this skeleton that hits a
-// real deployment.
+// `health check`.
 func newPingCmd() *cobra.Command {
 	return buildLeaf(cmdSpec{
 		Use:   "ping",

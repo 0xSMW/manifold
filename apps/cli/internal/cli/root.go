@@ -1,8 +1,7 @@
-// Package cli implements the manifold command-line skeleton described in
-// SPEC.md §12. Every leaf command parses its flags/args and prints a
-// structured stub result (respecting --json); no command talks to a real
-// control plane yet except `installation health` / `manifold ping`, which
-// does a real HTTP GET against --base-url when one is supplied.
+// Package cli implements the manifold command line described in SPEC.md §12.
+// API-backed commands cover authentication, health, provider/key lifecycle,
+// route listing, and config plan/apply/active/history/rollback. Leaf commands
+// that have not been wired to the control plane print a structured stub result.
 package cli
 
 import (
@@ -24,14 +23,15 @@ func newRootCmd() *cobra.Command {
 providers, routes, keys, policies, budgets, observations, config, storage,
 jobs, models, and installations.
 
-This build is a command-surface skeleton (SPEC.md §12): every command
-parses its flags and arguments and prints a structured stub result. The
-only command that performs a real network call is
-'manifold installation health' (alias 'manifold ping'), which pings
---base-url's /api/v1/health endpoint.
+API-backed commands currently include auth login/logout/whoami, health checks,
+provider list/create/validate/rotate/revoke, route list, key
+list/mint/rotate/revoke/scope update, and config plan/apply/active/history/rollback.
+Other leaf commands preserve the intended command surface and print a structured
+STUB result without changing server state.
 
 Exit codes: 0 ok, 1 generic error, 2 usage error, 3 auth error,
-4 not found, 5 precondition/conflict. See 'manifold help exit-codes'.`,
+4 not found, 5 precondition/conflict, 6 rate-limited, 7 server error,
+8 timeout, 9 tripwire held. See 'manifold help exit-codes'.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -43,6 +43,8 @@ Exit codes: 0 ok, 1 generic error, 2 usage error, 3 auth error,
 	root.PersistentFlags().StringVar(&flagToken, "token", os.Getenv("MANIFOLD_TOKEN"), "control-plane API token (Bearer), overrides the context (env MANIFOLD_TOKEN)")
 	root.PersistentFlags().BoolVar(&flagNoInput, "no-input", false, "non-interactive: never prompt, error instead (env MANIFOLD_NONINTERACTIVE)")
 	root.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "only print ids/errors")
+	root.PersistentFlags().BoolVar(&flagYes, "yes", false, "confirm destructive actions without prompting")
+	root.PersistentFlags().StringVar(&flagIdempotencyKey, "idempotency-key", os.Getenv("MANIFOLD_IDEMPOTENCY_KEY"), "override the auto-generated idempotency key for a mutation")
 
 	if v := os.Getenv("MANIFOLD_NONINTERACTIVE"); v != "" && v != "0" && v != "false" {
 		flagNoInput = true
@@ -124,7 +126,7 @@ func mustSession() (*session, error) {
 }
 
 func exitCodesText() string {
-	return fmt.Sprintf(`Exit codes (SPEC.md §12.4, skeleton subset):
+	return fmt.Sprintf(`Exit codes (SPEC.md §12.4):
 
   0   success
   1   generic / unexpected error
@@ -132,6 +134,10 @@ func exitCodesText() string {
   3   auth error (not logged in, expired/invalid token, missing scope)
   4   not found
   5   precondition failed / conflict (e.g. CONFIG_PRECONDITION_FAILED)
+  6   rate-limited
+  7   server error
+  8   timeout
+  9   tripwire held / approval required
 
 See docs/exit-codes.md for the full table and worked examples.
 `)

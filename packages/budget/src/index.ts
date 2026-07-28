@@ -101,16 +101,20 @@ interface ChainAccount {
   /** `cost_microusd` or `tokens` — selects which counter columns the guard/bump use. */
   unit: string;
   workspace_id: string;
+  /** A quarantine/administrative disable is an admission deny for this entire chain. */
+  disabled_at: Date | null;
 }
 
 interface ReservationRow {
   id: string;
   workspace_id: string;
   budget_account_id: string;
+  request_id: string;
   reserved_microusd: string;
   /** Held token estimate for token-unit budgets; null on legacy rows (treated as 0). */
   reserved_tokens: string | null;
   status: BudgetReservationState;
+  reconciled_microusd: string | null;
   created_at: Date;
   /** The EXACT counter-row coordinates reserve() bumped (§16.3), persisted on the row so
    *  commit/rollback/sweep decrement THAT row instead of re-deriving (bucketStart, shard=0).
@@ -208,6 +212,12 @@ export async function reserve(db: Sql, input: ReserveInput): Promise<ReserveResu
     //    A reserve must fit EVERY ancestor's cap, not just the leaf's.
     const chain = await loadChain(sql, budgetAccountId);
     if (chain.length === 0) return { ok: false, reason: BUDGET_RESERVE_DENIED };
+    // Quarantine is enforced at the authoritative reserve transaction, including every parent
+    // cap. Existing reservations still reconcile through commit(), which deliberately does not
+    // apply this admission-only check.
+    if (chain.some((account) => account.disabled_at !== null)) {
+      return { ok: false, reason: BUDGET_RESERVE_DENIED };
+    }
     const leaf = chain[0]!;
 
     // 2. Counter coordinates per account. window_start is DERIVED from each account's own window
@@ -390,6 +400,8 @@ export interface CommitResult {
   ok: boolean;
   status: BudgetReservationState;
   committedMicroUsd: MicroUsd;
+  /** The durable request binding recovered under the reservation row lock. */
+  requestId?: string;
   /** Bug #1: true when this commit's `actual` (cost or tokens) exceeded the amount that was
    *  actually held (`reserved_(microusd|tokens)` at reserve time) — i.e. this commit just
    *  durably booked committed spend PAST what reserve() ever guarded against, including the
@@ -399,6 +411,24 @@ export interface CommitResult {
    *  detect/alert/audit the overspend instead of it passing silently. `false` for a no-op /
    *  missing / blocked outcome (nothing was released, so there is nothing to compare). */
   overspent: boolean;
+}
+
+/** Facts available under the commit transaction's reservation lock for a durable side effect. */
+export interface BudgetCommitEvidence {
+  reservationId: string;
+  workspaceId: string;
+  requestId: string;
+  heldMicroUsd: bigint;
+  actualMicroUsd: bigint;
+  actualTokens: bigint;
+  overspent: boolean;
+}
+
+export interface CommitOptions {
+  /** Bind a terminal reconciliation to the gateway trace that created its reservation. */
+  expectedRequestId?: string;
+  /** Runs in the same transaction after the reservation has been reconciled. */
+  afterCommit?: (sql: TransactionSql, evidence: BudgetCommitEvidence) => Promise<void>;
 }
 
 /**
@@ -417,6 +447,7 @@ export async function commit(
   actualMicroUsd: MicroUsd,
   workspaceId?: string,
   actualTokens?: bigint,
+  options: CommitOptions = {},
 ): Promise<CommitResult> {
   // Non-negativity (§8.4): a negative actual would DECREMENT committed and free phantom
   // headroom (a caller could reconcile at −$X to un-charge real spend). Clamp to 0.
@@ -429,6 +460,7 @@ export async function commit(
       actual,
       actualTokens: actualToks,
       workspaceId,
+      expectedRequestId: options.expectedRequestId,
     });
     switch (out.kind) {
       case "released":
@@ -436,17 +468,38 @@ export async function commit(
         // this never clamps `actual` and never releases more than `out.heldMicroUsd` from
         // `reserved` — see releaseReservation). `overspent` surfaces the durable over-limit
         // commit for the caller to detect/alert/audit instead of it passing silently.
-        return {
+        {
+          const overspent = actual > out.heldMicroUsd || actualToks > out.heldTokens;
+          if (options.afterCommit) {
+            await options.afterCommit(sql, {
+              reservationId,
+              workspaceId: out.workspaceId,
+              requestId: out.requestId,
+              heldMicroUsd: out.heldMicroUsd,
+              actualMicroUsd: actual,
+              actualTokens: actualToks,
+              overspent,
+            });
+          }
+          return {
           ok: true,
           status: out.status,
           committedMicroUsd: actual,
-          overspent: actual > out.heldMicroUsd || actualToks > out.heldTokens,
-        };
+          requestId: out.requestId,
+          overspent,
+          };
+        }
       case "missing":
         return { ok: false, status: "expired", committedMicroUsd: 0n, overspent: false };
       case "noop":
         // Already terminal — no-op (idempotent reconcile); echoes the requested actual.
-        return { ok: false, status: out.status, committedMicroUsd: actual, overspent: false };
+        return {
+          ok: false,
+          status: out.status,
+          committedMicroUsd: out.status === "committed" ? out.reconciledMicroUsd : actual,
+          requestId: out.requestId,
+          overspent: out.status === "committed" && out.reconciledMicroUsd > out.heldMicroUsd,
+        };
       case "blocked":
         return { ok: false, status: out.status, committedMicroUsd: 0n, overspent: false };
     }
@@ -555,6 +608,8 @@ type ReleaseOutcome =
   | {
       kind: "released";
       status: BudgetReservationState;
+      workspaceId: string;
+      requestId: string;
       /** The reservation's ORIGINAL held estimate (§8.4) — persisted on `budget_reservation` at
        *  reserve time and never mutated by release, so it is available here in BOTH the normal
        *  release path and the late expired→committed path (bug #1). Callers diff this against
@@ -563,7 +618,7 @@ type ReleaseOutcome =
       heldTokens: bigint;
     }
   | { kind: "missing"; status: "expired" }
-  | { kind: "noop"; status: BudgetReservationState }
+  | { kind: "noop"; status: BudgetReservationState; requestId: string; heldMicroUsd: bigint; reconciledMicroUsd: bigint }
   | { kind: "blocked"; status: BudgetReservationState };
 
 /**
@@ -584,7 +639,7 @@ async function releaseReservation(
   sql: TransactionSql,
   reservationId: string,
   event: "COMMIT" | "ROLLBACK" | "EXPIRE",
-  opts: { actual?: bigint; actualTokens?: bigint; workspaceId?: string } = {},
+  opts: { actual?: bigint; actualTokens?: bigint; workspaceId?: string; expectedRequestId?: string } = {},
 ): Promise<ReleaseOutcome> {
   // Scope the tenant GUC FIRST — BEFORE the lock — so the reservation row is visible to the
   // FOR UPDATE lock under RLS (bug #5). Without this, an RLS-subject role locks 0 rows and
@@ -597,6 +652,9 @@ async function releaseReservation(
   const res = await lockReservation(sql, reservationId);
   if (!res) return { kind: "missing", status: "expired" };
   await setWorkspaceGuc(sql, res.workspace_id);
+  if (opts.expectedRequestId !== undefined && res.request_id !== opts.expectedRequestId) {
+    return { kind: "blocked", status: res.status };
+  }
 
   const actual = opts.actual ?? 0n;
   const actualTokens = opts.actualTokens ?? 0n;
@@ -655,11 +713,19 @@ async function releaseReservation(
       return {
         kind: "released",
         status: "committed",
+        workspaceId: res.workspace_id,
+        requestId: res.request_id,
         heldMicroUsd: BigInt(res.reserved_microusd),
         heldTokens: BigInt(res.reserved_tokens ?? "0"),
       };
     }
-    return { kind: "noop", status: res.status };
+    return {
+      kind: "noop",
+      status: res.status,
+      requestId: res.request_id,
+      heldMicroUsd: BigInt(res.reserved_microusd),
+      reconciledMicroUsd: BigInt(res.reconciled_microusd ?? "0"),
+    };
   }
 
   // Domain state machine is the source of truth for the legal transition. (`event` is a
@@ -706,7 +772,14 @@ async function releaseReservation(
         reconciled_at = now()
     WHERE id = ${reservationId} AND created_at = ${res.created_at}
   `;
-  return { kind: "released", status: next.state, heldMicroUsd, heldTokens };
+  return {
+    kind: "released",
+    status: next.state,
+    workspaceId: res.workspace_id,
+    requestId: res.request_id,
+    heldMicroUsd,
+    heldTokens,
+  };
 }
 
 /**
@@ -750,18 +823,18 @@ function releaseCoord(
 async function loadChain(sql: TransactionSql, leafId: string): Promise<ChainAccount[]> {
   return sql<ChainAccount[]>`
     WITH RECURSIVE chain AS (
-      SELECT id, parent_id, limit_amount, "window", unit, workspace_id, 0 AS depth,
+      SELECT id, parent_id, limit_amount, "window", unit, workspace_id, disabled_at, 0 AS depth,
              ARRAY[id] AS visited
       FROM budget_account WHERE id = ${leafId}
       UNION ALL
-      SELECT p.id, p.parent_id, p.limit_amount, p."window", p.unit, p.workspace_id, c.depth + 1,
+      SELECT p.id, p.parent_id, p.limit_amount, p."window", p.unit, p.workspace_id, p.disabled_at, c.depth + 1,
              c.visited || p.id
       FROM budget_account p JOIN chain c ON p.id = c.parent_id
       WHERE c.depth < 32
         AND NOT (p.id = ANY(c.visited))
         AND p.workspace_id = c.workspace_id
     )
-    SELECT id, parent_id, limit_amount, "window", unit, workspace_id FROM chain ORDER BY depth
+    SELECT id, parent_id, limit_amount, "window", unit, workspace_id, disabled_at FROM chain ORDER BY depth
   `;
 }
 
@@ -804,8 +877,8 @@ async function usedForAccount(
  */
 async function lockReservation(sql: TransactionSql, reservationId: string): Promise<ReservationRow | undefined> {
   const rows = await sql<ReservationRow[]>`
-    SELECT id, workspace_id, budget_account_id, reserved_microusd, reserved_tokens,
-           status, created_at, window_start, shard
+    SELECT id, workspace_id, budget_account_id, request_id, reserved_microusd, reserved_tokens,
+           status, reconciled_microusd, created_at, window_start, shard
     FROM budget_reservation
     WHERE id = ${reservationId}
     FOR UPDATE

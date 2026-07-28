@@ -3,10 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -26,8 +28,14 @@ func exitForEnvelopeCode(code string) int {
 		return ExitAuth
 	case "NOT_FOUND", "RESOURCE_NOT_FOUND", "OFFERING_NOT_FOUND":
 		return ExitNotFound
-	case "CONFIG_PRECONDITION_FAILED", "CONFIG_TRIPWIRE_HELD", "DUPLICATE_ROUTE":
+	case "CONFIG_PRECONDITION_FAILED", "DUPLICATE_ROUTE":
 		return ExitPrecondition
+	case "CONFIG_TRIPWIRE_HELD":
+		return ExitTripwire
+	case "RATE_LIMITED":
+		return ExitRateLimited
+	case "INTERNAL":
+		return ExitServer
 	case "VALIDATION":
 		return ExitUsage
 	default:
@@ -46,7 +54,14 @@ func exitForHTTPStatus(status int) int {
 		return ExitNotFound
 	case http.StatusConflict:
 		return ExitPrecondition
+	case http.StatusTooManyRequests:
+		return ExitRateLimited
+	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+		return ExitTimeout
 	default:
+		if status >= 500 && status <= 599 {
+			return ExitServer
+		}
 		return ExitGeneric
 	}
 }
@@ -54,20 +69,23 @@ func exitForHTTPStatus(status int) int {
 // apiErrorEnvelope is the control-plane's §0.3 error shape ({ "error": { code, message, ... } }).
 type apiErrorEnvelope struct {
 	Error struct {
-		Code        string   `json:"code"`
-		Message     string   `json:"message"`
-		ReasonCodes []string `json:"reason_codes"`
-		Remediation string   `json:"remediation"`
-		Retryable   bool     `json:"retryable"`
+		Code        string         `json:"code"`
+		Message     string         `json:"message"`
+		ReasonCodes []string       `json:"reason_codes"`
+		Remediation string         `json:"remediation"`
+		Retryable   bool           `json:"retryable"`
+		RequestID   string         `json:"request_id"`
+		Details     map[string]any `json:"details"`
 	} `json:"error"`
 }
 
 // apiClient is the CLI's REAL control-plane HTTP client (Bearer auth, §0.3 envelope handling).
 type apiClient struct {
-	baseURL string
-	token   string
-	http    *http.Client
-	ctx     context.Context
+	baseURL        string
+	token          string
+	http           *http.Client
+	ctx            context.Context
+	idempotencyKey string
 }
 
 func newAPIClient(baseURL, token string) (*apiClient, error) {
@@ -95,51 +113,152 @@ func newAPIClientContext(ctx context.Context, baseURL, token string) (*apiClient
 // body on 2xx, or a CLIError whose exit code is mapped from the control-plane §0.3 error envelope.
 func (c *apiClient) do(method, path string, body any) (json.RawMessage, error) {
 	url := c.baseURL + "/api/v1" + path
-	var rdr io.Reader
+	var payload []byte
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
 			return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_ENCODE_FAILED",
 				Message: fmt.Sprintf("could not encode request body: %v", err)}
 		}
-		rdr = bytes.NewReader(b)
+		payload = b
 	}
-	req, err := http.NewRequestWithContext(c.ctx, method, url, rdr)
-	if err != nil {
-		return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_REQUEST_BUILD_FAILED",
-			Message: fmt.Sprintf("could not build request to %s: %v", url, err)}
+	attempts := 1
+	if c.idempotencyKey != "" {
+		attempts = 3
 	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	var raw []byte
+	var status int
+	var requestErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		var rdr io.Reader
+		if payload != nil {
+			rdr = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(c.ctx, method, url, rdr)
+		if err != nil {
+			return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_REQUEST_BUILD_FAILED", Message: fmt.Sprintf("could not build request to %s: %v", url, err)}
+		}
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if c.token != "" {
+			req.Header.Set("Authorization", "Bearer "+c.token)
+		}
+		if c.idempotencyKey != "" {
+			req.Header.Set("Idempotency-Key", c.idempotencyKey)
+		}
+		resp, err := c.http.Do(req)
+		if err != nil {
+			requestErr = err
+			if attempt+1 < attempts {
+				continue
+			}
+			break
+		}
+		// A response from a later attempt is authoritative.  In particular, do
+		// not let a transport error from an earlier attempt obscure an HTTP
+		// result (including its structured error envelope).
+		requestErr = nil
+		var readErr error
+		raw, readErr = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		status = resp.StatusCode
+		resp.Body.Close()
+		if readErr != nil {
+			if attempt+1 < attempts {
+				continue
+			}
+			if isTimeout(readErr) {
+				return nil, timeoutError(method, url, c.idempotencyKey)
+			}
+			return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_RESPONSE_READ_FAILED", Message: fmt.Sprintf("could not read %s %s response: %v", method, url, readErr), Retryable: true, Details: mutationFailureDetails(c.idempotencyKey)}
+		}
+		if status >= 200 && status < 300 {
+			return json.RawMessage(raw), nil
+		}
+		if attempt+1 < attempts && (status == http.StatusTooManyRequests || status >= 500) {
+			continue
+		}
+		break
 	}
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_UNREACHABLE",
-			Message:     fmt.Sprintf("%s %s failed: %v", method, url, err),
-			Remediation: "confirm the control plane is running and --base-url is reachable",
-			Retryable:   true}
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return json.RawMessage(raw), nil
+	if requestErr != nil {
+		if isTimeout(requestErr) {
+			return nil, timeoutError(method, url, c.idempotencyKey)
+		}
+		return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_UNREACHABLE", Message: fmt.Sprintf("%s %s failed: %v", method, url, requestErr), Remediation: "confirm the control plane is running and --base-url is reachable", Retryable: true, Details: map[string]any{"idempotency_key": c.idempotencyKey}}
 	}
 	var env apiErrorEnvelope
 	if json.Unmarshal(raw, &env) == nil && env.Error.Code != "" {
+		code := exitForEnvelopeCode(env.Error.Code)
+		if code == ExitGeneric && status >= 500 && status <= 599 {
+			code = exitForHTTPStatus(status)
+		}
 		return nil, &CLIError{
-			Code:        exitForEnvelopeCode(env.Error.Code),
+			Code:        code,
 			ErrCode:     env.Error.Code,
 			Message:     env.Error.Message,
 			Remediation: env.Error.Remediation,
 			Retryable:   env.Error.Retryable,
+			RequestID:   env.Error.RequestID,
+			ReasonCodes: env.Error.ReasonCodes,
+			Details:     env.Error.Details,
 		}
 	}
-	return nil, &CLIError{Code: exitForHTTPStatus(resp.StatusCode), ErrCode: "CLI_HTTP_ERROR",
-		Message: fmt.Sprintf("%s %s returned HTTP %d", method, url, resp.StatusCode)}
+	return nil, &CLIError{Code: exitForHTTPStatus(status), ErrCode: "CLI_HTTP_ERROR",
+		Message: fmt.Sprintf("%s %s returned HTTP %d", method, url, status)}
+}
+
+func isTimeout(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+func timeoutError(method, url, idempotencyKey string) *CLIError {
+	return &CLIError{
+		Code:        ExitTimeout,
+		ErrCode:     "CLI_TIMEOUT",
+		Message:     fmt.Sprintf("%s %s timed out", method, url),
+		Remediation: "retry with the same --idempotency-key after confirming the control plane is reachable",
+		Retryable:   true,
+		Details:     mutationFailureDetails(idempotencyKey),
+	}
+}
+
+func mutationFailureDetails(key string) map[string]any {
+	if key == "" {
+		return nil
+	}
+	return map[string]any{"idempotency_key": key}
+}
+
+func generatedIdempotencyKey() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", err
+	}
+	value[6] = (value[6] & 0x0f) | 0x40
+	value[8] = (value[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
+}
+
+// mutationClientFromFlags binds one idempotency key to every attempt for a mutation.
+func mutationClientFromFlags(cmd *cobra.Command, flags map[string]string) (*apiClient, error) {
+	client, err := clientFromFlags(cmd, flags)
+	if err != nil {
+		return nil, err
+	}
+	key := flagIdempotencyKey
+	if key == "" {
+		key, err = generatedIdempotencyKey()
+		if err != nil {
+			return nil, &CLIError{Code: ExitGeneric, ErrCode: "CLI_IDEMPOTENCY_KEY_FAILED", Message: fmt.Sprintf("could not generate idempotency key: %v", err)}
+		}
+	}
+	client.idempotencyKey = key
+	return client, nil
 }
 
 // get/post/patch/del are the REST verb wrappers over do (bearer auth + §0.3 envelope handling).

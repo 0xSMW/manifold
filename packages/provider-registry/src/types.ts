@@ -97,7 +97,22 @@ export interface CapabilityMap {
   toolCall: TriState;
   structuredOutput: TriState;
   temperature: TriState;
+  /** Adapter-owned replay support; models.dev has no authoritative field for this. */
+  providerIdempotency: TriState;
 }
+
+/**
+ * The gateway adapter, rather than an upstream model directory, owns endpoint
+ * compatibility and provider idempotency semantics. Unknown providers remain
+ * deliberately unroutable and cannot opt in through model metadata alone.
+ */
+export interface AdapterCapability {
+  adapterRevision: string;
+  endpointKinds: readonly string[];
+  providerIdempotency: TriState;
+}
+
+export type AdapterCapabilityMatrix = Readonly<Record<string, AdapterCapability>>;
 
 export interface CanonicalModel {
   id: string;
@@ -117,6 +132,7 @@ export interface ProviderModelOffering {
   canonicalModelId: string;
   provider: string;
   providerModelId: string;
+  adapterRevision: string;
   endpointKinds: string[];
   contextLimitTokens: number | null;
   outputLimitTokens: number | null;

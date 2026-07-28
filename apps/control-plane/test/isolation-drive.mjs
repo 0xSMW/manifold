@@ -5,6 +5,7 @@ import { hmacKeyHash, unwrapDek, openAesGcm, unpackBase64, utf8 } from "@manifol
 const BASE = process.env.BASE;
 const SEED = process.env.MANIFOLD_SEED_SECRET;
 const PGSUPER = process.env.PGSUPER; // superuser conn for RLS-bypassing verification reads / staging
+const SEED_GATEWAY_DOMAIN = process.env.MANIFOLD_SEED_GATEWAY_DOMAIN;
 let failed = 0;
 const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) failed++; };
 
@@ -19,10 +20,11 @@ const call = async (tok, path, body, method = "POST") =>
   }));
 
 async function seed(slug, email) {
+	if (!SEED_GATEWAY_DOMAIN) throw new Error("MANIFOLD_SEED_GATEWAY_DOMAIN is required");
   const r = await fetch(`${BASE}/api/v1/admin/seed`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-seed-secret": SEED },
-    body: JSON.stringify({ slug, email }),
+    body: JSON.stringify({ slug, email, hostname: `${slug}.${SEED_GATEWAY_DOMAIN}` }),
   });
   return j(r);
 }

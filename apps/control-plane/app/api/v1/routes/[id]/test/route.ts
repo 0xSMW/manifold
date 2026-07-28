@@ -1,16 +1,17 @@
 import { profilePublished } from "@/app/api/v1/deployments/_lib";
 import { authorize } from "@/lib/auth";
 import { audit } from "@/lib/audit";
-import { jsonBody, ManifoldError, ok, wrapInEnvelope } from "@/lib/http";
+import { errorEnvelope, jsonBody, ManifoldError, ok, wrapInEnvelope } from "@/lib/http";
 import { runMutationGuard } from "@/lib/mutation-guard";
 import { executeSyntheticGatewayRequest, SyntheticTestError, type SyntheticEndpointKind } from "@/lib/synthetic-test";
+import { executionFailureAuditDetail, gatewayResponseAuditDetail, type SyntheticFailureCode } from "@/lib/synthetic-test-audit";
 import { contractBody, contractOk } from "@/lib/contracts";
 import { RoutesApi } from "@manifold/contracts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-interface RouteRow { id: string; installation_id: string; public_name: string; endpoint_kind: SyntheticEndpointKind; disabled_at: string | null; installation_disabled_at: string | null; }
+interface RouteRow { id: string; installation_id: string; public_name: string; endpoint_kind: SyntheticEndpointKind; disabled_at: string | null; installation_disabled_at: string | null; applied_config_revision: string | null; }
 interface ProfileRow { id: string; hostname: string; mode: string; disabled_at: string | null; }
 
 function precondition(message: string, reasonCode: string): never {
@@ -45,15 +46,15 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       handler: async (sql) => {
         const route = (await sql<RouteRow[]>`
           SELECT r.id, r.installation_id, r.public_name, r.endpoint_kind, r.disabled_at,
-                 i.disabled_at AS installation_disabled_at
+                 i.disabled_at AS installation_disabled_at, i.applied_config_revision
           FROM gateway_route r JOIN gateway_installation i ON i.id = r.installation_id
           WHERE r.id = ${id} AND r.workspace_id = ${principal.workspaceId}
             AND i.workspace_id = ${principal.workspaceId} LIMIT 1`)[0];
         if (!route) throw new ManifoldError({ status: 404, code: "NOT_FOUND", message: "route not found", reasonCodes: [] });
         if (route.disabled_at || route.installation_disabled_at) precondition("route or installation is disabled", "ROUTE_DISABLED");
 
-        const active = (await sql<{ snapshot: unknown }[]>`
-          SELECT snapshot FROM gateway_config_revision
+        const active = (await sql<{ id: string; snapshot: unknown }[]>`
+          SELECT id, snapshot FROM gateway_config_revision
           WHERE installation_id = ${route.installation_id} AND workspace_id = ${principal.workspaceId}
             AND status = 'active' LIMIT 1`)[0];
         if (!active) precondition("route testing requires a published active configuration", "CONFIG_NOT_PUBLISHED");
@@ -82,17 +83,43 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
             publicName: route.public_name,
           });
         } catch (error) {
-          if (error instanceof SyntheticTestError) {
-            throw new ManifoldError({ status: error.code === "SYNTHETIC_NOT_CONFIGURED" ? 503 : 502, code: "CONFIG_PRECONDITION_FAILED", message: error.message, reasonCodes: [error.code], retryable: error.code === "SYNTHETIC_TIMEOUT" || error.code === "SYNTHETIC_NETWORK" });
-          }
-          throw error;
+          const failureCode: SyntheticFailureCode = error instanceof SyntheticTestError
+            ? error.code
+            : "SYNTHETIC_EXECUTION_FAILED";
+          await audit(sql, principal, {
+            action: "route.synthetic_test",
+            targetKind: "gateway_route",
+            targetId: route.id,
+            requestId,
+            detail: executionFailureAuditDetail({
+              installationId: route.installation_id,
+              profileId: profile.id,
+              endpointKind: route.endpoint_kind,
+              configRevisionId: active.id,
+              appliedConfigRevisionId: route.applied_config_revision,
+            }, failureCode),
+          });
+          const retryable = failureCode === "SYNTHETIC_TIMEOUT" || failureCode === "SYNTHETIC_NETWORK" || failureCode === "SYNTHETIC_EXECUTION_FAILED";
+          return errorEnvelope(new ManifoldError({
+            status: failureCode === "SYNTHETIC_NOT_CONFIGURED" ? 503 : 502,
+            code: "CONFIG_PRECONDITION_FAILED",
+            message: error instanceof SyntheticTestError ? error.message : "gateway diagnostic request failed",
+            reasonCodes: [failureCode],
+            retryable,
+          }), requestId);
         }
         await audit(sql, principal, {
           action: "route.synthetic_test",
           targetKind: "gateway_route",
           targetId: route.id,
           requestId,
-          detail: { installationId: route.installation_id, profileId: profile.id, hostname: profile.hostname, endpointKind: route.endpoint_kind, gatewayStatus: result.gatewayStatus, traceId: result.traceId, responseTruncated: result.responseTruncated },
+          detail: gatewayResponseAuditDetail({
+            installationId: route.installation_id,
+            profileId: profile.id,
+            endpointKind: route.endpoint_kind,
+            configRevisionId: active.id,
+            appliedConfigRevisionId: route.applied_config_revision,
+          }, result),
         });
         return contractOk(RoutesApi.testResponse, { routeId: route.id, installationId: route.installation_id, profile: { id: profile.id, hostname: profile.hostname, mode: profile.mode }, status: result.gatewayStatus >= 200 && result.gatewayStatus < 300 ? "completed" : "gateway_error", gatewayStatus: result.gatewayStatus, traceId: result.traceId, logsHref: result.traceId ? `/logs/${encodeURIComponent(result.traceId)}` : null, responseTruncated: result.responseTruncated }, requestId);
       },

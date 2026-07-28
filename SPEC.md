@@ -1,8 +1,8 @@
 # Manifold — Architecture & Engineering Specification
 
-An OpenAI-compatible, self-hostable AI gateway that is also its own logging and governance product. One codebase serves two customers through two front doors: an indie developer's own gateway-plus-logs, and an enterprise's governed internal model exit. Vercel + Edge Config + Neon is the first-class production target; a Cloudflare edition ships from the same runtime-agnostic core.
+An OpenAI-compatible, self-hostable AI gateway that is also its own logging and governance product. One codebase serves two customers through two front doors: an indie developer's own gateway-plus-logs, and an enterprise's governed internal model exit. Vercel + optional Edge Config acceleration + Neon is the first-class production target; a Cloudflare edition is specified against the same runtime-agnostic core.
 
-**Status:** Implementation-ready spec (supersedes the pre-Phase-0 build spec). Name "Manifold" is a working name pending a trademark and npm check (see ADR-0002).
+**Status:** Active product specification with implementation underway (supersedes the pre-Phase-0 build spec). The architectural and product requirements remain normative; the dated implementation snapshot below is non-normative. Name "Manifold" is a working name pending a trademark and npm check (see ADR-0002).
 **Audience:** The engineering team that will build this without inventing product, security, data, deployment, or operational decisions along the way.
 **Source rules:** Reuses the Pulse Uptime stack and design system; the gateway core (request pipeline, codecs, streaming) is **written fresh** — no legacy gateway is imported (§4.6, ADR-0015).
 **Ownership & non-association (normative):** This project belongs to **github.com/0xsmw**. It is **not** a Klu product and has no association with Klu. Nothing in Manifold is ever created, deployed, published, or stored under any Klu account, Klu Vercel scope/team, or Klu GitHub org/repo. The canonical GitHub org is `github.com/0xsmw`; the npm scope is `@manifold/*`; test and production deploys use a non-Klu Vercel team (test deploys: `ai-marketing`). Any `klu`/`klu-ai` target is out of bounds.
@@ -28,6 +28,26 @@ Every identifier in this document — table name, column, endpoint, CLI verb, re
 - "Tenant" means `Workspace`. Every durable row that is not global reference data carries `workspace_id` and is filtered by it in every query. There are no exceptions to tenant scoping; §15 makes this enforceable.
 - Code samples are illustrative of the contract, not the final implementation. Where a Zod schema and a SQL column disagree in a sample, the SQL DDL in §6 wins for storage and the Zod schema in §10 wins for the wire.
 - `public_app` and `enterprise_egress` are the two **ingress profiles**. "Profile" always means one of these two unless qualified.
+
+### Implementation status snapshot (non-normative; repository audited 2026-07-28)
+
+Status terms in this subsection are evidence labels, not requirement changes:
+
+- **Implemented** means the current repository contains the production-shaped code path and targeted tests.
+- **Partial** means a meaningful path exists but a stated contract, edition, integration, or operational acceptance gate remains incomplete or unproved.
+- **Unverified** means repository inspection cannot establish external configuration or live behavior. A successful build, test, or deployment does not promote an unverified item.
+
+| Surface | Current evidence | Status |
+|---|---|---|
+| Control plane | The Next.js console, the broad `/api/v1` route surface, first-party human authentication, configuration publication/recovery, observations, governance, deployment diagnostics, storage controls, and Vercel Cron declarations exist in `apps/control-plane`. Production `/api/v1/health` returned HTTP 200 with database status `ok` on 2026-07-28. | **Implemented in the repository; production health verified.** Email delivery, the complete human-auth production checklist, production Cron activation, production migration receipts, and object-store permissions remain **unverified**. |
+| Vercel gateway | `apps/gateway/api/gateway.ts` exposes a Web `Request` handler; `vercel.json` enables Fluid, rewrites the four §10.2 paths, and schedules the durable ledger drainer. Runtime initialization loads an installation-authenticated signed snapshot, checks strict Postgres admission, and wires durable terminal ingest. Production `/health` returned HTTP 200 on 2026-07-28. | **Partial operational readiness.** Production `/ready` returned HTTP 503 `{ok:false,error:"unavailable"}` on 2026-07-28. Because the public handler intentionally suppresses dependency details, the failing snapshot/runtime dependency is **unverified** here. Do not call the production gateway ready until `/ready` is 200 and the release gates pass. |
+| Data-plane endpoints and providers | Repository handlers and rewrites cover chat completions, Responses, embeddings, and model listing. Explicit adapter metadata covers OpenAI and Azure OpenAI for all three write endpoints and the Anthropic bridge for chat. Billable POSTs dispatch once by default; target-scoped replay requires a signed provider-idempotency contract. Responses streaming recognizes `response.completed` and legacy `[DONE]`. | **Implemented in the repository; live provider credentials and production calls unverified.** Catalog presence alone is not provider support. |
+| Control-plane API and UI | The implemented route surface is broader than the compact normative reference in §10.3, and the §11 screen inventory exists. | **Implemented in the repository.** Uniform per-endpoint middleware, audit, idempotency, and negative-test coverage must still be judged by §10.8 and the release gates rather than file presence. |
+| Go CLI | Device authorization login/logout/status/whoami, health/ping, provider create/validate/rotate/revoke, route listing, key mint/rotate/revoke/scope update, and config plan/apply/active/history/rollback perform control-plane calls and use the OS keyring where applicable. Other domain commands still emit structured stub results. | **Partial.** The command tree exists; full HTTP parity, global flags, retries/idempotency, streaming output, and the §12 acceptance contract remain requirements. |
+| Storage-bounded mode | Database migrations, scheduler routes, storage service code, compaction, pressure policy, export manifests, and real-Postgres tests exist. | **Implemented in the repository; production scheduling, capacity behavior, and S3-compatible credentials/permissions unverified.** |
+| Cloudflare and Compose editions | §3 and the target layout specify these editions, but `apps/gateway-cf`, `packages/adapters-cloudflare`, and `deploy/compose` are absent. | **Not implemented.** They remain normative target editions and must not be described as shipping. |
+
+Sections §22, §23, and §28 retain the intended dependency order, acceptance criteria, and architectural scope. They are a planning baseline, not a current completion ledger; use this snapshot plus current source and release evidence for implementation status.
 
 ### Table of contents
 
@@ -297,19 +317,28 @@ SLOs (§18 defines measurement and alerts): gateway availability 99.9 %; added-o
 
 ### 2.7 Cron and durable work
 
-Vercel Cron entries (defined in `apps/control-plane/vercel.json`), each hitting an authenticated internal route that acquires an advisory lock so overlapping fires are safe:
+Target Vercel Cron entries, each hitting an authenticated internal route that acquires an advisory
+lock so overlapping fires are safe:
 
 | Schedule | Route | Job |
 |---|---|---|
 | `* * * * *` (1 min) | `/api/internal/jobs/drain` | Drain `job_ledger`: ingest retries, reconciliation, config-apply followups. |
 | `*/5 * * * *` | `/api/internal/jobs/warm` | Keep-warm ping (gateway instance **and a trivial Neon query**, H8) + provider health probe roll-up. |
-| `*/15 * * * *` | `/api/internal/storage/measure` | Recompute live DB footprint + forecast (§13.2). |
-| `0 * * * *` (hourly) | `/api/internal/compact/hourly` | Roll request detail into hourly usage/cost aggregates (§13.4). |
-| `10 0 * * *` (daily) | `/api/internal/compact/daily` | Daily aggregation, retention deletion pass, partition maintenance. |
-| `30 0 1 * *` (monthly) | `/api/internal/compact/monthly` | Monthly rollups, cold-tier export candidates. |
+| `*/15 * * * *` | `/api/v1/internal/storage/measure` | Recompute live DB footprint + forecast (§13.2). |
+| `0 * * * *` (hourly) | `/api/v1/internal/storage/compact/hourly` | Roll request detail into hourly usage/cost aggregates (§13.4). |
+| `10 0 * * *` (daily) | `/api/v1/internal/storage/compact/daily` | Daily aggregation, retention deletion pass, partition maintenance. |
+| `30 0 1 * *` (monthly) | `/api/v1/internal/storage/compact/monthly` | Monthly rollups, cold-tier export candidates. |
 | `0 3 * * 0` (weekly) | `/api/internal/registry/refresh` | Open the registry-sync PR from pinned inputs (§11.6) — never auto-merges. |
 
 Cron routes are not public: they require the internal job secret header and run the same service functions the CLI and Compose worker call, so behavior is identical across substrates.
+
+**Current implementation note (2026-07-28, non-normative):** the gateway project currently
+declares only the one-minute `/api/internal/jobs/drain` schedule in `apps/gateway/vercel.json`.
+The control-plane project declares audit delivery, key-grace expiry, target health, config
+publication recovery, mutation cleanup, storage drain/measurement, and hourly/daily/monthly storage
+compaction schedules in `apps/control-plane/vercel.json`. These declarations prove repository
+wiring; production activation remains unverified. The warm/registry schedules and Compose worker
+parity in the table remain target work.
 
 ### 2.8 Networking and egress safety
 
@@ -418,7 +447,7 @@ The host→profile binding lives in `MANIFOLD_PROFILE_BINDINGS` here and in the 
 
 npm workspaces, one root lockfile. Copy Pulse's design system and config engine; write the gateway core fresh in `packages/gateway-core` (ADR-0015) — no legacy gateway is imported. The boundary rule (ADR-0004) is enforced, not aspirational: platform-specific code lives only in `apps/*` and `packages/adapters-*`.
 
-### 4.1 Layout
+### 4.1 Target layout
 
 ```
 manifold/
@@ -451,6 +480,16 @@ manifold/
     registry-sync/          Offline supply-chain job: fetch pinned models.dev/LiteLLM, validate, transform, open PR. §11.6.
     conformance/            OpenAI-compat fixtures + capability-matrix generator. §21.
 ```
+
+The tree above is the normative package boundary after the remaining extraction work, not a claim
+that every path exists today. As of the 2026-07-28 audit, `apps/control-plane`, `apps/gateway`,
+`apps/cli`, and the core `packages/*` are present. Vercel adapter logic currently lives in
+`apps/gateway/src`; much of the control-plane application layer lives in `apps/control-plane/lib`;
+migrations live in `packages/database/migrations`; and, of the two target tool directories shown
+above, `tools/conformance` is present while `tools/registry-sync` is absent. The `adapters-vercel`
+and `application` extractions, registry-sync automation,
+`deploy/*`, `apps/gateway-cf`, `adapters-cloudflare`, and the shared `ui` package remain target work.
+This temporary placement does not relax the dependency rules in §4.2.
 
 ### 4.2 Dependency directions (the import graph is a DAG)
 
@@ -1389,7 +1428,7 @@ Immutable tables are protected in three layers:
 
 1. **Application:** service functions never issue `UPDATE`/`DELETE` on immutable tables; they insert successors.
 2. **Content-hash uniqueness:** re-inserting identical content is a no-op via `ON CONFLICT (content_hash) DO NOTHING`, so publish is idempotent.
-3. **Database trigger:** a `BEFORE UPDATE OR DELETE` trigger on `gateway_route_revision`, `gateway_policy_revision`, `provider_price_revision`, `gateway_config_revision`, `observation`, `observation_event`, `policy_decision`, `audit_event`, `cost_ledger` raises `IMMUTABLE_ROW` — except the two allowed mutations: `observation.compacted` flips false→true, and `gateway_config_revision.status` transitions `active→superseded|rolled_back`. The trigger allows those specific column deltas and rejects all others.
+3. **Database trigger:** a `BEFORE UPDATE OR DELETE` trigger on `gateway_route_revision`, `gateway_policy_revision`, `provider_price_revision`, `gateway_config_revision`, `observation`, `observation_event`, `policy_decision`, `usage_record`, `audit_event`, `cost_ledger` raises `IMMUTABLE_ROW` — except the two allowed mutations: `observation.compacted` flips false→true, and `gateway_config_revision.status` transitions `active→superseded|rolled_back`. The trigger allows those specific column deltas and rejects all others.
 
 ```sql
 CREATE OR REPLACE FUNCTION forbid_mutation() RETURNS trigger AS $$
@@ -1761,9 +1800,22 @@ Applied in order: request-id assign → auth (session cookie for console, `Autho
 
 Data-plane auth is the presented virtual key verified against the snapshot (§8.1). Errors are OpenAI-shaped (§0.3) with the Manifold `code` in `error.code`. `X-Trace-Id` returns before the body. Unsupported endpoint/feature combos return 400 before any provider call (ADR-0010). Request size, stream duration, and output token ceilings are enforced from the route/policy (`RequestConstraint`).
 
+**Current implementation note (2026-07-28, non-normative):** all four paths above are wired through
+the Vercel Web handler and literal rewrites. Repository adapter metadata marks OpenAI and Azure
+OpenAI as supported for chat, Responses, and embeddings, and the Anthropic bridge as supported for
+chat only; Gemini chat has explicit routing coverage. These labels establish repository support,
+not a successful production call. Other providers discovered through models.dev remain catalog
+entries until an adapter revision and conformance evidence explicitly support the endpoint.
+
 ### 10.3 Control-plane endpoint reference
 
 Each row: method + path, scope, idempotent?, transaction, primary reason/error codes, audit. `{ws}` is implied by the authenticated principal, never a path param (§15.4).
+
+This is the compact normative reference, not an exhaustive filesystem inventory. The repository
+also implements supporting endpoints for human authentication, settings administration,
+deployments, observation mutation/summary, storage retention/scheduling, and internal recovery
+jobs. Their presence does not waive the common middleware or per-endpoint acceptance requirements
+in §10.1 and §10.8.
 
 | Method + path | Scope | Idem | Txn | Notable errors | Audit |
 |---|---|---|---|---|---|
@@ -2027,6 +2079,14 @@ The gateway never fetches a third-party catalog on the request path (ADR-0009); 
 ## §12 — Go CLI (`manifold`)
 
 One binary manages the whole system and is equally usable by a human at a terminal and an AI agent scripting against a stable contract. It talks only to `/api/v1` over HTTP (no shared code with the server, §4.2), so it works against any edition. Built from Pulse's `pulsectl` (device auth, scoped tokens, keyring) (ADR-0013, ADR-0015). Command: `manifold`; deprecated alias `mfctl` forwards with a notice.
+
+**Current implementation note (2026-07-28, non-normative):** the command tree is present.
+Device-authorization login, logout/revocation, status, whoami, and installation health/ping use the
+real control-plane API; credentials are stored in the OS keyring. Most other leaf commands are
+structured stubs that parse and echo their inputs. Consequently, the remainder of this section is
+the required CLI contract, not a statement of current parity. In particular, the current root flags
+use `--json`, `--base-url`, `--no-input`, and `--token`; the full `--output`, retry,
+idempotency-key, pagination, streaming, and stable exit-code surface below remains partial.
 
 ### 12.1 Design principles
 
@@ -2573,7 +2633,11 @@ Because displayed usage/cost can trail live traffic, `GET /observations` returns
 
 ### 19.1 Environments
 
-Preview / staging / production per §2.5. Preview gets a Neon branch per PR (isolated, seeded, torn down on close); staging mirrors production topology on separate stores; production is the customer's. The Compose edition (`deploy/compose`) is a fourth target for self-hosters: Node gateway + Postgres + Graphile Worker + Caddy, no Edge Config (boot-fallback snapshot, §7.4).
+Preview / staging / production per §2.5 are the target environment contract. Automated per-PR Neon
+branch lifecycle and a separately proven staging mirror are unverified in the current repository.
+The Compose edition (`deploy/compose`) remains a fourth target for self-hosters—Node gateway +
+Postgres + Graphile Worker + Caddy, with no Edge Config and a boot-fallback snapshot (§7.4)—and is
+not yet present.
 
 ### 19.2 Regional placement
 
@@ -2585,13 +2649,21 @@ Gateway and control plane pin to the Neon primary region (§2.4). Public-app tra
 |---|---|---|---|
 | `DATABASE_URL` | both | yes | pooled Neon (PgBouncer) for functions |
 | `DATABASE_URL_DIRECT` | control plane, migrations, compactor | yes | unpooled Neon for advisory locks / migrations |
-| `EDGE_CONFIG` | both | yes (read) | Edge Config connection string (read) |
-| `EDGE_CONFIG_WRITE_TOKEN` | control plane only | yes | Vercel API token to publish snapshots |
-| `MANIFOLD_DATA_KEK` | gateway only | yes | KEK for envelope decryption of provider secrets |
-| `MANIFOLD_KEY_PEPPER` | gateway only | yes | HMAC pepper for keyed hashes (versioned) |
+| `MANIFOLD_EDGE_CONFIG_ID` | control plane only | no | optional Edge Config store id used when mirroring a published snapshot |
+| `MANIFOLD_EDGE_CONFIG_WRITE_TOKEN` | control plane only | yes | optional Vercel API token used with the store id |
+| `MANIFOLD_EDGE_CONFIG_TEAM_ID` | control plane only | no | optional Vercel team id for the Edge Config write API |
+| `MANIFOLD_SNAPSHOT_ACCELERATOR_URL` | gateway only | no | optional accelerator URL; boot-fallback to the authenticated control-plane snapshot remains authoritative |
+| `MANIFOLD_SNAPSHOT_ACCELERATOR_TOKEN` | gateway only | yes | optional accelerator bearer token; never sent to the control-plane origin |
+| `MANIFOLD_DATA_KEK` | both | yes | control plane encrypts and validates provider secrets; gateway decrypts signed-snapshot credentials |
+| `MANIFOLD_DATA_KEKS` | gateway only | yes | preferred bounded `kekId` → KEK rotation keyring |
+| `MANIFOLD_DATA_KEK_ID` | control plane only | no | stable KEK identifier stamped on newly encrypted provider credentials |
+| `MANIFOLD_KEY_PEPPER` | both | yes | control plane hashes newly minted virtual keys; gateway verifies presented keys |
+| `MANIFOLD_KEY_PEPPERS` | gateway only | yes | preferred bounded new/old key-hash pepper overlap |
+| `MANIFOLD_MUTATION_REPLAY_KEY` | control plane only | yes | base64 32-byte key for encrypted replay of copy-once mutation responses |
 | `MANIFOLD_SNAPSHOT_SIGNING_KEY` | control plane only | yes | ed25519 private key to sign snapshots |
 | `MANIFOLD_SNAPSHOT_PUBLIC_KEY` | gateway only | no | pinned key to verify snapshots |
-| `INTERNAL_JOB_SECRET` | control plane only | yes | authenticates Cron/internal job routes |
+| `MANIFOLD_SNAPSHOT_PUBLIC_KEYS` | gateway only | no | preferred bounded `signingKeyId` → public-key rotation keyring |
+| `CRON_SECRET` | both | yes | exact Bearer credential for Cron/internal job routes |
 | `MANIFOLD_PROFILE_BINDINGS` | gateway | no | host→profile map (also in snapshot) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | both | no | telemetry sink |
 | `RESEND_API_KEY` | control plane | yes | transactional email (invites, alerts) |
@@ -2599,11 +2671,27 @@ Gateway and control plane pin to the Neon primary region (§2.4). Public-app tra
 | `MANIFOLD_AUTH_ORIGIN` | control plane | yes | canonical origin for human-auth action links; HTTPS in production |
 | `MANIFOLD_AUTH_TOKEN_PEPPER` | control plane | yes | distinct HMAC pepper for opaque human action and session credentials |
 
-Isolation invariant (§2.5): production `MANIFOLD_DATA_KEK`, `MANIFOLD_KEY_PEPPER`, and signing key are absent from preview/staging (CI asserts, §21.9). The gateway holds decryption material; the control plane holds signing + write material; neither holds the other's. This split means a compromise of the control plane cannot decrypt provider secrets, and a compromise of the gateway cannot publish a snapshot.
+The ownership column records the implemented runtime contract. Provider create, rotate, validate,
+and audit-destination code in `apps/control-plane` reads `MANIFOLD_DATA_KEK` to encrypt or inspect
+ciphertext, while the gateway reads the same active KEK material to decrypt signed-snapshot
+credentials. A future non-decrypting KMS/envelope seam may narrow control-plane access, but that is
+not the current trust boundary.
+
+Isolation invariant (§2.5): production values for `MANIFOLD_DATA_KEK`,
+`MANIFOLD_KEY_PEPPER`, and the signing key are absent from preview/staging; each environment that
+exercises those paths receives distinct environment-scoped material (CI asserts, §21.9). The
+gateway holds decryption and verification material. The control plane holds encryption, signing,
+and publication material. A gateway cannot publish a valid snapshot; the current control plane can
+encrypt and validate provider secrets and must be protected accordingly.
 
 ### 19.4 Secrets management
 
-Platform-native (Vercel env vars / Wrangler secrets / Compose `.env` + host secret store). No secret in the repo or in preview. Rotation runbooks for the pepper (versioned; dual-read during rotation), the KEK (re-wrap DEKs), and the signing key (publish new public key to installations, then rotate) are in `deploy/*/RUNBOOK.md`.
+Platform-native (Vercel env vars / Wrangler secrets / Compose `.env` + host secret store). No
+secret may be committed to the repository or shared across environment boundaries. The current
+Vercel runbook is `Docs/DEPLOY.md`; `Docs/HUMAN_AUTH.md` covers human-access delivery and recovery.
+Edition-specific `deploy/*/RUNBOOK.md` files remain target deliverables. Rotation procedures must
+cover the pepper (versioned; dual-read during rotation), the KEK (re-wrap DEKs), and the signing key
+(publish the new public key to installations, then rotate).
 
 ### 19.5 Promotion and rollback
 
@@ -2613,7 +2701,22 @@ Code promotes staging→prod by Vercel promotion; rollback is instant to a prior
 
 `manifold installation register` (or the Deployments wizard) creates the installation, generates its keypair, binds the first profile + hostname, and prints the deploy command. First config apply publishes the initial snapshot; readiness turns green when the gateway reports `applied_config_revision == active` (§11 Deployments).
 
+The Deployments wizard and control-plane installation/profile APIs are implemented. The CLI
+`installation register` command remains a stub. Production liveness does not establish this
+bootstrap contract: on 2026-07-28 the gateway `/health` was 200 while `/ready` was 503, so the
+active-snapshot/runtime readiness dependency was unavailable and its public error intentionally did
+not identify which dependency failed. The repository readiness handler now checks current
+Postgres admission on every request and measures snapshot freshness from the last successful
+verified remote fetch rather than immutable `snapshot.meta.builtAt`. This removes the known
+freshness divergence; deployed readiness and the live acceptance gate still require separate
+verification.
+
 ### 19.7 First-party human access rollout
+
+The code path and additive `0032_human_auth.sql` migration are implemented in the repository. Live
+email delivery, production application of `0032`, first-owner activation, invitation delivery,
+password reset, and device-approval acceptance remain unverified until the checklist in
+`Docs/HUMAN_AUTH.md` is completed against the deployed environment.
 
 Human operators use first-party email/password access. On a newly seeded workspace, the sole
 enabled owner is the only person eligible for initial activation: they request an activation link,
@@ -2735,7 +2838,9 @@ Kill the ingest sink mid-stream (assert provider traffic unaffected, events land
 ---
 ## §22 — Phased implementation plan
 
-Five phases, each ending in a deployable milestone. Exit criteria are executable, not aspirational.
+Five phases, each ending in a deployable milestone. Exit criteria are executable requirements.
+This section records intended sequencing and has not been retrofitted into a completion tracker;
+the current evidence-calibrated state is summarized near the top of this document.
 
 **Phase 0 — Provenance and foundations (1–2 wks).** Analyze Pulse for what to reuse; design the gateway core fresh (no legacy gateway import). Write `LICENSE` (Apache-2.0, ADR-0003) and `NOTICE` (§26). Analyze LiteLLM and braintrust-proxy for OpenAI-compatible shapes. Stand up the monorepo skeleton (§4.1), boundary lint (§4.5), CI. **Exit:** repo builds empty packages; boundary lint runs; `NOTICE` merged; license scan green.
 

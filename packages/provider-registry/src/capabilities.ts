@@ -18,12 +18,13 @@ export function capabilityTriState(value: unknown): TriState {
 }
 
 /** Build the full capability tri-state map for one models.dev model. */
-export function buildCapabilityMap(model: ModelsDevModel): CapabilityMap {
+export function buildCapabilityMap(model: ModelsDevModel, providerIdempotency: TriState = "unknown"): CapabilityMap {
   return {
     attachment: capabilityTriState(model.attachment),
     reasoning: capabilityTriState(model.reasoning),
     toolCall: capabilityTriState(model.tool_call),
     structuredOutput: capabilityTriState(model.structured_output),
     temperature: capabilityTriState(model.temperature),
+    providerIdempotency,
   };
 }

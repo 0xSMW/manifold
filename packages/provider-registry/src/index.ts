@@ -9,6 +9,8 @@ export {
   type ProviderModelOffering,
   type ProviderPriceRevision,
   type Catalog,
+  type AdapterCapability,
+  type AdapterCapabilityMatrix,
   type ModelsDevModel,
   type ModelsDevProvider,
   type ModelsDevPayload,
@@ -21,4 +23,4 @@ export {
 export { priceToMicroUnits } from "./price.js";
 export { capabilityTriState, buildCapabilityMap } from "./capabilities.js";
 export { fidelityFor, priceRevisionFidelity, FIRST_PARTY_PROVIDERS } from "./fidelity.js";
-export { importFromModelsDev, type ImportOptions } from "./import.js";
+export { importFromModelsDev, DEFAULT_ADAPTER_CAPABILITY_MATRIX, type ImportOptions } from "./import.js";

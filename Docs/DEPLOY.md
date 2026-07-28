@@ -10,10 +10,28 @@ Deploy the gateway as a Vercel Node.js 22.x Fluid Compute function in the select
 gateway duration appropriate to the platform and workload. Configure Preview and Production
 independently for signed installation snapshots and an OpenAI-compatible provider.
 
+- The control-plane `GET /api/v1/health` checks its runtime and `DATABASE_URL`; `200` with
+  `checks.db = "ok"` is control-plane health proof only.
 - `/health` and `/api/health` are liveness-only and return `Cache-Control: no-store`.
 - `/ready` and `/api/ready` are the operational readiness gate; require 200 before a promotion.
 - Public provider traffic is limited to the explicitly supported OpenAI-compatible paths listed
   below.
+
+### Current internal-dogfood checkpoint
+
+Live checks on 2026-07-28 established:
+
+- control-plane production `GET /api/v1/health` returned 200 with database status `ok`;
+- gateway production `GET /health` returned 200;
+- gateway production `GET /ready` returned 503 with `{"ok":false,"error":"unavailable"}`;
+- Vercel environment-name listings showed the expected human-auth names on the control plane and
+  core gateway names on the gateway. Values were not inspected.
+
+This is a dated diagnostic checkpoint, not a launch record. Environment-name presence does not
+prove a nonempty or correctly scoped value, matching cross-project key material, database role/RLS,
+snapshot fetch or signature verification, Cron authorization, email delivery, provider traffic,
+durable accounting, or acceptance/SLO gates. The gateway is unavailable for dogfood traffic while
+`/ready` is non-200. Re-run and record the checks for the exact deployment before promotion.
 
 Choose a supported Fluid memory class and verify its limits against the current
 [Vercel function memory](https://vercel.com/docs/functions/configuring-functions/memory)
@@ -103,9 +121,19 @@ Use two Neon URLs:
 - direct owner URL for migrations and break-glass repair;
 - pooled `manifold_app` URL for both Vercel runtimes.
 
-Apply every numbered migration in lexical order. Never hard-code an ending migration number:
+In the commands below, `MANIFOLD_MIGRATE_URL` is an operator-local shell variable for the direct
+owner URL. Do not configure it as an application runtime variable.
+
+Apply numbered migrations in lexical order. On a fresh database, apply the complete chain. On an
+existing database, reconcile the operator migration receipt against the checked-in list and apply
+only the verified unapplied suffix; these SQL files are not a replay-every-release mechanism.
+Never hard-code an ending migration number:
 
 ```bash
+corepack pnpm run check:migrations
+printf '%s\n' packages/database/migrations/[0-9][0-9][0-9][0-9]_*.sql
+
+# Fresh database only, or begin this loop at the first verified unapplied file.
 for migration in packages/database/migrations/[0-9][0-9][0-9][0-9]_*.sql; do
   psql "$MANIFOLD_MIGRATE_URL" -v ON_ERROR_STOP=1 -q -f "$migration" || exit 1
 done
@@ -171,6 +199,41 @@ invent credentials: preserve the committed owner/invitation state, restore a ver
 configuration, then resend or request a fresh action link. Rotate/revoke affected tokens or
 sessions through the product controls if a credential is suspected exposed.
 
+## First-workspace bootstrap
+
+The internal seed route creates the first workspace, owner, API token, installation identity,
+trusted hostname/profile, default app, and seed catalog entry. It requires both
+`MANIFOLD_SEED_SECRET` and the privileged direct `MANIFOLD_SEED_DB_URL`; the application-role
+connection cannot safely determine whether a workspace already exists before selecting an RLS
+workspace.
+
+Send an explicit deployable gateway hostname:
+
+```bash
+umask 077
+seed_receipt="$(mktemp)"
+curl --fail-with-body --silent --show-error \
+  --request POST \
+  --header "x-seed-secret: $MANIFOLD_SEED_SECRET" \
+  --header "content-type: application/json" \
+  --data '{"slug":"internal","name":"Internal","email":"owner@example.com","region":"us-east-1","hostname":"gateway.example.com"}' \
+  --output "$seed_receipt" \
+  "https://<control-plane-origin>/api/v1/admin/seed"
+```
+
+Treat `seed_receipt` as copy-once secret material. Move its `apiToken` into the operator secret
+store and its `MANIFOLD_INSTALLATION_PRIVATE_KEY` into the gateway project's secret environment,
+then record only the non-secret workspace, installation, profile, and public-key identifiers.
+The stored installation key is SPKI public material; the private PKCS#8 value exists only in the
+successful response. A repeated request for the same explicit slug returns `already_seeded` with
+stable identifiers and null copy-once secrets. If the first response is lost, create replacement
+credentials through normal product controls; never regenerate or overwrite the recorded
+installation identity by guessing.
+
+When an explicit hostname is operationally unavailable, `MANIFOLD_SEED_GATEWAY_DOMAIN` can derive
+`<slug>.<domain>`. `.local` hostnames are rejected. Remove the seed secret, privileged seed URL,
+and optional seed domain from steady-state Vercel environments after bootstrap.
+
 ## Gateway environment
 
 Set the following separately for Preview and Production. Secret values must come from the
@@ -223,6 +286,64 @@ vercel env ls production
 
 Configure Preview and Production independently; never copy Production secret values into Preview
 or into release artifacts.
+
+## Control-plane environment
+
+Set control-plane variables independently in Preview and Production. Use `.env.example` as the
+name/source-of-truth inventory; do not treat this table as authority to reuse values between
+environments.
+
+| Variable | Requirement |
+|---|---|
+| `DATABASE_URL` | required pooled `manifold_app` runtime URL |
+| `DATABASE_URL_DIRECT` | required when the checked-in storage compaction Crons are enabled; direct unpooled URL |
+| `CRON_SECRET` | required exact Bearer secret for every checked-in Vercel Cron route |
+| `MANIFOLD_DATA_KEK` | required production credential-encryption KEK; must match the gateway's active KEK material |
+| `MANIFOLD_DATA_KEK_ID` | required stable identifier stamped on newly sealed credentials |
+| `MANIFOLD_KEY_PEPPER` | required production virtual-key pepper; must overlap/match the gateway configuration |
+| `MANIFOLD_SNAPSHOT_SIGNING_KEY` | required base64 Ed25519 private seed used to sign snapshots |
+| `MANIFOLD_SNAPSHOT_SIGNING_KEY_ID` | required when the gateway uses the preferred keyed public-key ring |
+| `MANIFOLD_MUTATION_REPLAY_KEY` | required base64 32-byte key for copy-once sensitive response replay |
+| `MANIFOLD_INVITATION_DELIVERY_KEY` | required base64 32-byte key for encrypted, crash-safe invitation delivery recovery |
+| `MANIFOLD_STORAGE_COMPACTION_SECRET` | required only when using the separately authenticated storage compaction worker route |
+| `MANIFOLD_OBJECT_STORAGE_ENDPOINT`, `MANIFOLD_OBJECT_STORAGE_REGION`, `MANIFOLD_OBJECT_STORAGE_ACCESS_KEY_ID`, `MANIFOLD_OBJECT_STORAGE_SECRET_ACCESS_KEY` | required before production object-storage retention deletion can become eligible |
+| `MANIFOLD_OBJECT_STORAGE_SESSION_TOKEN` | optional temporary-credential session token |
+| `MANIFOLD_EDGE_CONFIG_*` | optional snapshot accelerator write configuration |
+| `MANIFOLD_GATEWAY_DIAGNOSTICS_URL`, `MANIFOLD_GATEWAY_DIAGNOSTICS_TOKEN` | optional; both required for gateway diagnostics |
+| `MANIFOLD_SEED_DB_URL`, `MANIFOLD_SEED_SECRET` | required by the bootstrap seed route; remove from steady-state deployments after seeding |
+| `MANIFOLD_SEED_GATEWAY_DOMAIN` | optional bootstrap-only fallback when the seed request omits its explicit deployable hostname |
+| `MANIFOLD_AUDIT_DELIVERY_SECRET` | optional direct worker credential; Vercel Cron uses `CRON_SECRET` |
+
+The object-storage credentials must be scoped to immutable `PutObject`/`HeadObject` operations for
+the configured archive prefix, without delete permission. Production retention deletion stays
+blocked until export configuration and verification succeed.
+
+List names without printing values, then prove behavior separately:
+
+```bash
+cd apps/control-plane
+vercel env ls preview
+vercel env ls production
+```
+
+The checked-in control-plane Crons are:
+
+| Route | Schedule |
+|---|---|
+| `/api/v1/internal/audit-delivery/cron` | every minute |
+| `/api/v1/internal/keys/grace-expiry` | every minute |
+| `/api/v1/internal/target-health/cron` | every minute |
+| `/api/v1/internal/config-publication-recovery` | every minute |
+| `/api/v1/internal/mutation-cleanup` | every 5 minutes |
+| `/api/v1/internal/storage/drain` | every minute |
+| `/api/v1/internal/storage/measure` | every 15 minutes |
+| `/api/v1/internal/storage/compact/hourly` | hourly |
+| `/api/v1/internal/storage/compact/daily` | daily at 00:10 UTC |
+| `/api/v1/internal/storage/compact/monthly` | monthly on day 1 at 00:30 UTC |
+
+Vercel Cron supplies `Authorization: Bearer $CRON_SECRET`; a route appearing in `vercel.json` does
+not prove delivery or authorization. For each route, retain one production execution with a 2xx
+response and expected bounded summary, plus queue age/retry/dead evidence where applicable.
 
 ## Control-plane human-auth environment
 
@@ -286,15 +407,53 @@ Before production traffic, prove against Preview:
 Run from the repository root:
 
 ```bash
+corepack pnpm install --frozen-lockfile --ignore-scripts
+corepack pnpm run check:migrations
+corepack pnpm run check:environment-isolation
 npm run build -w packages/ports
 npm run build -w packages/gateway-core
 npm test -w packages/gateway-core
 npm run typecheck -w apps/gateway
 npm test -w apps/gateway
-corepack pnpm install --frozen-lockfile --ignore-scripts
 ```
 
-Preview:
+The control plane and gateway are separate Vercel projects. Confirm the project name and configured
+Root Directory before invoking the CLI. The control-plane Vercel project currently configures
+`apps/control-plane` as its Root Directory, so its CLI source directory must be the repository root;
+running from `apps/control-plane` would apply the remote root a second time. The gateway project
+has no remote Root Directory, so the gateway commands below use `apps/gateway`. Use a clean checkout
+or separate Vercel link for the control plane when the repository-root `.vercel` link belongs to
+the gateway. Do not relink or deploy from an ambiguous project binding.
+
+Control-plane repository gates include:
+
+```bash
+corepack pnpm run typecheck
+corepack pnpm run test:control-plane
+corepack pnpm run test:security
+corepack pnpm run test:pg
+corepack pnpm run test:playwright
+```
+
+The real-Postgres gate requires its local container/runtime prerequisites. A passing local gate is
+repository evidence; it does not prove the production migration, database role, Vercel
+configuration, Cron delivery, email delivery, or live gateway behavior.
+
+Control-plane Preview, from a clean repository root linked to the control-plane project:
+
+```bash
+vercel project inspect <control-plane-project> --scope <team>
+vercel pull --yes --environment=preview --scope <team>
+vercel build --standalone
+vercel deploy --prebuilt --target=preview --scope <team>
+```
+
+Before building, confirm the inspect/pull output still reports Root Directory
+`apps/control-plane` and the intended Node.js runtime. Repeat with
+`--environment=production`, `vercel build --prod --standalone`, and
+`vercel deploy --prebuilt --prod` only after Preview acceptance passes.
+
+Gateway Preview:
 
 ```bash
 vercel pull --yes --environment=preview --cwd apps/gateway --scope <team>
@@ -320,12 +479,45 @@ vercel deploy --prebuilt --prod --cwd apps/gateway --scope <team>
 
 Never promote unless Preview readiness is 200 and every applicable gate below passes.
 
+For the control-plane project, use the same pull → build → prebuilt deploy progression against its
+own Vercel project and environment. After deployment, require `GET /api/v1/health` to return 200
+with `checks.db = "ok"`, then run the human-auth acceptance in `Docs/HUMAN_AUTH.md` and verify
+the Cron routes above. A Ready Vercel deployment or a 200 health response alone is insufficient.
+
 ## Smoke and billing checks
+
+The tracked `.github/workflows/live-acceptance.yml` workflow runs hourly alias health separately
+from its callable production-promotion gate. The deployment workflow must pass its immutable
+control-plane and gateway candidate URLs and their Vercel deployment IDs to the callable workflow,
+then make alias assignment depend on
+`production-alias-promotion-gate`. The diagnostic probes require each responding service to emit
+the Vercel-derived `x-manifold-deployment-id` and `x-manifold-source-revision` headers; absent or
+mismatched headers fail the gate. Gateway `/ready` is recorded with its verified snapshot revision.
+Do not use a mutable production alias or operator-supplied labels as provenance.
+
+Configure the `live-acceptance` GitHub environment with:
+
+- variables `MANIFOLD_LIVE_CONTROL_PLANE_URL`, `MANIFOLD_LIVE_GATEWAY_URL`,
+  `MANIFOLD_LIVE_DIAGNOSTICS_MODEL`, and optional `MANIFOLD_LIVE_DIAGNOSTICS_ENDPOINT`;
+- dedicated secrets `MANIFOLD_LIVE_DIAGNOSTICS_TOKEN` and
+  `MANIFOLD_LIVE_CONTROL_PLANE_TOKEN`.
+
+The tracked manual `Production promotion` workflow additionally requires GitHub secrets
+`MANIFOLD_VERCEL_TOKEN`, `MANIFOLD_VERCEL_ORG_ID`,
+`MANIFOLD_VERCEL_CONTROL_PLANE_PROJECT_ID`, and `MANIFOLD_VERCEL_GATEWAY_PROJECT_ID`. It deploys
+both projects with `--skip-domain`, derives the candidate URLs and deployment IDs from Vercel,
+waits for the callable diagnostic gate, and only then assigns the explicit aliases supplied at
+dispatch. Do not promote aliases outside that dependency chain.
+
+Candidate diagnostics send one bounded request, require a valid gateway trace ID, then poll the
+control-plane observation endpoint until the matching observation and cost projection are durable.
+Use narrowly scoped, revocable tokens and never reuse a customer credential.
 
 Required Preview checks:
 
 1. `/health` returns 200 and `no-store`.
-2. `/ready` returns 200 with only safe snapshot revision/built-at/age metadata.
+2. `/ready` returns 200 with only safe snapshot revision/verified-at/age metadata and a live
+   Postgres admission check.
 3. invalid virtual key returns OpenAI-shaped 401 without provider egress.
 4. `/v1/models` returns only active public names for the resolved profile.
 5. one non-streaming provider call writes one terminal trace, one usage row, one cost row, and
@@ -606,7 +798,8 @@ keys into logs, tickets, or chat.
 
 Production customer traffic remains blocked until all are true:
 
-- required Preview and Production environment variables are present;
+- required Preview and Production environment-variable names are present and their values/scopes
+  have been functionally verified without exposing them;
 - signed snapshot readiness is 200;
 - live non-streaming and SSE provider billing checks pass;
 - revoke and credential-rotation SLA passes across warmed instances;

@@ -13,6 +13,8 @@ import { priceRevisionFidelity } from "./fidelity.js";
 import { priceToMicroUnits } from "./price.js";
 import type {
   Catalog,
+  AdapterCapability,
+  AdapterCapabilityMatrix,
   CanonicalModel,
   ModelsDevCost,
   ModelsDevModel,
@@ -20,6 +22,25 @@ import type {
   ProviderModelOffering,
   ProviderPriceRevision,
 } from "./types.js";
+
+/**
+ * This is the catalog's adapter source of truth. Only the OpenAI adapter in
+ * this repository implements the idempotency-key replay contract, so every
+ * other imported provider is fail-closed until it gains an explicit adapter.
+ */
+export const DEFAULT_ADAPTER_CAPABILITY_MATRIX: AdapterCapabilityMatrix = Object.freeze({
+  openai: Object.freeze({
+    adapterRevision: "openai-v1",
+    endpointKinds: Object.freeze(["chat", "responses", "embeddings"]),
+    providerIdempotency: "supported",
+  }),
+});
+
+const UNAVAILABLE_ADAPTER: AdapterCapability = Object.freeze({
+  adapterRevision: "unavailable",
+  endpointKinds: Object.freeze([]),
+  providerIdempotency: "unknown",
+});
 
 export interface ImportOptions {
   /**
@@ -33,6 +54,8 @@ export interface ImportOptions {
   canonicalOverrides?: Record<string, string>;
   /** `catalog_revision` to stamp on the resulting `Catalog` (SPEC §6.4). */
   catalogRevision?: string;
+  /** Explicit adapter matrix; replaces the default wholesale for controlled imports. */
+  adapterCapabilities?: AdapterCapabilityMatrix;
 }
 
 function canonicalSlugFor(
@@ -83,6 +106,7 @@ export function importFromModelsDev(
 ): Catalog {
   const overrides = options.canonicalOverrides ?? {};
   const catalogRevision = options.catalogRevision ?? "unpinned";
+  const adapterCapabilities = options.adapterCapabilities ?? DEFAULT_ADAPTER_CAPABILITY_MATRIX;
 
   const canonicalById = new Map<string, CanonicalModel>();
   const offerings: ProviderModelOffering[] = [];
@@ -91,6 +115,7 @@ export function importFromModelsDev(
   for (const providerId of Object.keys(payload)) {
     const provider = payload[providerId];
     if (!provider) continue;
+    const adapter = adapterCapabilities[providerId] ?? UNAVAILABLE_ADAPTER;
 
     for (const model of Object.values(provider.models)) {
       const slug = canonicalSlugFor(providerId, model, overrides);
@@ -117,13 +142,11 @@ export function importFromModelsDev(
         canonicalModelId: canonicalId,
         provider: providerId,
         providerModelId: model.id,
-        // models.dev does not report endpoint kinds directly; left empty
-        // for the adapter layer to populate from its own capability matrix
-        // (SPEC §21.6), not guessed here.
-        endpointKinds: [],
+        adapterRevision: adapter.adapterRevision,
+        endpointKinds: [...adapter.endpointKinds],
         contextLimitTokens: model.limit?.context ?? null,
         outputLimitTokens: model.limit?.output ?? null,
-        capabilities: buildCapabilityMap(model),
+        capabilities: buildCapabilityMap(model, adapter.providerIdempotency),
         region: null,
       });
 

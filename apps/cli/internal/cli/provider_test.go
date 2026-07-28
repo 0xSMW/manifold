@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -216,5 +218,103 @@ func TestProviderCreate_ValidationError_MapsToExitUsage(t *testing.T) {
 	}
 	if cliErr.Code != ExitUsage {
 		t.Fatalf("expected ExitUsage (2), got %d", cliErr.Code)
+	}
+}
+
+func TestProviderRotateSecret_RealHTTP_PostsSecretAndMapsErrors(t *testing.T) {
+	var method, path, auth, idempotencyKey string
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		method, path, auth, idempotencyKey = req.Method, req.URL.Path, req.Header.Get("Authorization"), req.Header.Get("Idempotency-Key")
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"id":"pc_1","status":"unvalidated","rotated":true,"plaintextStored":false}`))
+	}))
+	defer srv.Close()
+	out, err := runCLI(t, "provider", "rotate", "pc_1", "--secret", "sk-new", "--base-url", srv.URL, "--token", "tok", "--json")
+	if err != nil {
+		t.Fatalf("rotate returned error: %v", err)
+	}
+	if method != http.MethodPost || path != "/api/v1/providers/pc_1/rotate" || auth != "Bearer tok" || idempotencyKey == "" || body["secret"] != "sk-new" {
+		t.Fatalf("request = %s %s %q %#v", method, path, auth, body)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("expected JSON output, got %q", out)
+	}
+
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"missing"}}`))
+	}))
+	defer errSrv.Close()
+	_, err = runCLI(t, "provider", "rotate", "missing", "--secret", "sk-new", "--base-url", errSrv.URL)
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitNotFound {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+}
+
+func TestProviderRotateSecret_ValidatesSecretInput(t *testing.T) {
+	_, err := runCLI(t, "provider", "rotate", "pc_1", "--base-url", "http://127.0.0.1:1")
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitUsage {
+		t.Fatalf("expected usage error, got %v", err)
+	}
+}
+
+func TestProviderRotateSecret_ReadsSecretFromBooleanStdinFlag(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_ = json.NewDecoder(req.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"id":"pc_1","status":"unvalidated","rotated":true,"plaintextStored":false}`))
+	}))
+	defer srv.Close()
+
+	secret := "stdin-only-provider-secret"
+	buf := new(bytes.Buffer)
+	r := newRootCmd()
+	r.SetIn(bytes.NewBufferString(secret + "\n"))
+	r.SetOut(buf)
+	r.SetErr(buf)
+	r.SetArgs([]string{"provider", "rotate", "pc_1", "--secret-stdin", "--base-url", srv.URL, "--json"})
+	if err := r.Execute(); err != nil {
+		t.Fatalf("stdin rotate returned error: %v", err)
+	}
+	if body["secret"] != secret {
+		t.Fatalf("stdin secret body = %#v", body)
+	}
+	if strings.Contains(buf.String(), secret) {
+		t.Fatalf("secret leaked into command output: %q", buf.String())
+	}
+
+	_, err := runCLI(t, "provider", "rotate", "pc_1", "--secret", "argv-secret", "--secret-stdin", "--base-url", srv.URL)
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitUsage {
+		t.Fatalf("expected mutual-exclusion usage error, got %v", err)
+	}
+}
+
+func TestProviderRevoke_RealHTTP_PostsEmptyAndMapsErrors(t *testing.T) {
+	var method, path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		method, path = req.Method, req.URL.Path
+		_, _ = w.Write([]byte(`{"id":"pc_1","revoked":true}`))
+	}))
+	defer srv.Close()
+	out, err := runCLI(t, "provider", "revoke", "pc_1", "--yes", "--base-url", srv.URL, "--json")
+	if err != nil {
+		t.Fatalf("revoke returned error: %v", err)
+	}
+	if method != http.MethodPost || path != "/api/v1/providers/pc_1/revoke" || !json.Valid([]byte(out)) {
+		t.Fatalf("request/output mismatch: %s %s %q", method, path, out)
+	}
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":"FORBIDDEN","message":"denied"}}`))
+	}))
+	defer errSrv.Close()
+	_, err = runCLI(t, "provider", "revoke", "pc_1", "--yes", "--base-url", errSrv.URL)
+	var cliErr *CLIError
+	if !errors.As(err, &cliErr) || cliErr.Code != ExitAuth {
+		t.Fatalf("expected auth error, got %v", err)
 	}
 }

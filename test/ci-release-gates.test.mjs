@@ -34,11 +34,72 @@ test("CI installs Node 22 and keeps security/storage gates independent", async (
   assert.match(workflow, /Upload Playwright artifacts[\s\S]*?if: failure\(\)/);
 });
 
+test("CI protects master while scheduled alias health remains separate from the callable promotion gate", async () => {
+  const ci = await read(".github/workflows/ci.yml");
+  const live = await read(".github/workflows/live-acceptance.yml");
+  assert.match(ci, /push:\n\s+branches: \[master\]/);
+  assert.doesNotMatch(ci, /branches: \[main\]/);
+  assert.match(live, /workflow_dispatch:/);
+  assert.match(live, /schedule:/);
+  assert.match(live, /workflow_call:/);
+  assert.match(live, /control_plane_candidate_url/);
+  assert.match(live, /gateway_candidate_url/);
+  assert.match(live, /MANIFOLD_LIVE_SOURCE_REVISION: \$\{\{ github\.sha \}\}/);
+  assert.match(live, /MANIFOLD_LIVE_ACCEPTANCE_MODE/);
+  assert.match(live, /Run public health acceptance/);
+  assert.match(live, /Verify candidate readiness and provenance[\s\S]*?MANIFOLD_LIVE_DIAGNOSTICS_TOKEN: \$\{\{ secrets\.MANIFOLD_LIVE_DIAGNOSTICS_TOKEN \}\}/);
+  assert.match(live, /Verify candidate readiness and provenance[\s\S]*?MANIFOLD_LIVE_CONTROL_PLANE_TOKEN: \$\{\{ secrets\.MANIFOLD_LIVE_CONTROL_PLANE_TOKEN \}\}/);
+  const candidateJob = live.slice(live.indexOf("  immutable-candidate-health:"), live.indexOf("  production-alias-promotion-gate:"));
+  assert.doesNotMatch(candidateJob.slice(0, candidateJob.indexOf("      - name: Verify candidate readiness and provenance")), /MANIFOLD_LIVE_DIAGNOSTICS_TOKEN|MANIFOLD_LIVE_CONTROL_PLANE_TOKEN/);
+  const promotion = live.slice(live.indexOf("  production-alias-promotion-gate:"));
+  assert.match(promotion, /needs: immutable-candidate-health/);
+  assert.match(live, /scheduled-public-health:[\s\S]*?github\.event_name != 'workflow_call'/);
+  assert.match(live, /node scripts\/run-live-acceptance\.mjs/);
+  assert.match(ci, /node --test test\/ci-release-gates\.test\.mjs test\/live-acceptance\.test\.mjs/);
+});
+
 test("security/storage gate builds gateway-core before the local flat-memory release check", async () => {
   const workflow = await read(".github/workflows/ci.yml");
   const job = workflow.slice(workflow.indexOf("  security-storage-gates:"));
   assert.ok(job.includes("pnpm --filter @manifold/gateway-core run build"), "gateway-core build is required in the security/storage job");
   assert.ok(job.indexOf("pnpm --filter @manifold/gateway-core run build") < job.indexOf("pnpm run load:flat-memory"), "gateway-core build must precede the flat-memory gate");
+});
+
+test("production promotion is master-only, requires successful CI for its exact revision, and pins its deploy CLI", async () => {
+  const workflow = await read(".github/workflows/production-promotion.yml");
+  const live = await read(".github/workflows/live-acceptance.yml");
+  const packageManifest = JSON.parse(await read("package.json"));
+  const lockfile = await read("pnpm-lock.yaml");
+  assert.match(workflow, /workflow_dispatch:/);
+  assert.match(workflow, /verify-master-ci:/);
+  assert.match(workflow, /github\.ref == 'refs\/heads\/master'/);
+  assert.match(workflow, /needs: verify-master-ci/);
+  assert.match(workflow, /actions\/workflows\/ci\.yml\/runs\?head_sha=\$GITHUB_SHA&branch=master&event=push&status=completed/);
+  assert.match(workflow, /--arg sha "\$GITHUB_SHA"/);
+  assert.match(workflow, /\.head_sha == \$sha/);
+  assert.match(workflow, /\.head_branch == "master"/);
+  assert.match(workflow, /\.event == "push"/);
+  assert.match(workflow, /\.conclusion == "success"/);
+  assert.equal(packageManifest.devDependencies.vercel, "58.0.0");
+  assert.match(lockfile, /^\s{2}vercel@58\.0\.0:/m);
+  assert.doesNotMatch(workflow, /(?:npx|vercel)@latest/);
+  assert.match(workflow, /pnpm install --frozen-lockfile/);
+  assert.match(workflow, /pnpm exec vercel deploy/);
+  assert.match(workflow, /pnpm exec vercel alias set/);
+  assert.match(workflow, /deploy-immutable-candidates:/);
+  assert.match(workflow, /--prod --skip-domain/);
+  assert.match(workflow, /control_plane_candidate_url: \$\{\{ steps\.control-plane\.outputs\.candidate_url \}\}/);
+  assert.match(workflow, /gateway_candidate_url: \$\{\{ steps\.gateway\.outputs\.candidate_url \}\}/);
+  assert.match(workflow, /immutable-candidate-diagnostics:[\s\S]*?needs: deploy-immutable-candidates/);
+  assert.match(workflow, /uses: \.\/\.github\/workflows\/live-acceptance\.yml/);
+  assert.match(workflow, /control_plane_candidate_url: \$\{\{ needs\.deploy-immutable-candidates\.outputs\.control_plane_candidate_url \}\}/);
+  assert.match(workflow, /gateway_deployment_id: \$\{\{ needs\.deploy-immutable-candidates\.outputs\.gateway_deployment_id \}\}/);
+  const promotion = workflow.slice(workflow.indexOf("  promote-production-aliases:"));
+  assert.match(promotion, /needs: \[verify-master-ci, deploy-immutable-candidates, immutable-candidate-diagnostics\]/);
+  assert.ok(workflow.indexOf("pnpm exec vercel alias set") > workflow.indexOf("  immutable-candidate-diagnostics:"), "aliases must be declared after the diagnostics dependency");
+  assert.match(workflow, /VERCEL_TOKEN: \$\{\{ secrets\.MANIFOLD_VERCEL_TOKEN \}\}/);
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf("jobs:")), /MANIFOLD_VERCEL_TOKEN/);
+  assert.match(live, /MANIFOLD_LIVE_SOURCE_REVISION: \$\{\{ github\.sha \}\}/);
 });
 
 test("gate helpers enforce boundaries, migration freshness, and preview-secret isolation", async () => {

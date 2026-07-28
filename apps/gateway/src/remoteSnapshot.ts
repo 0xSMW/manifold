@@ -38,6 +38,12 @@ interface CachedSnapshot {
   fetchedAtMs: number;
 }
 
+/** A verified snapshot together with the time its current content was last verified remotely. */
+export interface VerifiedActiveSnapshot {
+  snapshot: Snapshot;
+  verifiedAtMs: number;
+}
+
 // Module state is intentionally per isolate. Include the authoritative origin in the key so
 // independent gateway configurations in one process cannot share an installation's snapshot.
 const cache = new Map<string, CachedSnapshot>();
@@ -167,7 +173,13 @@ export class RemoteSnapshotStore implements SnapshotStore {
     const key = `${this.controlPlaneBaseUrl}\u0000${installationId}\u0000${this.trustFingerprint}`;
     const now = this.clock.now().getTime();
     const existing = cache.get(key);
-    if (existing && now - existing.fetchedAtMs <= this.freshnessTtlMs) return existing.snapshot;
+    if (
+      existing &&
+      now - existing.fetchedAtMs <= this.freshnessTtlMs &&
+      now - existing.fetchedAtMs <= this.maxStaleMs
+    ) {
+      return existing.snapshot;
+    }
 
     const inFlight = refreshes.get(key);
     if (inFlight) return inFlight;
@@ -178,6 +190,22 @@ export class RemoteSnapshotStore implements SnapshotStore {
     } finally {
       if (refreshes.get(key) === refresh) refreshes.delete(key);
     }
+  }
+
+  /**
+   * Load an active snapshot and report the time of its last successful remote
+   * verification. Readiness must use this rather than immutable publication
+   * metadata: an unchanged, valid configuration can be verified repeatedly.
+   */
+  async checkReady(installationId: string): Promise<VerifiedActiveSnapshot> {
+    const snapshot = await this.loadActive(installationId);
+    const key = `${this.controlPlaneBaseUrl}\u0000${installationId}\u0000${this.trustFingerprint}`;
+    const verified = cache.get(key);
+    const now = this.clock.now().getTime();
+    if (!verified || verified.snapshot !== snapshot || now - verified.fetchedAtMs > this.maxStaleMs) {
+      throw new Error("no fresh verified remote snapshot is available");
+    }
+    return { snapshot, verifiedAtMs: verified.fetchedAtMs };
   }
 
   private async refresh(

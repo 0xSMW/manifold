@@ -26,6 +26,27 @@ test("route contracts reject nested drift and pin list cursor shape", () => {
   assert.equal(RoutesApi.testRequest.safeParse({ profileId: "prf_1", extra: true }).success, false);
 });
 
+test("route contracts allow only the target-scoped provider idempotency replay shape", () => {
+  const request = {
+    installationId: "ins_1",
+    publicName: "chat",
+    targets: [{ clientRef: "primary", providerCredentialId: "pc_1", offeringId: "off_1" }],
+    retryPolicy: {
+      maxAttempts: 2,
+      providerIdempotency: { targetRef: "primary", headerName: "idempotency-key" },
+    },
+  };
+  assert.deepEqual(RoutesApi.createRequest.parse(request), request);
+  assert.equal(RoutesApi.createRequest.safeParse({
+    ...request,
+    retryPolicy: { providerIdempotency: { targetRef: "primary", headerName: "Idempotency-Key" } },
+  }).success, false);
+  assert.equal(RoutesApi.createRequest.safeParse({
+    ...request,
+    retryPolicy: { providerIdempotency: { targetRef: "primary", headerName: "idempotency-key", scope: "provider" } },
+  }).success, false);
+});
+
 test("model contracts cover list/detail price variants and override bodies", () => {
   const item = { id: "off_1", canonicalModel: { id: "mdl_1", slug: "gpt", displayName: "GPT", family: null, modalityIn: ["text"], modalityOut: ["text"], openWeights: false, source: "catalog" }, provider: "openai", providerModelId: "gpt", endpointKinds: ["chat"], adapterRevision: "v1", capabilities: {}, limits: { contextTokens: "128000", outputTokens: null }, region: null, routable: true, activePrice: { id: "price_1", fidelity: "catalog", source: "catalog", effectiveFrom: "2026-07-25T00:00:00.000Z", currency: "USD", unit: "per_mtok", inputPerMtokMicrousd: "1", outputPerMtokMicrousd: "2" } };
   assert.deepEqual(ModelsApi.listResponse.parse({ data: [item], nextCursor: null }), { data: [item], nextCursor: null });

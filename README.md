@@ -4,9 +4,11 @@ Manifold is an OpenAI-compatible AI gateway and operations control plane for tea
 that need one place to route model traffic, issue client keys, enforce policy and
 spend controls, and investigate usage.
 
-The production edition runs as a Vercel Fluid gateway with a Next.js control plane
-and Neon Postgres. Its request pipeline is runtime-agnostic, and a local Node.js
-harness is included for development and testing.
+The Vercel edition is implemented as a Fluid gateway with a Next.js control
+plane and Neon Postgres. Its request pipeline is runtime-agnostic, and a local
+Node.js harness is included for development and testing. Repository support
+does not establish that a particular deployment is ready for traffic; use the
+deployment health and readiness gates before promotion.
 
 **Protocol schema:** `manifold.v1`
 
@@ -73,14 +75,16 @@ configured.
 
 | Provider | Chat Completions | Responses | Embeddings |
 |---|:---:|:---:|:---:|
-| Google Gemini | ✅ | — | — |
 | OpenAI | ✅ | ✅ | ✅ |
 | Azure OpenAI | ✅ | ✅ | ✅ |
 | Anthropic bridge | ✅ | — | — |
 
-A checkmark means the provider and endpoint combination has explicit repository
-support or test coverage. The models.dev catalog contains additional providers
-for discovery and pricing; catalog presence does not constitute gateway support.
+A checkmark means the provider and endpoint combination is marked `supported`
+in the generated
+[`tools/conformance/capability-matrix.json`](./tools/conformance/capability-matrix.json).
+The models.dev catalog contains additional providers for discovery and pricing;
+catalog presence and control-plane credential validation do not constitute
+gateway adapter support.
 
 ## Supported OpenAI-compatible API surface
 
@@ -103,7 +107,7 @@ Client or application
         |
         | OpenAI-compatible request + Manifold virtual key
         v
-Vercel Fluid gateway
+Vercel Fluid gateway deployment
         |-- authenticate and resolve trusted ingress profile
         |-- route public model to a healthy provider target
         |-- enforce policy, admission, and hard budgets
@@ -181,18 +185,23 @@ Human-access rollout, recovery, and production acceptance are documented in
 [`Docs/HUMAN_AUTH.md`](./Docs/HUMAN_AUTH.md). It covers the first-owner activation
 email, invitations, sessions, API-token ownership, and CLI device authorization.
 
-## Production deployment
+## Vercel deployment
 
-Production uses two separately configured Vercel projects:
+The production topology uses two separately configured Vercel projects:
 
 - a Next.js control plane under `apps/control-plane`;
 - a Node.js 22 Fluid gateway under `apps/gateway`.
 
-The gateway uses Fluid Compute with literal rewrites for the four supported API
-paths, readiness and liveness routes, and durable terminal accounting. One
-durable Postgres database is bound to one workspace. Runtime connections use the
-restricted application role; owner credentials are reserved for migrations and
-break-glass operations.
+The checked-in gateway configuration uses Fluid Compute with literal rewrites
+for the four supported API paths, readiness and liveness routes, and durable
+terminal accounting. One durable Postgres database is bound to one workspace.
+Runtime connections use the restricted application role; owner credentials are
+reserved for migrations and break-glass operations.
+
+Treat `/health` as liveness only. A release is ready for traffic only after
+`/ready` returns 200 and the target-environment acceptance checks in the
+deployment runbook pass. A 200 control-plane health response does not imply
+gateway readiness.
 
 See [`Docs/DEPLOY.md`](./Docs/DEPLOY.md) for deployment topology, environment
 configuration, and installation bootstrap.
@@ -282,3 +291,5 @@ scripts list additional focused test commands.
 - [`SPEC.md`](./SPEC.md): product, security, data, and architecture specification
 - [`Docs/DEPLOY.md`](./Docs/DEPLOY.md): deployment and operations
 - [`apps/gateway/README.md`](./apps/gateway/README.md): gateway development guide
+- [`apps/cli/docs/exit-codes.md`](./apps/cli/docs/exit-codes.md): implemented CLI exit behavior
+- [`tools/README.md`](./tools/README.md): conformance and performance gates

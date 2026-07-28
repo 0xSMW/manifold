@@ -25,6 +25,11 @@ import {
   profileRequest,
   type ProfileDraft,
 } from "./profile-fields";
+import {
+  installationDisplayLabel,
+  installationDisplayState,
+  installationDisplayTone,
+} from "./deployment-display-state";
 import styles from "./deployments.module.css";
 
 function message(error: unknown): string {
@@ -152,6 +157,10 @@ export function DeploymentsConsole() {
                     const installationProfiles = profiles.filter(
                       (profile) => profile.installationId === installation.id,
                     );
+                    const displayState = installationDisplayState(
+                      installation.status,
+                      installation.lastSeenAt,
+                    );
                     return (
                       <tr key={installation.id}>
                         <td>
@@ -172,8 +181,8 @@ export function DeploymentsConsole() {
                         </td>
                         <td>{formatDate(installation.lastSeenAt)}</td>
                         <td>
-                          <StatusBadge status={installation.status === "active" ? "up" : "down"}>
-                            {installation.status === "active" ? "Active" : "Disabled"}
+                          <StatusBadge status={installationDisplayTone(displayState)}>
+                            {installationDisplayLabel(displayState)}
                           </StatusBadge>
                         </td>
                       </tr>
@@ -252,7 +261,7 @@ function RegisterGatewaySheet({
         edition: installation.edition,
         appliedConfigRevision: null,
         lastSeenAt: null,
-        status: "active",
+        status: installation.status,
         createdAt: installation.createdAt ?? new Date().toISOString(),
       });
       const bound = await apiRequest<ProfileCreated>(`/deployments/${installation.id}/profiles`, {

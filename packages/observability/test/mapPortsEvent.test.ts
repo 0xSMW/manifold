@@ -113,3 +113,35 @@ test("(2) terminal payload omits reasonCodes entirely when none were reported", 
   const journal = journalFromPortsEvent(e, CTX) as TerminalEvent;
   assert.equal(journal.payload.reasonCodes, undefined);
 });
+
+// ---------------------------------------------------------------------------------------------
+// (3) Responses SSE terminal outcomes are in-band provider outcomes. They can arrive over an
+// HTTP 200 stream, so durable status must use their bounded canonical reason code rather than
+// infer success from the transport handshake.
+// ---------------------------------------------------------------------------------------------
+
+test("(3) maps Responses terminal outcomes to durable status independently of HTTP 200", () => {
+  const cases: Array<{
+    name: string;
+    reasonCodes: HotPathObservationEvent["reasonCodes"];
+    status: TerminalEvent["payload"]["status"];
+  }> = [
+    { name: "completed", reasonCodes: [], status: "ok" },
+    { name: "failed", reasonCodes: ["PROVIDER_RESPONSE_FAILED"] as unknown as HotPathObservationEvent["reasonCodes"], status: "error" },
+    { name: "incomplete", reasonCodes: ["PROVIDER_RESPONSE_INCOMPLETE"] as unknown as HotPathObservationEvent["reasonCodes"], status: "error" },
+    { name: "aborted", reasonCodes: ["PROVIDER_STREAM_ABORTED"], status: "error" },
+  ];
+
+  for (const expected of cases) {
+    const journal = journalFromPortsEvent(terminalEvent({
+      status: 200,
+      reasonCodes: expected.reasonCodes,
+    }), CTX) as TerminalEvent;
+    assert.equal(journal.payload.status, expected.status, expected.name);
+    assert.deepEqual(
+      journal.payload.reasonCodes,
+      expected.reasonCodes.length === 0 ? undefined : expected.reasonCodes,
+      expected.name,
+    );
+  }
+});

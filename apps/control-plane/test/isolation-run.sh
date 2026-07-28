@@ -52,11 +52,13 @@ export MANIFOLD_KEY_PEPPER="dGVzdC1wZXBwZXItMzJieXRlcy0wMDAwMDAwMDAw"
 # exercises the env path (distinct from the all-zero DEV_KEK). The driver decrypts with the same.
 export MANIFOLD_DATA_KEK="$(node -e "process.stdout.write(Buffer.alloc(32,7).toString('base64'))")"
 export MANIFOLD_SNAPSHOT_SIGNING_KEY="$PRIV" MANIFOLD_SNAPSHOT_SIGNING_KEY_ID="k1" MANIFOLD_SEED_SECRET="seed-secret-xyz"
+export MANIFOLD_SEED_GATEWAY_DOMAIN="isolation.gateway.example.test"
 ( cd apps/control-plane && exec npx next start -p $PORT >/tmp/cp_run_server.log 2>&1 & echo $! >/tmp/cp_run.pid )
 curl -sS --retry-connrefused --retry 40 --retry-delay 1 --max-time 5 "http://127.0.0.1:$PORT/api/v1/health" >/dev/null 2>&1
 # PGSUPER: superuser connection the driver uses to read stored keyed_hash / credential ciphertext
 # (RLS-bypassing, verification-only) and to stage the route-delete tripwire for bug #4.
 BASE="http://127.0.0.1:$PORT" MANIFOLD_SEED_SECRET="$MANIFOLD_SEED_SECRET" \
+  MANIFOLD_SEED_GATEWAY_DOMAIN="$MANIFOLD_SEED_GATEWAY_DOMAIN" \
   PGSUPER="postgresql://postgres:pw@127.0.0.1:$PGPORT/postgres" \
   node "$HERE/isolation-drive.mjs"; RC=$?
 

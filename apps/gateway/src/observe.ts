@@ -19,7 +19,8 @@ import {
   type TransactionSql,
 } from "@manifold/database";
 import type { HotPathObservationEvent } from "@manifold/ports";
-import { commit, ulid, ulidCreatedAt, type CommitResult } from "@manifold/budget";
+import { commit, ulid, ulidCreatedAt, type BudgetCommitEvidence, type CommitResult } from "@manifold/budget";
+import { createHash } from "node:crypto";
 import {
   journalFromPortsEvents,
   project,
@@ -47,6 +48,150 @@ export interface IngestTraceResult {
   cost: CostLedgerRow;
   /** The reconcile outcome when the trace carried a hard-budget reservation; else undefined. */
   committed?: CommitResult;
+}
+
+/**
+ * A terminal observation has already been durably projected, but its reservation could not be
+ * reconciled. Throwing this from the durable worker keeps the job retryable instead of allowing
+ * the worker to mark money reconciliation complete.
+ */
+export class BudgetCommitInvariantError extends Error {
+  readonly code = "BUDGET_COMMIT_INVARIANT";
+
+  constructor(
+    readonly details: {
+      workspaceId: string;
+      traceId: string;
+      reservationId: string;
+      status: CommitResult["status"];
+    },
+  ) {
+    super(`budget commit invariant failed: ${details.status}`);
+    this.name = "BudgetCommitInvariantError";
+  }
+}
+
+/** A machine-readable operational event for a real spend that exceeded its admission hold. */
+export interface BudgetOverspendOperationalSignal {
+  type: "manifold.budget.overspent.v1";
+  workspaceId: string;
+  traceId: string;
+  reservationId: string;
+  actualMicroUsd: string;
+  actualTokens: string;
+}
+
+export function budgetOverspendOperationalSignal(
+  workspaceId: string,
+  traceId: string,
+  reservationId: string,
+  actualMicroUsd: bigint,
+  actualTokens: bigint,
+): BudgetOverspendOperationalSignal {
+  return {
+    type: "manifold.budget.overspent.v1",
+    workspaceId,
+    traceId,
+    reservationId,
+    actualMicroUsd: actualMicroUsd.toString(),
+    actualTokens: actualTokens.toString(),
+  };
+}
+
+type BudgetAuditAction = "budget.overspent" | "budget.reconciliation_missing";
+
+/** Persisted operational evidence; the audit-delivery trigger is the existing paging outbox. */
+async function appendBudgetOperationalAudit(
+  sql: TransactionSql,
+  input: {
+    workspaceId: string;
+    action: BudgetAuditAction;
+    targetKind: "budget_reservation" | "budget_account";
+    targetId: string;
+    requestRef: string;
+    detail: Record<string, string>;
+  },
+): Promise<boolean> {
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${input.workspaceId}, 0))`;
+  const existing = await sql<{ present: number }[]>`
+    SELECT 1 AS present FROM audit_event
+    WHERE workspace_id = ${input.workspaceId} AND action = ${input.action}
+      AND target_kind = ${input.targetKind} AND target_id = ${input.targetId}
+      AND request_ref = ${input.requestRef}
+    LIMIT 1
+  `;
+  if (existing.length > 0) return false;
+  const id = ulid();
+  const createdAt = new Date().toISOString();
+  const previous = await sql<{ chain_hash: Buffer; chain_sequence_text: string }[]>`
+    SELECT chain_hash, chain_sequence::text AS chain_sequence_text FROM audit_event
+    WHERE workspace_id = ${input.workspaceId} AND chain_version = 1
+    ORDER BY chain_sequence DESC LIMIT 1
+  `;
+  const prevChainHash = previous[0]?.chain_hash ? Buffer.from(previous[0].chain_hash).toString("hex") : null;
+  const chainSequence = String(BigInt(previous[0]?.chain_sequence_text ?? "0") + 1n);
+  const payload = {
+    id, workspaceId: input.workspaceId, actorKind: "system", actorId: null, action: input.action,
+    targetKind: input.targetKind, targetId: input.targetId, beforeHash: null, afterHash: null,
+    requestRef: input.requestRef, detail: input.detail, createdAt, chainSequence, prevChainHash,
+  };
+  const chainHash = createHash("sha256").update(stableJson(payload)).digest();
+  await sql`
+    INSERT INTO audit_event
+      (id, workspace_id, actor_kind, actor_id, action, target_kind, target_id,
+       request_ref, detail, chain_version, chain_sequence, prev_chain_hash, chain_hash, chain_sealed_at, created_at)
+    VALUES
+      (${id}, ${input.workspaceId}, 'system', NULL, ${input.action}, ${input.targetKind}, ${input.targetId},
+       ${input.requestRef}, ${sql.json(input.detail as never)}, 1, ${chainSequence},
+       ${prevChainHash ? Buffer.from(prevChainHash, "hex") : null}, ${chainHash}, ${createdAt}::timestamptz, ${createdAt}::timestamptz)
+  `;
+  return true;
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`).join(",")}}`;
+  }
+  throw new TypeError("budget audit detail must be JSON-serializable");
+}
+
+function overspendAudit(evidence: BudgetCommitEvidence): Parameters<typeof appendBudgetOperationalAudit>[1] {
+  return {
+    workspaceId: evidence.workspaceId,
+    action: "budget.overspent",
+    targetKind: "budget_reservation",
+    targetId: evidence.reservationId,
+    requestRef: evidence.requestId,
+    detail: {
+      heldMicroUsd: evidence.heldMicroUsd.toString(),
+      actualMicroUsd: evidence.actualMicroUsd.toString(),
+      actualTokens: evidence.actualTokens.toString(),
+    },
+  };
+}
+
+async function quarantineMissingReservation(
+  sql: Sql, workspaceId: string, traceId: string, reservationId: string, budgetAccountId: string | null,
+): Promise<void> {
+  if (!budgetAccountId) throw new Error("missing reservation has no budget account to quarantine");
+  await sql.begin(async (tx) => {
+    await setWorkspaceGuc(tx, workspaceId);
+    const account = await tx<{ id: string }[]>`
+      SELECT id FROM budget_account WHERE id = ${budgetAccountId} AND workspace_id = ${workspaceId} FOR UPDATE
+    `;
+    if (!account[0]) throw new Error("missing reservation budget account cannot be quarantined");
+    await tx`
+      UPDATE budget_account SET disabled_at = COALESCE(disabled_at, now()), updated_at = now()
+      WHERE id = ${budgetAccountId} AND workspace_id = ${workspaceId}
+    `;
+    await appendBudgetOperationalAudit(tx, {
+      workspaceId, action: "budget.reconciliation_missing", targetKind: "budget_account", targetId: budgetAccountId,
+      requestRef: traceId, detail: { reservationId, traceId, reason: "reservation_missing" },
+    });
+  });
 }
 
 /**
@@ -108,7 +253,45 @@ export async function ingestTrace(input: IngestTraceInput): Promise<IngestTraceR
   const terminal = events.find((e) => e.kind === "terminal" && e.reservationId);
   if (terminal?.reservationId) {
     const actualTokens = usage.tokens.inputTokens + usage.tokens.outputTokens;
-    committed = await commit(sql, terminal.reservationId, cost.amountMicroUsd, workspaceId, actualTokens);
+    committed = await commit(sql, terminal.reservationId, cost.amountMicroUsd, workspaceId, actualTokens, {
+      expectedRequestId: observation.traceId,
+      afterCommit: async (tx, evidence) => {
+        if (evidence.overspent) await appendBudgetOperationalAudit(tx, overspendAudit(evidence));
+      },
+    });
+    // A redelivery after a successful commit is the one expected no-op: commit() reports the
+    // reservation's terminal `committed` state with ok=false. It is only safe when both its
+    // durable request binding and reconciled amount match this terminal trace.
+    const committedReplayMatches =
+      !committed.ok &&
+      committed.status === "committed" &&
+      committed.requestId === observation.traceId &&
+      committed.committedMicroUsd === cost.amountMicroUsd;
+    if (!committed.ok && !committedReplayMatches) {
+      // A genuinely missing row cannot ever reconcile. Disable the terminal's known budget
+      // account and append a sealed audit/outbox event before retry/DLQ can hide undercharge.
+      if (committed.status === "expired" && committed.requestId === undefined) {
+        await quarantineMissingReservation(sql, workspaceId, observation.traceId, terminal.reservationId, cost.budgetAccountId);
+      }
+      throw new BudgetCommitInvariantError({
+        workspaceId,
+        traceId: observation.traceId,
+        reservationId: terminal.reservationId,
+        status: committed.status,
+      });
+    }
+    if (committed.ok && committed.overspent) {
+      // The reservation and cost_ledger rows are already durable money truth. Emit a structured
+      // signal as well so operators can alert on the admission-vs-actual divergence without
+      // dropping or retrying an otherwise fully reconciled observation.
+      console.error(JSON.stringify(budgetOverspendOperationalSignal(
+        workspaceId,
+        observation.traceId,
+        terminal.reservationId,
+        cost.amountMicroUsd,
+        actualTokens,
+      )));
+    }
   }
 
   return { observation, usage, cost, committed };

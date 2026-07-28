@@ -7,10 +7,16 @@
 // Usage:
 //   MANIFOLD_SEED_SECRET=<secret> node --experimental-strip-types apps/control-plane/scripts/seed.ts
 // Env:
-//   CONTROL_PLANE_URL   base url (default http://localhost:3000)
+//   CONTROL_PLANE_URL   base url of the running control plane (required)
+//   MANIFOLD_SEED_HOSTNAME explicit deployable gateway hostname (required)
 //   MANIFOLD_SEED_SECRET must match the server's env
 async function main(): Promise<void> {
-  const base = process.env.CONTROL_PLANE_URL ?? "http://localhost:3000";
+  const base = process.env.CONTROL_PLANE_URL;
+  const hostname = process.env.MANIFOLD_SEED_HOSTNAME;
+	if (!base || !hostname) {
+		console.error("CONTROL_PLANE_URL and MANIFOLD_SEED_HOSTNAME are required");
+		process.exit(1);
+	}
   const secret = process.env.MANIFOLD_SEED_SECRET;
   if (!secret) {
     console.error("MANIFOLD_SEED_SECRET is required");
@@ -22,6 +28,7 @@ async function main(): Promise<void> {
     body: JSON.stringify({
       slug: process.argv[2] ?? undefined,
       email: process.argv[3] ?? undefined,
+		hostname,
     }),
   });
   const json = await res.json();

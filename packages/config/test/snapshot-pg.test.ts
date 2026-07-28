@@ -57,7 +57,7 @@ before(async () => {
     INSERT INTO provider_model_offering
       (id, canonical_model_id, provider, provider_model_id, endpoint_kinds, adapter_revision,
        capabilities, catalog_revision) VALUES
-      ('off1','cm1','openai','gpt-4o','["chat"]','ar1','{}','cat1');
+      ('off1','cm1','openai','gpt-4o','["chat"]','ar1','{"providerIdempotency":"supported"}','cat1');
 
     INSERT INTO provider_credential
       (id, workspace_id, provider, label, encrypted_secret, dek_id, base_url, allowed_hosts, status, revoked_at) VALUES
@@ -90,7 +90,7 @@ before(async () => {
 
     INSERT INTO gateway_route_revision
       (id, workspace_id, route_id, mode, retry_policy, timeout_policy, content_hash) VALUES
-      ('rev_gpt','ws1','route_gpt','ordered','{}','{"overall_ms":30000}','sha256:rgpt'),
+      ('rev_gpt','ws1','route_gpt','ordered','{"provider_idempotency":{"target_id":"tg_gpt","header_name":"idempotency-key"}}','{"overall_ms":30000}','sha256:rgpt'),
       ('rev_claude','ws1','route_claude','ordered','{}','{"overall_ms":30000}','sha256:rcla'),
       ('rev_evil','ws1','route_evil','ordered','{}','{"overall_ms":30000}','sha256:revl'),
       ('rev_revoked','ws1','route_revoked','ordered','{}','{"overall_ms":30000}','sha256:rrev');
@@ -258,6 +258,10 @@ test("build: two same-kind (chat) routes with different public_names both surviv
   // Both distinct routes present → their credentials both survive (neither clobbered the other).
   assert.notEqual(snap.routes[gptKey].routeId, snap.routes[claudeKey].routeId);
   assert.equal(snap.routes[gptKey].targets[0]?.targetId, "tg_gpt");
+  assert.deepEqual(snap.routes[gptKey].retryPolicy?.provider_idempotency, {
+    target_id: "tg_gpt",
+    header_name: "idempotency-key",
+  }, "the signed snapshot must carry the persisted target-scoped retry contract");
   assert.equal(snap.routes[claudeKey].targets[0]?.targetId, "tg_claude");
   assert.equal(snap.routes[gptKey].targets[0]?.credentialId, "cred_openai");
   assert.equal(snap.routes[gptKey].targets[0]?.kekId, "kek1", "new snapshots must project the DEK KEK identity");

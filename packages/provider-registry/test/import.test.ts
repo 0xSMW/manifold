@@ -10,7 +10,7 @@
 //     model id collapse into one canonical model, not two.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -28,7 +28,10 @@ import {
 // isn't part of the tsc build, so we walk back up to the source `test/`
 // directory to find it regardless of cwd.
 const here = dirname(fileURLToPath(import.meta.url));
-const fixturePath = join(here, "..", "..", "test", "fixtures", "models-dev.sample.json");
+const sourceFixturePath = join(here, "fixtures", "models-dev.sample.json");
+const fixturePath = existsSync(sourceFixturePath)
+  ? sourceFixturePath
+  : join(here, "..", "..", "test", "fixtures", "models-dev.sample.json");
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as ModelsDevPayload;
 
 // ---------------------------------------------------------------------------
@@ -158,6 +161,39 @@ test("importFromModelsDev: absent structured_output on the anthropic model -> un
   assert.equal(anthropicOffering!.capabilities.reasoning, "supported");
   assert.equal(anthropicOffering!.capabilities.toolCall, "supported");
   assert.equal(anthropicOffering!.capabilities.temperature, "supported");
+  assert.equal(anthropicOffering!.capabilities.providerIdempotency, "unknown");
+});
+
+test("importFromModelsDev: the adapter matrix carries OpenAI provider idempotency into the catalog", () => {
+  const payload: ModelsDevPayload = {
+    openai: {
+      id: "openai",
+      name: "OpenAI",
+      models: {
+        "gpt-retry": { id: "gpt-retry", name: "GPT Retry" },
+      },
+    },
+  };
+  const offering = importFromModelsDev(payload).offerings[0];
+  assert.ok(offering);
+  assert.equal(offering!.adapterRevision, "openai-v1");
+  assert.deepEqual(offering!.endpointKinds, ["chat", "responses", "embeddings"]);
+  assert.equal(offering!.capabilities.providerIdempotency, "supported");
+});
+
+test("importFromModelsDev: providers outside the explicit adapter matrix remain fail-closed", () => {
+  const payload: ModelsDevPayload = {
+    legacy: {
+      id: "legacy",
+      name: "Legacy",
+      models: { "legacy-model": { id: "legacy-model", name: "Legacy Model" } },
+    },
+  };
+  const offering = importFromModelsDev(payload).offerings[0];
+  assert.ok(offering);
+  assert.equal(offering!.adapterRevision, "unavailable");
+  assert.deepEqual(offering!.endpointKinds, []);
+  assert.equal(offering!.capabilities.providerIdempotency, "unknown");
 });
 
 test("importFromModelsDev: anthropic (first-party) price revision is provider_verified", () => {

@@ -23,6 +23,16 @@ import {
   profileRequest,
   type ProfileDraft,
 } from "./profile-fields";
+import {
+  diagnosticResultDetail,
+  diagnosticResultLabel,
+  diagnosticResultState,
+  diagnosticResultTone,
+  configOperationDisplayState,
+  configOperationDisplayTone,
+  installationDisplayLabel,
+  installationDisplayState,
+} from "./deployment-display-state";
 import styles from "./deployments.module.css";
 
 function message(error: unknown): string {
@@ -63,19 +73,35 @@ export function DeploymentDetail({ installationId }: { installationId: string })
 
   const load = useCallback(async () => {
     setError(null);
+    setReadiness(null);
+    setDiagnostics(null);
+    const detailRequest = apiRequest<InstallationDetail>(`/deployments/${installationId}`);
+    const readinessRequest = apiRequest<ReadinessResponse>(`/deployments/${installationId}/readiness`);
+    const diagnosticsRequest = apiRequest<DiagnosticsResponse>(`/deployments/${installationId}/diagnostics`);
     try {
-      const [detail, readinessResult, diagnosticResult] = await Promise.all([
-        apiRequest<InstallationDetail>(`/deployments/${installationId}`),
-        apiRequest<ReadinessResponse>(`/deployments/${installationId}/readiness`),
-        apiRequest<DiagnosticsResponse>(`/deployments/${installationId}/diagnostics`),
-      ]);
+      const detail = await detailRequest;
       setInstallation(detail);
-      setReadiness(readinessResult);
-      setDiagnostics(diagnosticResult);
     } catch (caught) {
       setInstallation(null);
       setError(message(caught));
+      return;
     }
+    const [readinessResult, diagnosticResult] = await Promise.allSettled([
+      readinessRequest,
+      diagnosticsRequest,
+    ]);
+    const failures: string[] = [];
+    if (readinessResult.status === "fulfilled") {
+      setReadiness(readinessResult.value);
+    } else {
+      failures.push(`Readiness could not load: ${message(readinessResult.reason)}`);
+    }
+    if (diagnosticResult.status === "fulfilled") {
+      setDiagnostics(diagnosticResult.value);
+    } else {
+      failures.push(`Diagnostics could not load: ${message(diagnosticResult.reason)}`);
+    }
+    if (failures.length) setError(failures.join(" "));
   }, [installationId]);
 
   useEffect(() => {
@@ -164,7 +190,14 @@ export function DeploymentDetail({ installationId }: { installationId: string })
         <Card className={styles.panel}>
           <dl className={styles.facts}>
             <Fact label="Edition" value={humanize(installation.edition)} />
-            <Fact label="Lifecycle" value={humanize(installation.status)} />
+            <Fact
+              label="Lifecycle"
+              value={installationDisplayLabel(installationDisplayState(
+                installation.status,
+                installation.lastSeenAt,
+                readiness?.checks.connectivity,
+              ))}
+            />
             <Fact label="Last heartbeat" value={formatDate(installation.lastSeenAt)} />
           </dl>
         </Card>
@@ -223,6 +256,9 @@ function ReadinessPanel({ readiness }: { readiness: ReadinessResponse | null }) 
     );
   }
   const { checks } = readiness;
+  const clockSkewAvailable = checks.clockSkew.available;
+  const clockSkewMeasured = typeof checks.clockSkew.skewSeconds === "number" &&
+    Number.isFinite(checks.clockSkew.skewSeconds);
   const providerDetail = checks.providers.state === "not_applicable"
     ? "No provider credentials are referenced by the active snapshot."
     : checks.providers.ok
@@ -275,11 +311,15 @@ function ReadinessPanel({ readiness }: { readiness: ReadinessResponse | null }) 
           value={checks.snapshotServing.available ? "Snapshot available" : "Unavailable"}
         />
         <Check
-          available={checks.clockSkew.available}
+          available={clockSkewAvailable}
           detail={checks.clockSkew.reason}
           label="Clock skew"
-          ok={false}
-          value="Unavailable"
+          ok={clockSkewMeasured}
+          value={!clockSkewAvailable
+            ? "Unavailable"
+            : clockSkewMeasured
+              ? `${checks.clockSkew.skewSeconds} seconds`
+              : "Not measured"}
         />
         <Check
           detail={checks.installationAuthentication.method === "workload_identity"
@@ -305,11 +345,26 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: DiagnosticsResponse | 
       </Card>
     );
   }
+  const syntheticState = diagnosticResultState(
+    diagnostics.syntheticTest.available,
+    diagnostics.syntheticTest.lastResult,
+    diagnostics.syntheticTest,
+  );
   return (
     <Card className={styles.panel}>
       <div className={styles.panelHeader}><h2>Diagnostics</h2></div>
-      <AlertBanner title="Synthetic request unavailable" tone="idle">
-        {diagnostics.syntheticTest.reason}
+      <AlertBanner
+        title={`Synthetic request ${diagnosticResultLabel(syntheticState).toLowerCase()}`}
+        tone={diagnosticResultTone(syntheticState)}
+      >
+        <div>{diagnostics.syntheticTest.reason}</div>
+        {diagnostics.syntheticTest.available ? (
+          <div className={styles.checkDetail}>
+            Last result: {diagnosticResultDetail(diagnostics.syntheticTest.lastResult)}
+            {diagnostics.syntheticTest.lastResult ? ` Recorded ${formatDate(diagnostics.syntheticTest.lastResult.createdAt)}.` : ""}
+            {syntheticState === "stale" ? " This result is stale for the current configuration or deployment state." : ""}
+          </div>
+        ) : null}
       </AlertBanner>
       <div>
         <div className={styles.checkHeader}>
@@ -319,12 +374,15 @@ function DiagnosticsPanel({ diagnostics }: { diagnostics: DiagnosticsResponse | 
         <div className={styles.operations}>
           {diagnostics.recentConfigOperations.length ? diagnostics.recentConfigOperations.map((operation) => (
             <div className={styles.operation} key={operation.id}>
-              <StatusBadge status={operation.outcome === "accepted" ? "up" : operation.outcome === "failed" || operation.outcome === "rejected" ? "down" : "verifying"}>
-                {humanize(operation.outcome)}
+              <StatusBadge status={configOperationDisplayTone(configOperationDisplayState(operation.outcome, operation.acceleratorStatus))}>
+                {humanize(operation.acceleratorStatus)}
               </StatusBadge>
               <span>{operation.tripwireItems && Array.isArray(operation.tripwireItems) && operation.tripwireItems.length
                 ? `${operation.tripwireItems.length} publish check${operation.tripwireItems.length === 1 ? "" : "s"}`
-                : "Configuration operation"}</span>
+                : humanize(operation.operationKind)}</span>
+              {operation.acceleratorStatus === "reconciliation_required"
+                ? <span className="console-muted">Retry attempts {operation.reconciliationAttempts}</span>
+                : null}
               <span className="console-muted">{formatDate(operation.createdAt)}</span>
             </div>
           )) : <div className={styles.emptyLine}>No configuration operations recorded.</div>}

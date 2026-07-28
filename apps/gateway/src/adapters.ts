@@ -142,6 +142,7 @@ export function reservationRequestId(traceId: string, now: Date): string {
 interface BudgetAccountMetaRow {
   workspace_id: string;
   window: string;
+  disabled_at: Date | null;
 }
 
 export interface DbBudgetReserverOptions {
@@ -188,7 +189,7 @@ export function makeDbBudgetReserveFn(
       const rows = await sql.begin(async (tx) => {
         await setWorkspaceGuc(tx, workspaceId);
         return tx<BudgetAccountMetaRow[]>`
-          SELECT workspace_id, "window"
+          SELECT workspace_id, "window", disabled_at
           FROM budget_account
           WHERE id = ${input.budgetAccountId}
           LIMIT 1
@@ -196,7 +197,7 @@ export function makeDbBudgetReserveFn(
       });
       const acct = rows[0];
       // A hard budget whose account we cannot resolve is not honorable → fail closed.
-      if (!acct) return { ok: false, reason: "BUDGET_RESERVE_DENIED" };
+      if (!acct || acct.disabled_at !== null) return { ok: false, reason: "BUDGET_RESERVE_DENIED" };
       // Defense in depth: the row's OWN workspace_id must match the configured workspace. A mismatch
       // means the snapshot/config wired a budget account belonging to a DIFFERENT workspace than this
       // installation's — never honor a cross-tenant reservation, fail closed instead.

@@ -28,7 +28,12 @@ import { handleRequest } from "@manifold/gateway-core";
 import type { Fetcher, Snapshot, SnapshotTarget } from "@manifold/ports";
 import { FakeCrypto, FakeIngestSink, FixedClock, keyedHashHex } from "@manifold/ports/testing";
 import { BudgetReserverAdapter, makeDbBudgetReserveFn } from "../src/adapters.ts";
-import { ingestTrace } from "../src/observe.ts";
+import { JobLedgerService } from "../src/jobLedger.ts";
+import {
+  BudgetCommitInvariantError,
+  budgetOverspendOperationalSignal,
+  ingestTrace,
+} from "../src/observe.ts";
 import { startPg, type PgHarness } from "../../../packages/database/test/pg-harness.ts";
 import { seedMinimalGatewayTenant } from "../../../packages/database/test/seed-gateway-tenant.ts";
 
@@ -247,6 +252,26 @@ test("real request → atomically projects observation, usage, cost ledger, and 
   assert.equal(ledger[0]!.price_revision_id, PRICE_REV);
   // The projection agrees with the returned Observation cost.
   assert.equal(result.cost.amountMicroUsd, EXPECTED_COST);
+  assert.equal(result.committed?.ok, true, "the reservation reconciliation reports success");
+  assert.equal(result.committed?.overspent, true, "the actual spend exceeded the admission hold");
+  assert.deepEqual(
+    budgetOverspendOperationalSignal(WORKSPACE, traceId, terminal.reservationId!, EXPECTED_COST, INPUT_TOKENS + OUTPUT_TOKENS),
+    {
+      type: "manifold.budget.overspent.v1",
+      workspaceId: WORKSPACE,
+      traceId,
+      reservationId: terminal.reservationId,
+      actualMicroUsd: EXPECTED_COST.toString(),
+      actualTokens: (INPUT_TOKENS + OUTPUT_TOKENS).toString(),
+    },
+    "overspend is exposed as a structured operational signal",
+  );
+  const overspendAudit = await pg.sql<{ n: string }[]>`
+    SELECT count(*)::text AS n FROM audit_event
+    WHERE workspace_id = ${WORKSPACE} AND action = 'budget.overspent'
+      AND target_id = ${terminal.reservationId} AND request_ref = ${traceId}
+  `;
+  assert.equal(overspendAudit[0]?.n, "1", "overspend has one sealed durable audit/outbox record");
 
   // (c) the reservation moved reserved→committed by the ACTUAL cost.
   const resv = await pg.sql<{ status: string; reconciled_microusd: string | null }[]>`
@@ -315,6 +340,173 @@ test("idempotent re-ingest: same trace twice ⇒ cost_ledger written ONCE and co
   `;
   const committedDelta = BigInt(after[0]!.committed_microusd) - committedBefore;
   assert.equal(committedDelta, EXPECTED_COST, "the reservation commits exactly once, not twice");
+});
+
+test("missing terminal reservation leaves the observation durable and fails the ingest for job retry", async () => {
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
+  const { ctx, ingest } = makeCtx(snap, new UsageFetcher());
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 500 }));
+  const traceId = res.headers.get("x-trace-id");
+  assert.ok(traceId);
+  const events = ingest.events.map((event) => (
+    event.kind === "terminal" ? { ...event, reservationId: "res_missing_terminal_reservation" } : event
+  ));
+
+  await assert.rejects(
+    ingestTrace({
+      sql: pg.sql as unknown as Sql,
+      events,
+      workspaceId: WORKSPACE,
+      producerId: INSTALLATION,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof BudgetCommitInvariantError);
+      assert.equal(error.code, "BUDGET_COMMIT_INVARIANT");
+      assert.equal(error.details.status, "expired");
+      return true;
+    },
+  );
+
+  const rows = await pg.sql<{ observations: string; ledgers: string }[]>`
+    SELECT
+      (SELECT count(*)::text FROM observation WHERE trace_id = ${traceId}) AS observations,
+      (SELECT count(*)::text FROM cost_ledger WHERE trace_id = ${traceId}) AS ledgers
+  `;
+  assert.deepEqual(rows[0], { observations: "1", ledgers: "1" }, "money truth remains durable for the retry");
+  const quarantine = await pg.sql<{ disabled: boolean; audits: string }[]>`
+    SELECT b.disabled_at IS NOT NULL AS disabled,
+      (SELECT count(*)::text FROM audit_event
+       WHERE workspace_id = ${WORKSPACE} AND action = 'budget.reconciliation_missing'
+         AND target_id = ${BUDGET_ACCOUNT} AND request_ref = ${traceId}) AS audits
+    FROM budget_account b WHERE b.id = ${BUDGET_ACCOUNT}
+  `;
+  assert.deepEqual(quarantine[0], { disabled: true, audits: "1" }, "missing money truth quarantines the budget and pages through audit outbox");
+  // This shared fixture keeps exercising later cases; production intentionally leaves this disabled.
+  await pg.sql`UPDATE budget_account SET disabled_at = NULL WHERE id = ${BUDGET_ACCOUNT}`;
+});
+
+test("a missing-reservation job retries, reaches dead, and leaves its budget quarantined with one audit", async () => {
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
+  const { ctx, ingest } = makeCtx(snap, new UsageFetcher());
+  await handleRequest(ctx, req({ model: "chat-route", max_tokens: 500 }));
+  const traceId = ingest.events[0]?.traceId;
+  assert.ok(traceId);
+  const events = ingest.events.map((event) => (
+    event.kind === "terminal" ? { ...event, reservationId: "res_missing_job_lifecycle" } : event
+  ));
+  const ledger = new JobLedgerService({
+    sql: pg.sql as unknown as Sql,
+    baseDelayMs: 0,
+    maxDelayMs: 0,
+    jitter: () => 0,
+    observationIngestHandler: async (payload) => {
+      await ingestTrace({ sql: pg.sql as unknown as Sql, ...payload });
+    },
+  });
+  const enqueued = await ledger.enqueueObservationIngest({
+    version: 1, workspaceId: WORKSPACE, producerId: INSTALLATION, events, maxAttempts: 2,
+  });
+  assert.ok(enqueued.id);
+  assert.deepEqual(await ledger.drain(WORKSPACE, "missing-reservation-worker", 1), {
+    claimed: 1, completed: 0, retried: 1, dead: 0,
+  });
+  assert.deepEqual(await ledger.drain(WORKSPACE, "missing-reservation-worker", 1), {
+    claimed: 1, completed: 0, retried: 0, dead: 1,
+  });
+  const outcome = await pg.sql<{ status: string; disabled: boolean; audits: string }[]>`
+    SELECT j.status, b.disabled_at IS NOT NULL AS disabled,
+      (SELECT count(*)::text FROM audit_event WHERE workspace_id = ${WORKSPACE}
+        AND action = 'budget.reconciliation_missing' AND target_id = ${BUDGET_ACCOUNT} AND request_ref = ${traceId}) AS audits
+    FROM job_ledger j CROSS JOIN budget_account b
+    WHERE j.id = ${enqueued.id} AND b.id = ${BUDGET_ACCOUNT}
+  `;
+  assert.deepEqual(outcome[0], { status: "dead", disabled: true, audits: "1" });
+  const blockedFetcher = new UsageFetcher();
+  const blocked = makeCtx(snap, blockedFetcher);
+  const denied = await handleRequest(blocked.ctx, req({ model: "chat-route", max_tokens: 500 }));
+  assert.equal(denied.status, 402, "quarantined hard budget denies a subsequent request");
+  assert.equal((await denied.json() as { error: { code: string } }).error.code, "BUDGET_RESERVE_DENIED");
+  assert.equal(blockedFetcher.count, 0, "quarantine denies before provider egress");
+  await pg.sql`UPDATE budget_account SET disabled_at = NULL WHERE id = ${BUDGET_ACCOUNT}`;
+  const recoveredFetcher = new UsageFetcher();
+  const recovered = makeCtx(snap, recoveredFetcher);
+  const allowed = await handleRequest(recovered.ctx, req({ model: "chat-route", max_tokens: 500 }));
+  assert.equal(allowed.status, 200, "explicit operator re-enable restores hard-budget admission");
+  assert.equal(recoveredFetcher.count, 1, "recovered account can reach the provider again");
+});
+
+test("audit failure rolls back the budget commit; replay commits once and appends one overspend audit", async () => {
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
+  const { ctx, ingest } = makeCtx(snap, new UsageFetcher());
+  const res = await handleRequest(ctx, req({ model: "chat-route", max_tokens: 500 }));
+  const traceId = res.headers.get("x-trace-id");
+  assert.ok(traceId);
+  const terminal = ingest.events.find((event) => event.kind === "terminal");
+  assert.ok(terminal?.reservationId);
+  const args = { sql: pg.sql as unknown as Sql, events: ingest.events, workspaceId: WORKSPACE, producerId: INSTALLATION };
+  await pg.sql.unsafe(`
+    CREATE FUNCTION reject_budget_overspend_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'test audit failure'; END; $$;
+    CREATE TRIGGER reject_budget_overspend_audit BEFORE INSERT ON audit_event
+      FOR EACH ROW WHEN (NEW.action = 'budget.overspent') EXECUTE FUNCTION reject_budget_overspend_audit();
+  `);
+  try {
+    await assert.rejects(ingestTrace(args), /test audit failure/);
+  } finally {
+    await pg.sql.unsafe("DROP TRIGGER reject_budget_overspend_audit ON audit_event; DROP FUNCTION reject_budget_overspend_audit();");
+  }
+  const beforeReplay = await pg.sql<{ status: string }[]>`
+    SELECT status FROM budget_reservation WHERE id = ${terminal.reservationId}
+  `;
+  assert.equal(beforeReplay[0]?.status, "reserved", "audit failure rolls back reservation reconciliation");
+  await ingestTrace(args);
+  const audit = await pg.sql<{ status: string; audits: string }[]>`
+    SELECT r.status, (SELECT count(*)::text FROM audit_event WHERE action = 'budget.overspent' AND target_id = ${terminal.reservationId}) AS audits
+    FROM budget_reservation r WHERE r.id = ${terminal.reservationId}
+  `;
+  assert.deepEqual(audit[0], { status: "committed", audits: "1" }, "replay commits and records exactly one durable alert");
+});
+
+test("a reservation from another trace is never accepted as this terminal's committed replay", async () => {
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
+  const first = makeCtx(snap, new UsageFetcher());
+  const second = makeCtx(snap, new UsageFetcher());
+  await handleRequest(first.ctx, req({ model: "chat-route", max_tokens: 500 }));
+  await handleRequest(second.ctx, req({ model: "chat-route", max_tokens: 500 }));
+  const secondTerminal = second.ingest.events.find((event) => event.kind === "terminal");
+  assert.ok(secondTerminal?.reservationId);
+  const forged = first.ingest.events.map((event) => event.kind === "terminal" ? { ...event, reservationId: secondTerminal.reservationId } : event);
+  await assert.rejects(
+    ingestTrace({ sql: pg.sql as unknown as Sql, events: forged, workspaceId: WORKSPACE, producerId: INSTALLATION }),
+    (error: unknown) => error instanceof BudgetCommitInvariantError,
+  );
+  const secondReservation = await pg.sql<{ status: string }[]>`
+    SELECT status FROM budget_reservation WHERE id = ${secondTerminal.reservationId}
+  `;
+  assert.equal(secondReservation[0]?.status, "reserved", "trace identity mismatch leaves the foreign hold untouched");
+});
+
+test("a committed replay with a different projected actual is rejected", async () => {
+  const snap = await buildSnapshot(pg.sql, INSTALLATION);
+  const { ctx, ingest } = makeCtx(snap, new UsageFetcher());
+  await handleRequest(ctx, req({ model: "chat-route", max_tokens: 500 }));
+  const terminal = ingest.events.find((event) => event.kind === "terminal");
+  assert.ok(terminal?.reservationId);
+  const args = { sql: pg.sql as unknown as Sql, events: ingest.events, workspaceId: WORKSPACE, producerId: INSTALLATION };
+  await ingestTrace(args);
+  const changedActual = ingest.events.map((event) => (
+    event.kind === "terminal"
+      ? { ...event, usage: { inputTokens: Number(INPUT_TOKENS * 2n), outputTokens: Number(OUTPUT_TOKENS) } }
+      : event
+  ));
+  await assert.rejects(
+    ingestTrace({ ...args, events: changedActual }),
+    (error: unknown) => error instanceof BudgetCommitInvariantError,
+  );
+  const persisted = await pg.sql<{ reconciled_microusd: string }[]>`
+    SELECT reconciled_microusd::text FROM budget_reservation WHERE id = ${terminal.reservationId}
+  `;
+  assert.equal(BigInt(persisted[0]!.reconciled_microusd), EXPECTED_COST, "the original reconciliation remains the only money truth");
 });
 
 // review gateway-F5 / #2: a STREAMED success without provider usage once omitted its reservation

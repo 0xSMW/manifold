@@ -43,6 +43,7 @@ test("relays split chunks byte-for-byte and captures the final chat usage", asyn
   assert.deepEqual(await observer.result, {
     usage: { prompt_tokens: 3, completion_tokens: 5, details: { reasoning_tokens: 2 } },
     completed: true,
+    terminalKind: "completed",
     aborted: false,
     malformedFrames: 0,
     oversizedFrames: 0,
@@ -61,6 +62,119 @@ test("ignores malformed frames and retains later Responses API usage", async () 
   assert.equal(result.malformedFrames, 1);
   assert.deepEqual(result.usage, { input_tokens: 7, output_tokens: 11, details: { cached_tokens: 2 } });
   assert.equal(result.completed, true);
+});
+
+test("recognizes a split Responses response.completed event at EOF", async () => {
+  const observer = createSseUsageTransform();
+  const chunks = [
+    "event: response.com",
+    "pleted\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":7,",
+    "\"output_tokens\":11}}}\n\n",
+  ];
+  assert.equal(await relay(observer, chunks), chunks.join(""));
+  assert.deepEqual(await observer.result, {
+    usage: { input_tokens: 7, output_tokens: 11 },
+    completed: true,
+    terminalKind: "completed",
+    aborted: false,
+    malformedFrames: 0,
+    oversizedFrames: 0,
+  });
+});
+
+test("recognizes a data-only Responses response.completed frame", async () => {
+  const observer = createSseUsageTransform();
+  await relay(observer, ["data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":4}}}\n\n"]);
+  const result = await observer.result;
+  assert.equal(result.completed, true);
+  assert.equal(result.terminalKind, "completed");
+});
+
+test("retains an explicit response.completed event when its data is oversized", async () => {
+  const observer = createSseUsageTransform({ maxFrameBytes: 32 });
+  await relay(observer, ["event: response.completed\ndata: ", "x".repeat(100), "\n\n"]);
+  const result = await observer.result;
+  assert.equal(result.completed, true);
+  assert.equal(result.terminalKind, "completed");
+  assert.equal(result.oversizedFrames, 1);
+});
+
+test("requires a data field before trusting a Responses event terminal type", async () => {
+  const observer = createSseUsageTransform();
+  await relay(observer, ["event: response.completed\n\n"]);
+  assert.deepEqual(await observer.result, {
+    usage: null,
+    completed: false,
+    terminalKind: null,
+    aborted: false,
+    malformedFrames: 1,
+    oversizedFrames: 0,
+  });
+});
+
+test("rejects a Responses event/data terminal type disagreement", async () => {
+  const observer = createSseUsageTransform();
+  await relay(observer, [
+    'event: response.failed\ndata: {"type":"response.completed"}\n\n',
+  ]);
+  const result = await observer.result;
+  assert.equal(result.terminalKind, null);
+  assert.equal(result.completed, false);
+  assert.equal(result.malformedFrames, 1);
+});
+
+test("keeps the first valid terminal outcome sticky", async () => {
+  const observer = createSseUsageTransform();
+  const writer = observer.stream.writable.getWriter();
+  const reader = observer.stream.readable.getReader();
+  const drain = (async () => {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) return;
+    }
+  })();
+  await writer.write(encoder.encode('data: {"type":"response.failed"}\n\n'));
+  await writer.write(encoder.encode('data: {"type":"response.completed"}\n\n'));
+  await writer.close();
+  await drain;
+  const result = await observer.result;
+  assert.equal(result.terminalKind, "failed");
+  assert.equal(result.completed, false);
+});
+
+test("retains legacy split [DONE] completion handling", async () => {
+  const observer = createSseUsageTransform();
+  await relay(observer, ["data: [DO", "NE]\n\n"]);
+  assert.equal((await observer.result).completed, true);
+});
+
+test("does not treat failed or incomplete Responses events as completed", async () => {
+  for (const eventType of ["response.failed", "response.incomplete"]) {
+    for (const frame of [
+      `event: ${eventType}\ndata: {\"type\":\"${eventType}\"}\n\n`,
+      `data: {\"type\":\"${eventType}\"}\n\n`,
+    ]) {
+      const observer = createSseUsageTransform();
+      await relay(observer, [frame]);
+      const result = await observer.result;
+      assert.equal(result.completed, false, eventType);
+      assert.equal(result.terminalKind, eventType.slice("response.".length), eventType);
+    }
+  }
+});
+
+test("does not treat a partial response.completed data line at EOF as completion", async () => {
+  const observer = createSseUsageTransform();
+  await relay(observer, ["event: response.completed\ndata: {\"type\":\"response.completed\""]);
+  assert.equal((await observer.result).completed, false);
+});
+
+test("does not treat a truncated event-only response.completed EOF as completion", async () => {
+  const observer = createSseUsageTransform();
+  await relay(observer, ["event: response.completed\n"]);
+  const result = await observer.result;
+  assert.equal(result.completed, false);
+  assert.equal(result.terminalKind, null);
 });
 
 test("discards oversized observation frames without changing relay output", async () => {

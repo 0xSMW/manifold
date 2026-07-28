@@ -17,6 +17,7 @@ import type {
   ObservationUsage,
   SnapshotPrice,
 } from "@manifold/ports";
+import type { ReasonCode } from "@manifold/contracts";
 import { parseMicroUsdString } from "@manifold/ports/price";
 type CapturableHotPathEvent = HotPathObservationEvent & {
   capture?: { mode: "redacted" | "full"; request?: Record<string, unknown>; response?: Record<string, unknown>; truncated?: boolean; bytes: number };
@@ -109,11 +110,25 @@ function costFidelityFor(
   return allPriced ? "exact" : "estimated";
 }
 
+// Keep this bounded to reason codes the gateway emits for terminal stream
+// outcomes. The source contract registry owns these literals.
+const PROVIDER_STREAM_FAILURE_CODES = new Set<ReasonCode>([
+  "PROVIDER_RESPONSE_FAILED",
+  "PROVIDER_RESPONSE_INCOMPLETE",
+  "PROVIDER_STREAM_ABORTED",
+] as ReasonCode[]);
+
 /** Map a flat event's HTTP status + reason codes to the durable `observation.status` set (§6.8). */
 function mapStatus(e: HotPathObservationEvent): ObservationStatus {
   const codes = e.reasonCodes;
   if (codes.some((c) => c === "PROVIDER_TIMEOUT")) return "timeout";
   if (codes.some((c) => c === "BUDGET_RESERVE_DENIED" || c.startsWith("POLICY_"))) return "denied";
+  // Responses SSE communicates a provider-declared terminal outcome in-band,
+  // after the HTTP stream has already been opened successfully.  Those frames
+  // deliberately retain the upstream 2xx status for byte-transparent client
+  // streaming, but durable observation status must represent the provider
+  // outcome rather than mistake the transport handshake for a success.
+  if (codes.some((c) => PROVIDER_STREAM_FAILURE_CODES.has(c))) return "error";
   const s = e.status ?? 0;
   if (s >= 200 && s < 300) return "ok";
   if (s === 402 || s === 403) return "denied";

@@ -1,5 +1,5 @@
 import { rollback, type ConfigSnapshot } from "@manifold/config";
-import { authorize } from "@/lib/auth";
+import { authorize, type Principal } from "@/lib/auth";
 import { db, requireInstallation, withWorkspace } from "@/lib/db";
 import { mutationOperationKey, runPostCommitMutationGuard } from "@/lib/mutation-guard";
 import { reconcileConfigOperation, snapshotStore } from "@/lib/snapshot";
@@ -16,6 +16,14 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// authorize() has already clamped bearer scopes before this route runs. A personal token with
+// config:write is therefore an explicitly delegated human action; service and legacy tokens do
+// not get rollback authority. Browser sessions retain the stricter admin/owner check.
+export function mayRollbackConfig(principal: Pick<Principal, "actorKind" | "member" | "tokenKind">): boolean {
+  if (principal.actorKind === "api_token") return principal.tokenKind === "personal";
+  return !!principal.member && ["owner", "admin"].includes(principal.member.role);
+}
+
 export async function POST(req: Request): Promise<Response> {
   return wrapInEnvelope(async (requestId) => {
     const principal = await authorize(req, "config:write");
@@ -26,17 +34,13 @@ export async function POST(req: Request): Promise<Response> {
       // Rollback changes the active revision and republishes stored snapshot bytes.
       rateLimit: { limit: 5, windowMs: 60_000 },
       handler: async () => {
-    if (
-      principal.actorKind !== "member" ||
-      !principal.member ||
-      !["owner", "admin"].includes(principal.member.role)
-    ) {
+    if (!mayRollbackConfig(principal)) {
       throw new ManifoldError({
         status: 403,
         code: "FORBIDDEN",
-        message: "config rollback requires an admin or owner browser session",
+        message: "config rollback requires an admin or owner browser session or a personal token with config:write",
         reasonCodes: [],
-        remediation: "sign in as a workspace admin or owner",
+        remediation: "sign in as a workspace admin or owner, or use a personal token with config:write",
       });
     }
     const { installationId, revisionId, baseConfigHash } = await contractBody(req, ConfigContracts.rollback);
@@ -65,7 +69,7 @@ export async function POST(req: Request): Promise<Response> {
       expectedBaseConfigHash: baseConfigHash,
       actorKind: principal.actorKind,
       actorId: principal.actorId,
-      memberId: principal.member.id,
+      memberId: principal.actorKind === "member" ? principal.member?.id : undefined,
       requestId,
       mutationKey: mutationOperationKey(req, principal),
     });

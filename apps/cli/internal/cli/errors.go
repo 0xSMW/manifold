@@ -17,18 +17,24 @@ const (
 	ExitAuth         = 3
 	ExitNotFound     = 4
 	ExitPrecondition = 5
+	ExitRateLimited  = 6
+	ExitServer       = 7
+	ExitTimeout      = 8
+	ExitTripwire     = 9
 )
 
 // CLIError is the structured, agent-safe error the CLI prints per SPEC.md
 // §0.3 / §12.9. Every non-zero exit from a command handler should produce
 // one of these so scripts and agents can branch on Code and ErrCode.
 type CLIError struct {
-	Code        int    // process exit code (0-5, see constants above)
+	Code        int    // process exit code (0-9, see constants above)
 	ErrCode     string // reason code, e.g. AUTH_KEY_UNKNOWN, CONFIG_PRECONDITION_FAILED
 	Message     string
 	Remediation string
 	Retryable   bool
-	Details     map[string]string
+	Details     map[string]any
+	RequestID   string
+	ReasonCodes []string
 }
 
 func (e *CLIError) Error() string {
@@ -64,7 +70,7 @@ func notFoundError(kind, id string) *CLIError {
 	}
 }
 
-func preconditionError(message, remediation string, details map[string]string) *CLIError {
+func preconditionError(message, remediation string, details map[string]any) *CLIError {
 	return &CLIError{
 		Code:        ExitPrecondition,
 		ErrCode:     "CONFIG_PRECONDITION_FAILED",
