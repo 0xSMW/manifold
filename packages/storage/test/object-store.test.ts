@@ -26,7 +26,7 @@ class DeterministicObjectStore implements ObjectStorageTransport {
     }
     if (request.method === "GET") {
       const object = this.objects.get(key);
-      return object ? new Response(object.bytes, { status: 200 }) : new Response(null, { status: 404 });
+      return object ? new Response(new Uint8Array(object.bytes), { status: 200 }) : new Response(null, { status: 404 });
     }
     throw new Error(`unexpected method ${request.method}`);
   }

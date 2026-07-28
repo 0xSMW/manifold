@@ -9,5 +9,8 @@ test("terminal capture crosses the flat gateway event into the journal without a
     capture: { mode: "full", bytes: 29, request: { prompt: "hello" }, response: { answer: "ok" } },
   } as never, { workspaceId: "workspace", producerId: "installation" });
   assert.equal(event.kind, "terminal");
+  if (event.kind !== "terminal") {
+    throw new Error("expected journal event to be terminal");
+  }
   assert.deepEqual(event.payload.capture, { mode: "full", bytes: 29, request: { prompt: "hello" }, response: { answer: "ok" } });
 });

@@ -18,7 +18,7 @@
     "test:packages": "pnpm --recursive --if-present run test",
     "test:control-plane": "pnpm --dir apps/control-plane exec tsx --tsconfig tsconfig.json --test test/*.test.ts test/*.test.mjs",
     "test:pg": "node scripts/run-real-pg-gates.mjs",
-    "test:storage-release": "pnpm --filter @manifold/storage exec tsx --tsconfig tsconfig.json --test test/storage-pg.test.ts test/storage-seal-pg.test.ts test/storage-release-gates-pg.test.ts",
+    "test:storage-release": "pnpm exec tsx --tsconfig packages/storage/tsconfig.json --test packages/storage/test/storage-pg.test.ts packages/storage/test/storage-seal-pg.test.ts packages/storage/test/storage-release-gates-pg.test.ts",
     "test:security": "node scripts/run-security-gates.mjs",
     "test:desktop": "pnpm --dir apps/control-plane exec playwright test --project=chromium",
     "test:mobile": "pnpm --dir apps/control-plane exec playwright test --project=mobile",
@@ -39,6 +39,8 @@
   },
   "packageManager": "pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489",
   "devDependencies": {
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
     "vercel": "58.0.0"
   }
 }

@@ -19,16 +19,21 @@ function assertPnpmAvailableBeforeCache(workflow, expectedOccurrences, name) {
 }
 
 test("root command surface exposes every SPEC §21 release gate", async () => {
-  const { scripts, packageManager } = JSON.parse(await read("package.json"));
+  const { scripts, packageManager, devDependencies } = JSON.parse(await read("package.json"));
   assert.match(packageManager, /^pnpm@10\.33\.3\+sha512\./, "packageManager must integrity-pin the exact CI pnpm release");
+  assert.equal(devDependencies.typescript, "5.9.3", "root typecheck tooling must be pinned for a clean install");
+  assert.equal(devDependencies.tsx, "4.23.1", "root source-test tooling must be pinned for a clean install");
   for (const name of [
     "typecheck", "build", "test:packages", "test:control-plane", "test:pg",
     "test:storage-release", "test:security", "test:playwright", "test:desktop",
     "test:mobile", "lint:boundaries", "lint:queries", "check:migrations",
     "check:environment-isolation",
   ]) assert.ok(scripts[name], `missing root script: ${name}`);
+  assert.match(scripts.typecheck, /^tsc -b/);
   assert.match(scripts.typecheck, /--dir apps\/control-plane exec tsc --noEmit -p tsconfig\.json/);
   assert.match(scripts["test:control-plane"], /tsx --tsconfig tsconfig\.json --test/);
+  assert.match(scripts["test:storage-release"], /^pnpm exec tsx --tsconfig packages\/storage\/tsconfig\.json --test packages\/storage\/test\//);
+  assert.doesNotMatch(scripts["test:storage-release"], /--filter .* exec tsx/);
   assert.match(scripts["test:playwright"], /test:desktop.*test:mobile/);
 });
 
@@ -78,6 +83,15 @@ test("security/storage gate builds gateway-core before the local flat-memory rel
   const job = workflow.slice(workflow.indexOf("  security-storage-gates:"));
   assert.ok(job.includes("pnpm --filter @manifold/gateway-core run build"), "gateway-core build is required in the security/storage job");
   assert.ok(job.indexOf("pnpm --filter @manifold/gateway-core run build") < job.indexOf("pnpm run load:flat-memory"), "gateway-core build must precede the flat-memory gate");
+});
+
+test("security gate builds only its TypeScript dependency closure and invokes root-declared tsx", async () => {
+  const security = await read("scripts/run-security-gates.mjs");
+  const lockfile = await read("pnpm-lock.yaml");
+  assert.match(security, /pnpm", \["exec", "tsc", "-b", "packages\/crypto", "packages\/config", "packages\/gateway-core", "packages\/budget"\]/);
+  assert.match(security, /pnpm", \["exec", "tsx", "--tsconfig", tsconfig, "--test"/);
+  assert.doesNotMatch(security, /--filter", workspace, "exec", "tsx"/);
+  assert.match(lockfile, /^  \.:\n    devDependencies:\n      tsx:\n        specifier: 4\.23\.1\n        version: 4\.23\.1\n      typescript:\n        specifier: 5\.9\.3\n        version: 5\.9\.3/m);
 });
 
 test("production promotion is master-only, requires successful CI for its exact revision, and pins its deploy CLI", async () => {
