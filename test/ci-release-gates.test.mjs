@@ -51,7 +51,7 @@ test("CI installs Node 22 and keeps security/storage gates independent", async (
   for (const command of ["test:security", "test:pg", "test:storage-release", "load:flat-memory", "load:k6", "conformance:replay", "conformance:matrix:check", "test:playwright", "check:environment-isolation"]) {
     assert.match(workflow, new RegExp(`pnpm run ${command}`));
   }
-  assert.match(workflow, /playwright install --with-deps chromium/);
+  assert.match(workflow, /playwright install --with-deps chromium webkit/, "CI must install every browser used by the desktop and mobile projects");
   assert.match(workflow, /Install k6 0\.58\.0/);
   assert.match(workflow, /pnpm --dir apps\/control-plane run lint:copy/);
   assert.match(workflow, /Upload Playwright artifacts[\s\S]*?if: failure\(\)/);

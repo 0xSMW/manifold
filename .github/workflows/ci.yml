@@ -41,7 +41,7 @@ jobs:
       - run: pnpm --dir apps/control-plane run lint:copy
       - run: pnpm run conformance:replay
       - run: pnpm run conformance:matrix:check
-      - run: pnpm --dir apps/control-plane exec playwright install --with-deps chromium
+      - run: pnpm --dir apps/control-plane exec playwright install --with-deps chromium webkit
       - run: pnpm run test:playwright
       - name: Upload Playwright artifacts
         if: failure()
