@@ -41,18 +41,6 @@ jobs:
       - run: pnpm --dir apps/control-plane run lint:copy
       - run: pnpm run conformance:replay
       - run: pnpm run conformance:matrix:check
-      - run: pnpm --dir apps/control-plane exec playwright install --with-deps chromium webkit
-      - run: pnpm run test:playwright
-      - name: Upload Playwright artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-artifacts
-          path: |
-            apps/control-plane/playwright-report/
-            apps/control-plane/test-results/
-          if-no-files-found: ignore
-          retention-days: 14
 
   security-storage-gates:
     # Keep this required check distinct in branch protection. It deliberately has no

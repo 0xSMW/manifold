@@ -442,7 +442,6 @@ corepack pnpm run typecheck
 corepack pnpm run test:control-plane
 corepack pnpm run test:security
 corepack pnpm run test:pg
-corepack pnpm run test:playwright
 ```
 
 The real-Postgres gate requires its local container/runtime prerequisites. A passing local gate is

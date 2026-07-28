@@ -269,7 +269,6 @@ Run the usual local checks before contributing:
 pnpm run typecheck
 pnpm run test:packages
 pnpm run test:control-plane
-pnpm run test:playwright
 ```
 
 Run the checks relevant to the packages and apps you change. The repository

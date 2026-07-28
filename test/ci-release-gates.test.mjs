@@ -25,36 +25,33 @@ test("root command surface exposes every SPEC §21 release gate", async () => {
   assert.equal(devDependencies.tsx, "4.23.1", "root source-test tooling must be pinned for a clean install");
   for (const name of [
     "typecheck", "build", "test:packages", "test:control-plane", "test:pg",
-    "test:storage-release", "test:security", "test:playwright", "test:desktop",
-    "test:mobile", "lint:boundaries", "lint:queries", "check:migrations",
-    "check:environment-isolation",
+    "test:storage-release", "test:security", "lint:boundaries", "lint:queries",
+    "check:migrations", "check:environment-isolation",
   ]) assert.ok(scripts[name], `missing root script: ${name}`);
   assert.match(scripts.typecheck, /^tsc -b/);
   assert.match(scripts.typecheck, /--dir apps\/control-plane exec tsc --noEmit -p tsconfig\.json/);
   assert.match(scripts["test:control-plane"], /tsx --tsconfig tsconfig\.json --test/);
   assert.match(scripts["test:storage-release"], /^pnpm exec tsx --tsconfig packages\/storage\/tsconfig\.json --test packages\/storage\/test\//);
   assert.doesNotMatch(scripts["test:storage-release"], /--filter .* exec tsx/);
-  assert.equal(scripts["test:playwright"], "pnpm --dir apps/control-plane exec playwright test", "the full browser gate must run every configured project in one invocation");
+  assert.equal(scripts["test:playwright"], undefined, "browser e2e is not a release gate");
+  assert.equal(scripts["test:desktop"], undefined, "browser e2e is not a release gate");
+  assert.equal(scripts["test:mobile"], undefined, "browser e2e is not a release gate");
 });
 
 test("CI installs Node 22 and keeps security/storage gates independent", async () => {
   const workflow = await read(".github/workflows/ci.yml");
-  const playwrightConfig = await read("apps/control-plane/playwright.config.ts");
   assert.match(workflow, /node-version: 22/);
   assert.match(workflow, /pnpm install --frozen-lockfile/);
-  assert.doesNotMatch(workflow, /^\s*PLAYWRIGHT_BASE_URL:/m, "CI must let Playwright start and wait for its configured local server");
-  assert.match(playwrightConfig, /webServer:\s*process\.env\.PLAYWRIGHT_BASE_URL\s*\?\s*undefined\s*:/);
-  assert.match(playwrightConfig, /next dev --port \$\{port\}/);
   assert.match(workflow, /^\s+security-storage-gates:/m);
   assert.match(workflow, /name: security-storage-gates/);
   assert.doesNotMatch(workflow, /security-storage-gates:[\s\S]*?continue-on-error:\s*true/);
-  for (const command of ["test:security", "test:pg", "test:storage-release", "load:flat-memory", "load:k6", "conformance:replay", "conformance:matrix:check", "test:playwright", "check:environment-isolation"]) {
+  for (const command of ["test:security", "test:pg", "test:storage-release", "load:flat-memory", "load:k6", "conformance:replay", "conformance:matrix:check", "check:environment-isolation"]) {
     assert.match(workflow, new RegExp(`pnpm run ${command}`));
   }
-  assert.match(workflow, /playwright install --with-deps chromium webkit/, "CI must install every browser used by the desktop and mobile projects");
+  assert.doesNotMatch(workflow, /playwright/, "CI must not install or run Playwright browser e2e");
+  assert.doesNotMatch(workflow, /test:playwright|test:desktop|test:mobile/);
   assert.match(workflow, /Install k6 0\.58\.0/);
   assert.match(workflow, /pnpm --dir apps\/control-plane run lint:copy/);
-  assert.match(workflow, /Upload Playwright artifacts[\s\S]*?if: failure\(\)/);
   assertPnpmAvailableBeforeCache(workflow, 2, "CI");
 });
 

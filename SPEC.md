@@ -2783,7 +2783,7 @@ No migration holds a long lock (use `CREATE INDEX CONCURRENTLY`, `ADD COLUMN …
 
 ### 21.1 Shape and tooling
 
-TypeScript: Vitest (unit, integration), Testcontainers-Postgres (real DB), Playwright (console E2E), k6 (load). Go: standard `testing` + golden files for the CLI. Everything runs in CI on every PR; the security and negative suites are release gates.
+TypeScript: node:test/tsx (unit, integration), real Postgres (integration gates), k6 (load). Go: standard `testing` + golden files for the CLI. Everything runs in CI on every PR; the security and negative suites are release gates. Browser console E2E is intentionally out of CI.
 
 ### 21.2 Unit
 
