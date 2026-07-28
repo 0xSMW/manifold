@@ -88,7 +88,7 @@ test("security/storage gate builds gateway-core before the local flat-memory rel
 test("security gate builds only its TypeScript dependency closure and invokes root-declared tsx", async () => {
   const security = await read("scripts/run-security-gates.mjs");
   const lockfile = await read("pnpm-lock.yaml");
-  assert.match(security, /pnpm", \["exec", "tsc", "-b", "packages\/crypto", "packages\/config", "packages\/gateway-core", "packages\/budget"\]/);
+  assert.match(security, /pnpm", \["exec", "tsc", "-b", "packages\/crypto", "packages\/config", "packages\/gateway-core", "packages\/observability", "packages\/budget"\]/);
   assert.match(security, /pnpm", \["exec", "tsx", "--tsconfig", tsconfig, "--test"/);
   assert.doesNotMatch(security, /--filter", workspace, "exec", "tsx"/);
   const rootImporter = lockfile.match(/^  \.:\n(?<body>(?: {4}.*\n| {6}.*\n| {8}.*\n)*)/m)?.groups?.body ?? "";

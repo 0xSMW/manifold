@@ -8,7 +8,7 @@ const suites = [
   ["packages/budget/tsconfig.json", ["packages/budget/test/budget-attacks.test.ts", "packages/budget/test/rls-money.test.ts"]],
 ];
 
-const build = spawnSync("pnpm", ["exec", "tsc", "-b", "packages/crypto", "packages/config", "packages/gateway-core", "packages/budget"], { stdio: "inherit" });
+const build = spawnSync("pnpm", ["exec", "tsc", "-b", "packages/crypto", "packages/config", "packages/gateway-core", "packages/observability", "packages/budget"], { stdio: "inherit" });
 if (build.status !== 0) process.exit(build.status ?? 1);
 
 for (const [tsconfig, tests] of suites) {
