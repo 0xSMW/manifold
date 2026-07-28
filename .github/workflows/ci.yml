@@ -15,7 +15,6 @@ concurrency:
 
 env:
   MANIFOLD_DEPLOYMENT_TIER: preview
-  PLAYWRIGHT_BASE_URL: http://127.0.0.1:3100
 
 jobs:
   test-build:

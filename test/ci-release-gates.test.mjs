@@ -39,8 +39,12 @@ test("root command surface exposes every SPEC §21 release gate", async () => {
 
 test("CI installs Node 22 and keeps security/storage gates independent", async () => {
   const workflow = await read(".github/workflows/ci.yml");
+  const playwrightConfig = await read("apps/control-plane/playwright.config.ts");
   assert.match(workflow, /node-version: 22/);
   assert.match(workflow, /pnpm install --frozen-lockfile/);
+  assert.doesNotMatch(workflow, /^\s*PLAYWRIGHT_BASE_URL:/m, "CI must let Playwright start and wait for its configured local server");
+  assert.match(playwrightConfig, /webServer:\s*process\.env\.PLAYWRIGHT_BASE_URL\s*\?\s*undefined\s*:/);
+  assert.match(playwrightConfig, /next dev --port \$\{port\}/);
   assert.match(workflow, /^\s+security-storage-gates:/m);
   assert.match(workflow, /name: security-storage-gates/);
   assert.doesNotMatch(workflow, /security-storage-gates:[\s\S]*?continue-on-error:\s*true/);
