@@ -12,13 +12,15 @@ function assertPnpmAvailableBeforeCache(workflow, expectedOccurrences, name) {
     const prefix = workflow.slice(0, setup.index);
     const pnpmSetupIndex = prefix.lastIndexOf("- uses: pnpm/action-setup@v4");
     assert.ok(pnpmSetupIndex >= 0, `${name} must install pnpm before setup-node cache resolution`);
-    assert.match(prefix.slice(pnpmSetupIndex), /- uses: pnpm\/action-setup@v4\n\s+with:\n\s+version: 10\.33\.3\s*$/m, `${name} must install the repository-declared pnpm version before setup-node cache resolution`);
+    assert.match(prefix.slice(pnpmSetupIndex), /- uses: pnpm\/action-setup@v4\s*$/, `${name} must invoke pnpm setup immediately before setup-node cache resolution`);
   }
+  assert.doesNotMatch(workflow, /pnpm\/action-setup@v4\n\s+with:\n\s+version:/, `${name} must use package.json packageManager as the sole pnpm version source`);
   assert.doesNotMatch(workflow, /corepack enable/, `${name} must not rely on post-cache Corepack activation`);
 }
 
 test("root command surface exposes every SPEC §21 release gate", async () => {
-  const { scripts } = JSON.parse(await read("package.json"));
+  const { scripts, packageManager } = JSON.parse(await read("package.json"));
+  assert.match(packageManager, /^pnpm@10\.33\.3\+sha512\./, "packageManager must integrity-pin the exact CI pnpm release");
   for (const name of [
     "typecheck", "build", "test:packages", "test:control-plane", "test:pg",
     "test:storage-release", "test:security", "test:playwright", "test:desktop",
