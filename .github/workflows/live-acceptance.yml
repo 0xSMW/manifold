@@ -33,7 +33,9 @@ concurrency:
 jobs:
   scheduled-public-health:
     # Alias health is deliberately observational. It is never a promotion gate.
-    if: ${{ github.event_name != 'workflow_call' }}
+    # Do not key this on github.event_name: inside a reusable workflow call the
+    # event remains the caller's (workflow_dispatch/schedule), not workflow_call.
+    if: ${{ inputs.control_plane_candidate_url == '' || inputs.control_plane_candidate_url == null }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: live-acceptance
@@ -49,7 +51,8 @@ jobs:
         run: node scripts/run-live-acceptance.mjs
 
   immutable-candidate-health:
-    if: ${{ github.event_name == 'workflow_call' }}
+    # Candidate inputs are only provided by production-promotion's workflow_call.
+    if: ${{ inputs.control_plane_candidate_url != '' && inputs.control_plane_candidate_url != null }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: live-acceptance
@@ -79,7 +82,7 @@ jobs:
   production-alias-promotion-gate:
     # A caller may promote production aliases only after this exact candidate
     # diagnostic job succeeds; the callable workflow makes that dependency tracked.
-    if: ${{ github.event_name == 'workflow_call' }}
+    if: ${{ inputs.control_plane_candidate_url != '' && inputs.control_plane_candidate_url != null }}
     needs: immutable-candidate-health
     runs-on: ubuntu-latest
     timeout-minutes: 1

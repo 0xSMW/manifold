@@ -74,7 +74,9 @@ test("CI protects master while scheduled alias health remains separate from the 
   assert.doesNotMatch(candidateJob.slice(0, candidateJob.indexOf("      - name: Verify candidate readiness and provenance")), /MANIFOLD_LIVE_DIAGNOSTICS_TOKEN|MANIFOLD_LIVE_CONTROL_PLANE_TOKEN/);
   const promotion = live.slice(live.indexOf("  production-alias-promotion-gate:"));
   assert.match(promotion, /needs: immutable-candidate-health/);
-  assert.match(live, /scheduled-public-health:[\s\S]*?github\.event_name != 'workflow_call'/);
+  assert.match(live, /scheduled-public-health:[\s\S]*?inputs\.control_plane_candidate_url == '' \|\| inputs\.control_plane_candidate_url == null/);
+  assert.match(live, /immutable-candidate-health:[\s\S]*?inputs\.control_plane_candidate_url != '' && inputs\.control_plane_candidate_url != null/);
+  assert.doesNotMatch(live, /github\.event_name\s*[=!]=\s*'workflow_call'/, "reusable workflows keep the caller's event_name; gate on candidate inputs instead");
   assert.match(live, /node scripts\/run-live-acceptance\.mjs/);
   assert.match(ci, /node --test test\/ci-release-gates\.test\.mjs test\/live-acceptance\.test\.mjs/);
 });
