@@ -131,7 +131,8 @@ test("production promotion is master-only, requires successful CI for its exact 
   assert.match(workflow, /pnpm exec vercel deploy/);
   assert.match(workflow, /pnpm exec vercel alias set/);
   assert.match(workflow, /deploy-immutable-candidates:/);
-  assert.match(workflow, /--prod --skip-domain/);
+  assert.match(workflow, /--prod --skip-domain --force/);
+  assert.match(workflow, /tsc -b packages\/gateway-core/);
   assert.match(workflow, /control_plane_candidate_url: \$\{\{ steps\.control-plane\.outputs\.candidate_url \}\}/);
   assert.match(workflow, /gateway_candidate_url: \$\{\{ steps\.gateway\.outputs\.candidate_url \}\}/);
   assert.match(workflow, /immutable-candidate-diagnostics:[\s\S]*?needs: deploy-immutable-candidates/);

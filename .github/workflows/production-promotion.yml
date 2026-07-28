@@ -96,7 +96,8 @@ jobs:
         run: |
           set -euo pipefail
           pnpm exec vercel link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
-          candidate_url="$(pnpm exec vercel deploy --yes --prod --skip-domain --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" | tail -n 1)"
+          # --force skips a poisoned monorepo install cache that can omit workspace package dist/
+          candidate_url="$(pnpm exec vercel deploy --yes --prod --skip-domain --force --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" | tail -n 1)"
           deployment_id="$(pnpm exec vercel inspect "$candidate_url" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" --json | jq --raw-output '.id')"
           test -n "$candidate_url" && test "$candidate_url" != "null"
           test -n "$deployment_id" && test "$deployment_id" != "null"
@@ -115,7 +116,11 @@ jobs:
           # running from that app directory uploads an incomplete workspace and
           # prevents Vercel from attaching immutable Git provenance.
           pnpm exec vercel link --yes --project "$VERCEL_PROJECT_ID" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN"
-          candidate_url="$(pnpm exec vercel deploy --yes --prod --skip-domain --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" | tail -n 1)"
+          # Build workspace package dist/ before upload so remote tracing can
+          # resolve @manifold/* even if install-cache reuse skips tsc -b.
+          pnpm exec tsc -b packages/gateway-core packages/budget packages/config packages/crypto packages/database packages/domain packages/observability
+          # --force avoids restoring a build cache that reinstalls without the monorepo installCommand.
+          candidate_url="$(pnpm exec vercel deploy --yes --prod --skip-domain --force --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" | tail -n 1)"
           deployment_id="$(pnpm exec vercel inspect "$candidate_url" --scope "$VERCEL_ORG_ID" --token "$VERCEL_TOKEN" --json | jq --raw-output '.id')"
           test -n "$candidate_url" && test "$candidate_url" != "null"
           test -n "$deployment_id" && test "$deployment_id" != "null"
