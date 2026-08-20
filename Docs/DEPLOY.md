@@ -499,7 +499,7 @@ response alone is insufficient.
 
 ## Smoke and billing checks
 
-The tracked `.github/workflows/live-acceptance.yml` workflow runs hourly alias health separately
+The tracked `.github/workflows/live-acceptance.yml` workflow runs alias health separately
 from its callable production-promotion gate. The deployment workflow must pass its immutable
 control-plane and gateway candidate URLs and their Vercel deployment IDs to the callable workflow,
 then make alias assignment depend on

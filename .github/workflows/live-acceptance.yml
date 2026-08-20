@@ -20,8 +20,6 @@ on:
       MANIFOLD_LIVE_CONTROL_PLANE_PROTECTION_BYPASS: { required: false }
       MANIFOLD_LIVE_GATEWAY_PROTECTION_BYPASS: { required: false }
   workflow_dispatch:
-  schedule:
-    - cron: "17 * * * *"
 
 permissions:
   contents: read
@@ -44,8 +42,8 @@ jobs:
       MANIFOLD_LIVE_CONTROL_PLANE_URL: ${{ vars.MANIFOLD_LIVE_CONTROL_PLANE_URL }}
       MANIFOLD_LIVE_GATEWAY_URL: ${{ vars.MANIFOLD_LIVE_GATEWAY_URL }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 22 }
       - name: Run public health acceptance
         run: node scripts/run-live-acceptance.mjs
@@ -65,8 +63,8 @@ jobs:
       # This is GitHub's immutable caller revision, never an operator label.
       MANIFOLD_LIVE_SOURCE_REVISION: ${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with: { node-version: 22 }
       - name: Verify candidate readiness and provenance
         # Dedicated diagnostic/bypass secrets stay scoped to the only step that uses them.

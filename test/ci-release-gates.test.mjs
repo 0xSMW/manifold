@@ -6,7 +6,7 @@ const root = new URL("..", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
 
 function assertPnpmAvailableBeforeCache(workflow, expectedOccurrences, name) {
-  const cachedNodeSetups = [...workflow.matchAll(/- uses: actions\/setup-node@v4\n\s+with:\n\s+node-version: 22\n\s+cache: pnpm/g)];
+  const cachedNodeSetups = [...workflow.matchAll(/- uses: actions\/setup-node@v5\n\s+with:\n\s+node-version: 22\n\s+cache: pnpm/g)];
   assert.equal(cachedNodeSetups.length, expectedOccurrences, `${name} must have the expected pnpm-cached Node 22 setups`);
   for (const setup of cachedNodeSetups) {
     const prefix = workflow.slice(0, setup.index);
@@ -55,13 +55,13 @@ test("CI installs Node 22 and keeps security/storage gates independent", async (
   assertPnpmAvailableBeforeCache(workflow, 2, "CI");
 });
 
-test("CI protects master while scheduled alias health remains separate from the callable promotion gate", async () => {
+test("CI protects master while alias health remains separate from the callable promotion gate", async () => {
   const ci = await read(".github/workflows/ci.yml");
   const live = await read(".github/workflows/live-acceptance.yml");
   assert.match(ci, /push:\n\s+branches: \[master\]/);
   assert.doesNotMatch(ci, /branches: \[main\]/);
   assert.match(live, /workflow_dispatch:/);
-  assert.match(live, /schedule:/);
+  assert.doesNotMatch(live, /schedule:/);
   assert.match(live, /workflow_call:/);
   assert.match(live, /control_plane_candidate_url/);
   assert.match(live, /gateway_candidate_url/);
